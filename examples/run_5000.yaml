@@ -36,8 +36,8 @@ provider:
     # disable_xet: true              # uncomment if a valid write token hits a Xet 403
 
 eval:
-  #benchmarks: [piqa, hellaswag, mmlu, gsm8k]  # --eval-tasks
-  benchmarks: [piqa]
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]  # --eval-tasks
+  #benchmarks: [piqa]
   backend: vllm
   batch_size: auto
   baseline: true               # --eval-baseline (also eval the bf16 original)

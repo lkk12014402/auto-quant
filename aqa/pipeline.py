@@ -16,6 +16,7 @@ from .agent.fix_loop import (
     run_fix_loop,
 )
 from .config import RunConfig
+from .eval.heal import EvalHealer, eval_agent_hint
 from .eval.registry import EvalResult
 from .eval.runner import run_evaluation
 from .executors import ProcessState
@@ -150,6 +151,12 @@ def _run_evaluate(run_cfg: RunConfig, model: str, eval_dir: Path,
 
     A phase is considered failed when the harness raises OR every benchmark scores
     exactly 0 (acc=0 => fail, matching the leaderboard's failure heuristic).
+
+    Before escalating to the agent, an eval-aware :class:`EvalHealer` runs a cheap
+    deterministic pre-pass (OOM batch/memory shrink, transient endpoint retry,
+    chat-template toggle) -- resolving operational failures without spending an
+    agent tier. Only unresolved failures reach the agent, which then gets an
+    eval-specific hint so it fixes the eval env/config rather than the model.
     """
     holder: dict[str, EvalResult] = {}
 
@@ -168,8 +175,30 @@ def _run_evaluate(run_cfg: RunConfig, model: str, eval_dir: Path,
     if not run_cfg.agent.fix_loop:
         return run_evaluation(model, run_cfg.eval, eval_dir, num_gpus=num_gpus)
 
+    # Deterministic pre-pass: heal operational failures without the agent.
+    healer = EvalHealer(run_cfg.eval)
+    result = _phase()
+    heal_guard = 0
+    while not result.ok and heal_guard < 8:
+        heal_guard += 1
+        quick_fix = healer.propose(result.log_text)
+        if quick_fix is None:
+            break
+        _log.info("eval self-heal (deterministic): %s", quick_fix.description)
+        result = _phase()
+    if result.ok:
+        if healer.applied:
+            _log.info("evaluate healed deterministically via %s", ", ".join(healer.applied))
+        return holder["result"]
+
+    # Escalate to the agent with an eval-specific hint.
+    cfg = _fix_config(run_cfg)
+    hint = eval_agent_hint(healer.last_failure)
+    if hint:
+        cfg.user_context = f"{cfg.user_context}\n\n{hint}".strip()
+
     fr = run_fix_loop(
-        "evaluate", _phase, config=_fix_config(run_cfg), out_dir=out_dir,
+        "evaluate", _phase, config=cfg, out_dir=out_dir,
         model_id=run_cfg.model,
         scheme=run_cfg.quant.scheme if run_cfg.quant else "",
         method=run_cfg.quant.method if run_cfg.quant else "",

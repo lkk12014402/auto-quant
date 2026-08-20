@@ -25,6 +25,14 @@ def build_autoround_command(
     cmd = ["auto-round", "--model_name", model, "--scheme", cfg.scheme]
     if cfg.method == "model_free":
         cmd.append("--model_free")
+    if cfg.algorithm:
+        cmd += ["--algorithm", cfg.algorithm]
+    if cfg.enable_alg_ext:
+        cmd.append("--enable_alg_ext")
+    if cfg.hadamard_type:
+        cmd += ["--rotation-hadamard-type", cfg.hadamard_type]
+    if cfg.opt_rtn is not None:
+        cmd.append("--enable_opt_rtn" if cfg.opt_rtn else "--disable_opt_rtn")
     if cfg.iters is not None:
         cmd += ["--iters", str(cfg.iters)]
     if cfg.nsamples is not None:

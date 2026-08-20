@@ -22,7 +22,7 @@ from ..logging_util import get_logger
 _log = get_logger("executor.ssh.remote")
 
 DEFAULT_BASE_IMAGE = "nvcr.io/nvidia/pytorch:26.01-py3"
-DEFAULT_XPU_BASE_IMAGE = "intel/llm-scaler-vllm:0.21.0-b1"
+DEFAULT_XPU_BASE_IMAGE = "vllm/vllm-openai-xpu:nightly"
 
 # Agent-fix backend versions installed inside the container (parity with
 # local_dispatch). Node is required by both the OpenClaw and Copilot CLIs.
@@ -253,7 +253,7 @@ def container_packages(run_cfg: RunConfig) -> list[str]:
     """Compute the pip package list installed inside the container.
 
     Base stack = auto-round + lm-eval; vllm is added when the eval backend needs
-    it -- *except* on XPU, where the Intel base image already ships a matching
+    it -- *except* on XPU, where the base image already ships a matching
     vllm-xpu build (installing CUDA ``vllm`` would clobber it).  User extras from
     ``executor.image.pip_install`` are appended (and can pin versions).
     """
@@ -291,7 +291,7 @@ def _agent_provision_snippet(run_cfg: RunConfig) -> str:
     Parity with ``local_dispatch/remote_exec.py``: OpenClaw is the default tier-0
     backend and is always installed; the Copilot CLI is added only when a
     copilot-backed tier is configured.  Node.js is baked into the ``local`` GPU
-    image but absent from a plain base image (e.g. the Intel XPU image), so it is
+    image but absent from a plain base image (e.g. the vLLM XPU image), so it is
     installed at runtime when missing.  Config for both backends is laid down by
     ``aqa.agent.provision`` (syncs ``MINIMAX_API_KEY``, shares the project skills).
     """

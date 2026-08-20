@@ -141,8 +141,8 @@ def test_xpu_remote_script_uses_dri_and_affinity_mask():
     assert 'ZE_AFFINITY_MASK="$DEVICE_LIST"' in script
     assert "VLLM_WORKER_MULTIPROC_METHOD=spawn" in script
     assert "--gpus" not in script
-    # default Intel base image
-    assert "intel/llm-scaler-vllm:0.21.0-b1" in script
+    # default XPU base image
+    assert "vllm/vllm-openai-xpu:nightly" in script
     # streaming flags still present
     assert "--tty" in script
     assert "PYTHONUNBUFFERED=1" in script
@@ -152,7 +152,7 @@ def test_xpu_container_packages_skip_cuda_vllm():
     from aqa.executors._remote import container_packages
     cfg = parse_run_config(_XPU_BASE)
     pkgs = container_packages(cfg)
-    # Intel base image already ships vllm-xpu; do not clobber it
+    # XPU base image already ships vllm-xpu; do not clobber it
     assert "vllm" not in pkgs
     assert "auto-round" in pkgs and "lm-eval" in pkgs
 
@@ -167,6 +167,7 @@ def test_xpu_honours_custom_xpu_image():
     script = build_remote_script(cfg, "r1", has_secrets=False)
     assert 'IMAGE="my-xpu:custom"' in script
     assert "intel/llm-scaler-vllm" not in script
+    assert "vllm/vllm-openai-xpu" not in script
 
 
 def test_cuda_default_accelerator_still_uses_gpus():

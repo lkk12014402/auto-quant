@@ -23,7 +23,7 @@ Run benchmarks and produce a normalized `accuracy.json`, choosing the right
 
 ## Harness routing
 - `native`   — in-repo kernel (dataset URI + prompt + scorer library). Best when
-  correct scoring needs code we own (migrated from NeMo Evaluator, Apache-2.0).
+  correct scoring needs code we own (see the repo `NOTICE` for attributions).
 - `lm_eval`  — EleutherAI lm-eval tasks (piqa/mmlu/hellaswag/gsm8k/arc/...).
 - `evalscope`— optional plugin (VLM/embedding/RAG + perf TTFT/TPOT).
 

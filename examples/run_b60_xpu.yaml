@@ -4,7 +4,7 @@
 # This mirrors what local_dispatch/xpu/xpu_dispatch.py did on the b60-xpu host,
 # but through the SAME `aqa run` pipeline used for CUDA -- the only difference is
 # `executor.ssh.accelerator: xpu`, which switches the remote docker run to Intel
-# GPU passthrough (/dev/dri + ZE_AFFINITY_MASK) and the Intel vllm-xpu base image.
+# GPU passthrough (/dev/dri + ZE_AFFINITY_MASK) and the vLLM XPU base image.
 #
 # Target machine: Intel B60 (8 cards) reached over a 3-hop SSH chain:
 #   tensorflow@<jump>  ->  guest@146.152.205.45  ->  sdp@192.168.11.2
@@ -57,11 +57,11 @@ agent:
 executor:
   type: ssh
   image:
-    # Intel base image ships torch-xpu + vLLM-XPU. `dockerfile: local` builds the
-    # shipped docker/xpu.dockerfile ON TOP of it (adds tooling + Node + openclaw for
+    # The vLLM XPU base image ships torch-xpu + vLLM-XPU. `dockerfile: local` builds
+    # the shipped docker/xpu.dockerfile ON TOP of it (adds tooling + Node + openclaw for
     # the agent fix-loop) WITHOUT reinstalling torch/vllm. Omit `dockerfile` to run
     # the base image directly (the bootstrap then installs Node/openclaw at runtime).
-    xpu: intel/llm-scaler-vllm:0.21.0-b1
+    xpu: vllm/vllm-openai-xpu:nightly
     dockerfile: local
   proxy:
     http_proxy: ${LOCAL_HTTP_PROXY:-}

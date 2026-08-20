@@ -5,23 +5,56 @@ Agent-driven **automatic model quantization + evaluation + self-healing**.
 A declarative, extensible framework that turns a single `run.yaml` into a
 `quantize → evaluate → gate` pipeline, with an agent fix/patch loop that
 root-causes and repairs environment/code failures and captures reviewable
-patches. Built to be **open-source** and to eventually **replace** the historic
-`local_dispatch`/`lb_eval` flow.
+patches.
 
-Design is grounded in the patterns proven by
-[NVIDIA-NeMo/Evaluator](https://github.com/NVIDIA-NeMo/Evaluator) (Apache-2.0):
-declarative recipes, a plugin registry, harness/backend/executor adapters, and
-`compare`/`gate`. The native evaluation kernel (scorer library + loop + dataset
-loading) is adapted from NeMo Evaluator — see `NOTICE`.
+## Design
+
+Four ideas shape the architecture:
+
+1. **Eval-centric.** Evaluation is the core job; *how the model is produced or
+   served* (a HF repo, a quantized checkpoint, a live endpoint) is a swappable
+   **`provider`**. Quantization is just one provider, not the center of gravity.
+2. **Declarative + reproducible.** One typed `run.yaml` is the single parse point
+   (`config.py`). Per-benchmark knobs live in pinned recipe files
+   (`recipes/benchmarks/*.yaml`), so a task's correct settings travel with the
+   task, not with every run. Secrets are referenced only via `*_env` variables.
+3. **Plugin registries, no forks.** Providers, harnesses, backends, executors,
+   sinks, recipe-stores and scorers are all resolved through entry-point
+   registries (`registry.py`). Adding a capability = shipping a small pip package
+   that declares an entry-point — the core repo never needs a fork.
+4. **Agent as operator.** A deterministic Python state-machine drives an
+   escalating agent fix-loop that diagnoses failures, applies quick-fixes, and —
+   on escalation — hands a structured prompt to a coding agent, capturing every
+   change as a reviewable patch. The kernel stays deterministic and unit-testable;
+   only in-container command execution is shell.
+
+```
+run.yaml ─▶ provider (pretrained│quantize│endpoint)
+              │ produces / serves the model-under-eval
+              ▼
+          evaluate (harness × backend, baseline optional)
+              │  ▲ agent fix-loop self-heals failures
+              ▼  │
+           gate (accuracy-drop / min-accuracy)
+              ▼
+           sinks (local_fs │ hf_dataset) + captured patches
+```
 
 ## Install
 
 ```bash
-pip install -e .                 # core (config + registry + CLI + native scoring)
-pip install -e ".[lm-eval]"      # + lm-evaluation-harness adapter
-pip install -e ".[hf]"           # + transformers/torch for the native HF runner
-pip install -e ".[dev]"          # + pytest/ruff
+pip install -e .              # core: config + registry + CLI + native scoring
+pip install -e ".[all]"       # + ssh, agent endpoints, swebench (no heavy DL stacks)
 ```
+
+Heavy or accelerator-specific stacks stay opt-in so the core install is light:
+
+| extra | adds | needed for |
+|---|---|---|
+| `lm-eval` | lm-evaluation-harness | the `lm_eval` harness (default eval path) |
+| `hf` | transformers + torch | the native in-process HF runner |
+| `ray` | ray | multi-endpoint sharded agentic eval |
+| `dev` | pytest + ruff | running the test suite / linting |
 
 ## Quick start
 
@@ -53,8 +86,8 @@ Composition: `_base_: other.yaml` (inherit + deep-merge, `null` deletes),
 ## Model providers: evaluation is the core, quantization is a plugin
 
 The framework is **eval-centric**: the primary job is to *evaluate a model*; how
-that model is produced/served is a pluggable **`provider`** (mirroring NeMo
-Evaluator's separation of the *served target* from the *benchmark*).
+that model is produced/served is a pluggable **`provider`** that cleanly separates
+the *served target* from the *benchmark*.
 
 | `provider.type` | What it evaluates |
 |---|---|
@@ -81,6 +114,50 @@ level keep working unchanged — the loader folds a top-level `quant:` into
 quantize provider's config. `examples/run_5000.yaml` runs as before. Add your own
 provider via the `aqa.providers` entry-point group.
 
+### Customizing the quantization algorithm
+
+The `quant:` block maps onto the [`auto-round`](https://github.com/intel/auto-round)
+CLI. Beyond `method` / `scheme` / `iters`, you can pick and **compose** the
+underlying algorithm(s) via `algorithm:` (a comma-separated chain, mapped to
+`--algorithm`):
+
+| `quant:` field | auto-round flag | Purpose |
+|---|---|---|
+| `method: model_free` | `--model_free` | calibration-free, weight-only (RTN) fast path |
+| `algorithm: rtn` | `--algorithm rtn` | round-to-nearest block quantizer |
+| `algorithm: auto_round` | `--algorithm auto_round` | SignRound iterative tuning (use with `iters: 200`) |
+| `algorithm: awq` | `--algorithm awq` | AWQ activation-aware smoothing (preprocessor) |
+| `algorithm: hadamard` | `--algorithm hadamard` | Hadamard rotation (preprocessor) |
+| `algorithm: svdquant` | `--algorithm svdquant` | SVD low-rank decomposition (preprocessor) |
+| `enable_alg_ext: true` | `--enable_alg_ext` | experimental SignRound extension ("auto-round v2") |
+| `hadamard_type: quarot_hadamard` | `--rotation-hadamard-type` | Hadamard variant: `hadamard` / `random_hadamard` / `quarot_hadamard` |
+| `opt_rtn: true` / `false` | `--enable_opt_rtn` / `--disable_opt_rtn` | RTN optimized rounding toggle |
+
+**Composition rules** (enforced at config-load time, mirroring auto-round):
+`awq`, `hadamard`, `svdquant` are **preprocessors** — they may be *stacked* and are
+applied left-to-right *before* quantization. `rtn` and `auto_round` are **block
+quantizers** — exactly one runs (omit and a default is supplied: `auto_round`, or
+`rtn` when `iters: 0`). So:
+
+```yaml
+# auto-round v2 tuning
+provider: { type: quantize, quant: { scheme: W4A16, algorithm: auto_round,
+                                     iters: 200, enable_alg_ext: true } }
+
+# AWQ smoothing then SignRound tuning
+quant: { scheme: W4A16, algorithm: "awq,auto_round", iters: 200 }
+
+# stack two preprocessors (AWQ + Hadamard rotation) before the default quantizer
+quant: { scheme: MXFP4, algorithm: "awq,hadamard", hadamard_type: quarot_hadamard }
+
+# pure optimized RTN
+quant: { scheme: W4A16, algorithm: rtn, opt_rtn: true }
+```
+
+Valid: `rtn`, `auto_round`, `awq`, `hadamard`, `svdquant`, `awq,auto_round`,
+`hadamard,auto_round`, `svdquant,rtn`, `awq,hadamard`, `awq,hadamard,auto_round`.
+Invalid: `rtn,auto_round` (two block quantizers → rejected).
+
 
 ### Remote dispatch: NVIDIA CUDA or Intel XPU
 
@@ -91,7 +168,7 @@ and default base image — no other config changes:
 ```yaml
 executor:
   type: ssh
-  image: { xpu: intel/llm-scaler-vllm:0.21.0-b1 }   # or `gpu:` for CUDA
+  image: { xpu: vllm/vllm-openai-xpu:nightly }   # or `gpu:` for CUDA
   ssh:
     host: sdp@192.168.11.2
     gpus: "0,1"                 # cuda -> --gpus device=; xpu -> ZE_AFFINITY_MASK
@@ -101,7 +178,7 @@ executor:
 ```
 
 - **cuda** → NGC base + `--gpus '"device=<ids>"'`, installs matching `vllm`.
-- **xpu** → Intel `llm-scaler-vllm` base + `/dev/dri` passthrough, `--privileged`,
+- **xpu** → `vllm/vllm-openai-xpu` base + `/dev/dri` passthrough, `--privileged`,
   `ZE_AFFINITY_MASK=<ids>`, `VLLM_WORKER_MULTIPROC_METHOD=spawn`. The base image
   already ships `vllm-xpu`, so aqa does **not** reinstall CUDA `vllm` (only
   `auto-round` + `lm-eval` on top). See `examples/run_b60_xpu.yaml`.
@@ -150,14 +227,14 @@ blocks only for run-wide policy (backend, global batch size, seed, model_args).
 **Breadth via lm_eval passthrough.** Any lm_eval task name works even without a
 recipe file — `benchmarks: [<task>]` synthesises a bare `lm_eval` passthrough, so
 lm-eval-harness's full catalogue is reachable. Curated recipes just pin the
-*correct* per-task settings so a task "just works": shipped ones now include the
-static instruct/base suite that NEL runs — `gpqa_diamond`, `mmlu_pro`, `ifeval`,
+*correct* per-task settings so a task "just works": shipped ones include a broad
+instruct/base suite — `gpqa_diamond`, `mmlu_pro`, `ifeval`,
 `bbh`, `truthfulqa`, `winogrande`, `openbookqa` (alongside `mmlu`, `gsm8k`,
 `hellaswag`, `arc_challenge`, `piqa`). Add one file to onboard the next task; you
 never reimplement the benchmark.
 
 **LLM-as-judge scoring** (`scorer: llm_judge`) covers the open-ended / rubric
-family (NEL's Gemini-judge AA-Omniscience, GDPVal pairwise/rubric). The judge is
+family (rubric-graded QA, pairwise preference). The judge is
 any OpenAI-compatible endpoint, configured per recipe under `scoring.judge`:
 
 ```yaml
@@ -188,7 +265,7 @@ container-backed runner (the default `LocalCodeRunner` runs on the host).
 ## Uploading results to a HF dataset
 
 The `hf_dataset` sink writes the **whole run** back to a Hugging Face dataset repo
-— matching what `local_dispatch` uploaded: `eval/` results **plus** agent fix
+— the full run: `eval/` results **plus** agent fix
 records (`logs/agent_fixes/*/attempt_N.log`, `prompt_N.txt`), captured patches
 (`patches/*.patch`), lessons, and summaries. Model weights and caches are
 excluded and secrets are scrubbed from every text file.
@@ -265,7 +342,7 @@ aqa/
   cli.py           run / eval / swebench / validate / list / compare
   providers/       pretrained | quantize | endpoint  (model-under-eval source)
   eval/
-    scoring.py     native scorer library (adapted from NeMo Evaluator)
+    scoring.py     native scorer library (see NOTICE for attributions)
     dataset.py     hf://…?split= URI loading + prompt templating
     registry.py    benchmark recipe schema + loader
     runner.py      orchestrate benchmarks across harnesses/backends
@@ -334,12 +411,12 @@ the in-container command execution stays in shell.
 ### Backend provisioning (remote runs)
 
 For the `ssh` executor, both fix-loop backends are installed and configured inside
-the container by default (parity with the local dispatch pipeline):
+the container by default:
 
 - The **`local` GPU image** (`docker/gpu.dockerfile`) bakes in Node.js + the
   **OpenClaw** CLI (the default tier-0 backend).
 - The **container bootstrap** (when `agent.fix_loop`/`optimize` is on) installs
-  Node if the base image lacks it (e.g. the Intel XPU image), installs OpenClaw if
+  Node if the base image lacks it (e.g. the vLLM XPU image), installs OpenClaw if
   missing, and adds the **Copilot** CLI when a copilot-backed tier
   (`opus`/`sonnet`/`minimax`) is configured.
 - `python -m aqa.agent.provision` then lays down `~/.openclaw` + `~/.copilot`

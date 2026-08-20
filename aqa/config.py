@@ -42,7 +42,83 @@ class QuantConfig(BaseModel):
     ignore_layers: str | None = None
     layer_config: dict[str, Any] | None = None
     quant_lm_head: bool = False
+    # --- Algorithm selection (maps to auto-round `--algorithm`) ---------------
+    # Comma-separated algorithm chain, e.g. "awq", "auto_round", "rtn",
+    # "hadamard", or a composition such as "awq,auto_round" (a transform plus a
+    # base quant algorithm). ``None`` lets auto-round pick its default (RTN when
+    # ``iters == 0`` else auto_round).
+    algorithm: str | None = None
+    # Enable the experimental SignRound extension ("auto-round v2"). Only has an
+    # effect for the auto_round base algorithm (``--enable_alg_ext``).
+    enable_alg_ext: bool = False
+    # Hadamard rotation variant when ``hadamard`` is in the algorithm chain
+    # (``--rotation-hadamard-type``). auto-round also auto-infers ``hadamard``
+    # into the chain when this is set.
+    hadamard_type: Literal["hadamard", "random_hadamard", "quarot_hadamard"] | None = None
+    # RTN optimized-rounding toggle (``--enable_opt_rtn`` / ``--disable_opt_rtn``).
+    opt_rtn: bool | None = None
     extra_args: list[str] = Field(default_factory=list)
+
+    _ALG_TOKENS = {
+        "rtn",
+        "auto_round",
+        "autoround",
+        "sign_round",
+        "signround",
+        "awq",
+        "hadamard",
+        "random_hadamard",
+        "quarot_hadamard",
+        "svdquant",
+    }
+    _AUTO_ROUND_TOKENS = {"auto_round", "autoround", "sign_round", "signround"}
+    # Preprocessors/transforms may be stacked (applied left->right before the
+    # terminal block-quantizer); block-quantizers are mutually exclusive.
+    _PREPROCESSOR_TOKENS = {
+        "awq",
+        "hadamard",
+        "random_hadamard",
+        "quarot_hadamard",
+        "svdquant",
+    }
+
+    @model_validator(mode="after")
+    def _validate_algorithm(self) -> QuantConfig:
+        tokens: list[str] = []
+        if self.algorithm:
+            tokens = [t.strip().lower() for t in self.algorithm.split(",") if t.strip()]
+            unknown = [t for t in tokens if t not in self._ALG_TOKENS]
+            if unknown:
+                raise ValueError(
+                    f"unknown quant algorithm(s) {unknown}; "
+                    f"choose from {sorted(self._ALG_TOKENS)} (comma-separated)"
+                )
+            # auto-round allows many preprocessors but exactly one block-quantizer.
+            block_kinds = set()
+            if "rtn" in tokens:
+                block_kinds.add("rtn")
+            if set(tokens) & self._AUTO_ROUND_TOKENS:
+                block_kinds.add("auto_round")
+            if len(block_kinds) > 1:
+                raise ValueError(
+                    "only one block-quantizer is allowed; 'rtn' and 'auto_round' "
+                    "are mutually exclusive (preprocessors awq/hadamard/svdquant "
+                    "may be stacked with a single quantizer, e.g. 'awq,auto_round')"
+                )
+            # model_free is calibration-free (RTN only); anything that needs
+            # calibration (auto_round tuning or a preprocessor) contradicts it.
+            if self.method == "model_free" and any(t != "rtn" for t in tokens):
+                raise ValueError(
+                    "method='model_free' is calibration-free and only supports "
+                    "algorithm='rtn'; set method='autoround' to use "
+                    f"{sorted(t for t in tokens if t != 'rtn')}"
+                )
+        if self.enable_alg_ext and tokens and not (set(tokens) & self._AUTO_ROUND_TOKENS):
+            raise ValueError(
+                "enable_alg_ext (auto-round v2) only applies to the auto_round "
+                "algorithm; add 'auto_round' to `algorithm` or drop enable_alg_ext"
+            )
+        return self
 
 
 class ModelUploadConfig(BaseModel):

@@ -2,19 +2,19 @@
 # (executor.type=ssh, executor.ssh.accelerator=xpu, image.dockerfile=local).
 #
 # Built + run by aqa/executors/ssh.py when the run targets an Intel GPU (B60 /
-# Arc / Data Center GPU Max). It sits on top of Intel's llm-scaler vLLM image so
+# Arc / Data Center GPU Max). It sits on top of the official vLLM XPU image so
 # the torch-xpu + vLLM-XPU stack (and the Level-Zero / oneAPI runtime) is already
 # present -- we deliberately do NOT reinstall torch or vllm here (a CUDA wheel
 # would clobber the XPU build and disable device enumeration). Only OS tooling,
 # uv, and the OpenClaw agent-fix backend are added, mirroring docker/gpu.dockerfile.
 #
 # Override the base at build time:
-#   docker build --build-arg BASE_IMAGE=intel/llm-scaler-vllm:0.21.0-b1 ...
-# or in run.yaml:  executor.image.xpu: intel/llm-scaler-vllm:0.21.0-b1
+#   docker build --build-arg BASE_IMAGE=vllm/vllm-openai-xpu:nightly ...
+# or in run.yaml:  executor.image.xpu: vllm/vllm-openai-xpu:nightly
 #
 # Verify the target host first: `docker run --device /dev/dri --privileged <base> \
 #   python -c "import torch; print(torch.xpu.is_available(), torch.xpu.device_count())"`.
-ARG BASE_IMAGE=intel/llm-scaler-vllm:0.21.0-b1
+ARG BASE_IMAGE=vllm/vllm-openai-xpu:nightly
 FROM ${BASE_IMAGE}
 
 ENV LANG=C.UTF-8 \

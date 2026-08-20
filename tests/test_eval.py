@@ -165,7 +165,7 @@ def test_xpu_dockerfile_selected_for_xpu_local():
     }
     cfg = parse_run_config(data)
     df = _dockerfile_bytes(cfg).decode()
-    assert "llm-scaler-vllm" in df
+    assert "vllm-openai-xpu" in df
     assert "openclaw" in df
 
 

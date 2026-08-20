@@ -24,6 +24,8 @@ ssh = ["paramiko>=3.0"]
 agent = ["httpx>=0.24"]
 swebench = ["pyarrow>=14"]
 ray = ["ray>=2.9"]
+# Convenience: everything except heavy accelerator stacks (torch/lm-eval).
+all = ["paramiko>=3.0", "httpx>=0.24", "pyarrow>=14"]
 dev = ["pytest>=7.0", "ruff>=0.4", "paramiko>=3.0", "httpx>=0.24"]
 
 [project.scripts]
