@@ -1,0 +1,6 @@
+name: NVFP4
+bits: 4
+group_size: 16
+data_type: nv_fp
+act_bits: 4
+notes: NVIDIA FP4 (group_size 16). Blackwell-class inference.

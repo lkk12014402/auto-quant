@@ -1,0 +1,11 @@
+id: python-sum
+instruction: |
+  Write a Python script named `sum.py` that prints the sum of the integers from
+  1 to 100 (which is 5050) and nothing else. Make sure `python3 sum.py` outputs
+  exactly 5050.
+max_turns: 8
+verify:
+  command: 'test "$(python3 sum.py)" = "5050"'
+  files:
+    - path: sum.py
+      exists: true

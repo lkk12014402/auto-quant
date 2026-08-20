@@ -1,0 +1,18 @@
+id: fix-add-bug
+instruction: |
+  The file `calc.py` defines `add(a, b)` but it is implemented incorrectly, so
+  `test_calc.py` fails. Fix `calc.py` so that running `python3 test_calc.py`
+  succeeds (it prints "ok" and exits 0).
+files:
+  calc.py: |
+    def add(a, b):
+        return a - b
+  test_calc.py: |
+    from calc import add
+
+    assert add(2, 3) == 5
+    assert add(10, 5) == 15
+    print("ok")
+max_turns: 8
+verify:
+  command: "python3 test_calc.py"

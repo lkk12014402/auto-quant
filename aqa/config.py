@@ -1,0 +1,380 @@
+"""Declarative run configuration for autoquant-agent.
+
+A single ``run.yaml`` describes an entire quantize -> evaluate -> compare run,
+replacing the historic ``local_dispatch`` chain of CLI flags + request.json +
+container env vars + ``source config.env`` overrides with one typed object and a
+single parse point.
+
+Composition features (Hydra-inspired, no Hydra dependency), mirroring the
+patterns proven by NeMo Evaluator's ``compose.py``:
+
+* ``_base_: other.yaml``          -- inherit a parent config, override only deltas.
+* ``${VAR}`` / ``${VAR:-default}`` -- environment-variable expansion in any string.
+* deep-merge semantics            -- child keys win; ``null`` deletes an inherited key.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import Any, Literal
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .logging_util import ConfigError
+
+_ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+_DELETE = object()  # sentinel: an explicit ``null`` override deletes the key
+
+
+# ── Sub-configs ──────────────────────────────────────────────────────────────
+class QuantConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scheme: str = "MXFP4"
+    method: Literal["model_free", "autoround"] = "model_free"
+    export_format: str = "llm_compressor"
+    recipe: str = "auto"  # "auto" => agent-optimize; or a path/key into recipe store
+    iters: int | None = None
+    nsamples: int | None = None
+    ignore_layers: str | None = None
+    layer_config: dict[str, Any] | None = None
+    quant_lm_head: bool = False
+    extra_args: list[str] = Field(default_factory=list)
+
+
+class ModelUploadConfig(BaseModel):
+    """Upload the quantized checkpoint to a Hugging Face *model* repo after a
+    successful run.  Minimal single-token/single-org port (no quota ledger)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str  # org/owner to create the model repo under
+    repo_name: str | None = None  # repo id under `repo`; default = artifact name
+    token_env: str | None = None
+    private: bool = False
+    endpoint: str | None = None
+    disable_xet: bool = False
+    model_card: bool = True
+
+
+class ProviderConfig(BaseModel):
+    """How the model-under-eval is produced/served (the eval-centric core).
+
+    A *provider* answers "where does the model being evaluated come from":
+
+    * ``pretrained`` -- a HF repo id or local path, evaluated as-is (default).
+    * ``quantize``   -- run autoquant (optionally agent-optimize + fix-loop) to
+      produce a quantized checkpoint, then evaluate that. Carries the historic
+      :class:`QuantConfig` fields, so quantization is now a *pluggable provider*
+      rather than the framework's reason for being.
+    * ``endpoint``   -- an already-served OpenAI-compatible endpoint (agentic
+      evals drive it directly; no local load).
+
+    Extra keys are forwarded to third-party provider plugins.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    type: str = "pretrained"
+    # `quantize` provider fields (mirror the legacy top-level `quant:` block).
+    quant: QuantConfig | None = None
+    # Optional: push the quantized checkpoint to a HF model repo on success.
+    upload: ModelUploadConfig | None = None
+    # `endpoint` provider fields.
+    base_url: str | None = None
+    api_key_env: str | None = None
+    served_model: str | None = None
+
+
+class GateConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_accuracy_drop: float | None = None  # quantized vs baseline; None => no gate
+    min_accuracy: float | None = None
+    significance: bool = False  # require the drop to be statistically significant
+    alpha: float = 0.05  # significance level for the paired/unpaired test
+
+
+class LmEvalOptions(BaseModel):
+    """Harness-specific knobs for the ``lm_eval`` backend.
+
+    ``model_args`` are extra ``key=value`` pairs appended to lm_eval's
+    ``--model_args`` (e.g. ``enable_thinking: false``, ``reasoning_parser: qwen3``,
+    ``max_num_seqs: 128``) — user overrides win over the backend defaults.
+    ``group`` merges benchmarks that share the same generation parameters into a
+    single ``lm_eval --tasks a,b,c`` call (e.g. piqa+hellaswag+mmlu), while tasks
+    needing distinct params (e.g. gsm8k) run separately.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_args: dict[str, Any] = Field(default_factory=dict)
+    gen_kwargs: dict[str, Any] = Field(default_factory=dict)  # default --gen_kwargs (generative)
+    apply_chat_template: bool | None = None  # global override (None => per-recipe)
+    fewshot_as_multiturn: bool | None = None
+    seed: int = 42
+    group: bool = True  # merge compatible tasks into one lm_eval invocation
+
+
+class EvalConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    benchmarks: list[str] = Field(default_factory=lambda: ["piqa", "mmlu", "hellaswag"])
+    backend: str = "hf"  # hf | vllm | vllm_xpu
+    harness: str = "lm_eval"  # default harness for bare tasks: lm_eval | evalscope | native
+    batch_size: str = "auto"
+    baseline: bool = False  # also evaluate the un-quantized bf16 model
+    limit: int | None = None  # cap samples per benchmark (smoke runs)
+    generative_tasks: list[str] = Field(default_factory=lambda: ["gsm8k"])
+    gen_max_toks: int = 2048
+
+    # Per-harness option blocks (differentiate the eval methods under `eval`).
+    lm_eval: LmEvalOptions = Field(default_factory=LmEvalOptions)
+    evalscope: dict[str, Any] = Field(default_factory=dict)  # passthrough for the plugin
+
+
+class PatchConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capture: bool = True
+    review: bool = False
+    track_vllm: bool = True
+
+
+class AgentConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fix_loop: bool = True
+    optimize: bool = False  # agent-optimize: analyse model -> produce quant recipe
+    tiers: list[str] = Field(default_factory=lambda: ["openclaw", "minimax", "opus"])
+    max_fix_attempts: int = 5
+    tier_attempt_budget: int = 3  # attempts on a tier before fail-safe escalation
+    drift_threshold: int = 2  # same error_class N times in a row -> escalate
+    agent_timeout: int = 1200  # per-attempt agent wall-clock budget (seconds)
+    context: str | None = None  # inline text or "@file" (resolved by loader)
+    patch: PatchConfig = Field(default_factory=PatchConfig)
+
+
+class SshAuth(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    method: Literal["password", "key", "agent"] = "agent"
+    password_env: str | None = None  # secrets are ONLY referenced via env, never inline
+    key_file: str | None = None
+
+
+class SshHop(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    host: str
+    auth: SshAuth = Field(default_factory=SshAuth)
+
+
+class SshConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    host: str
+    gpus: str = "0"
+    # Accelerator family of the remote host.  "cuda" => NVIDIA (`--gpus device=`);
+    # "xpu" => Intel GPU (`/dev/dri` passthrough + `ZE_AFFINITY_MASK`, Intel vllm
+    # base image).  Selects both the device flags and the default base image.
+    accelerator: Literal["cuda", "xpu"] = "cuda"
+    auth: SshAuth = Field(default_factory=SshAuth)
+    jump: list[SshHop] = Field(default_factory=list)
+
+
+class ImageConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    gpu: str | None = None
+    xpu: str | None = None
+    # "local" => build an independent Dockerfile shipped with the repo on top of
+    # `gpu`/`xpu` as the base image; a path => use that Dockerfile; None => run the
+    # base image directly. Mirrors local_dispatch's `--gpu-dockerfile local`.
+    dockerfile: str | None = None
+    build_args: dict[str, str] = Field(default_factory=dict)
+    # Extra pip packages installed inside the container by the bootstrap, in
+    # addition to the auto-derived stack (aqa + auto-round + lm-eval, plus vllm
+    # when the eval backend is vllm). Use to pin versions or add flashinfer, etc.
+    pip_install: list[str] = Field(default_factory=list)
+
+
+class ProxyConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    http_proxy: str | None = None
+    https_proxy: str | None = None
+    no_proxy: str | None = None
+
+
+class ExecutorConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = "local"  # local | ssh | intel_reserve (plugin) | <your plugin>
+    image: ImageConfig = Field(default_factory=ImageConfig)
+    proxy: ProxyConfig = Field(default_factory=ProxyConfig)
+    ssh: SshConfig | None = None
+    machines_file: str | None = None
+    options: dict[str, Any] = Field(default_factory=dict)  # forwarded to plugin executors
+
+
+class SinkConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # extra keys forwarded to the sink plugin
+
+    type: str
+
+
+class OutputConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dir: str = "./results"
+    sinks: list[SinkConfig] = Field(default_factory=lambda: [SinkConfig(type="local_fs")])
+
+
+# ── Top-level ────────────────────────────────────────────────────────────────
+class RunConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: str
+    # Eval-centric core: `provider` says how the model-under-eval is produced.
+    # Legacy top-level `quant:` is folded into `provider: {type: quantize}` by the
+    # loader (see `_normalize_provider`), so old run.yaml files keep working.
+    provider: ProviderConfig = Field(default_factory=ProviderConfig)
+    eval: EvalConfig = Field(default_factory=EvalConfig)
+    gate: GateConfig | None = None
+    agent: AgentConfig = Field(default_factory=AgentConfig)
+    executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
+    output: OutputConfig = Field(default_factory=OutputConfig)
+
+    @property
+    def quant(self) -> QuantConfig | None:
+        """Back-compat accessor: the quantize provider's :class:`QuantConfig`.
+
+        Returns ``None`` unless the resolved provider is ``quantize`` (so existing
+        ``run_cfg.quant is None`` checks in the pipeline keep their meaning).
+        """
+        if self.provider.type == "quantize":
+            return self.provider.quant
+        return None
+
+    @model_validator(mode="after")
+    def _check(self) -> RunConfig:
+        if "/" not in self.model and not Path(self.model).exists():
+            raise ConfigError(
+                f"model must be a HF repo id (org/name) or a local path, got {self.model!r}"
+            )
+        if self.provider.type == "quantize" and self.provider.quant is None:
+            self.provider.quant = QuantConfig()
+        return self
+
+
+# ── Loading / composition ────────────────────────────────────────────────────
+def _expand_env(value: Any) -> Any:
+    """Recursively expand ``${VAR}`` / ``${VAR:-default}`` in strings."""
+    if isinstance(value, str):
+        def repl(m: re.Match) -> str:
+            var, default = m.group(1), m.group(2)
+            if var in os.environ:
+                return os.environ[var]
+            if default is not None:
+                return default
+            raise ConfigError(f"environment variable ${{{var}}} is not set and has no default")
+        return _ENV_PATTERN.sub(repl, value)
+    if isinstance(value, dict):
+        return {k: _expand_env(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand_env(v) for v in value]
+    return value
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Deep-merge ``override`` onto ``base``; ``null`` in override deletes a key."""
+    out = dict(base)
+    for key, val in override.items():
+        if val is None and key in out:
+            out.pop(key)
+            continue
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], val)
+        else:
+            out[key] = val
+    return out
+
+
+def _load_raw(path: Path, _seen: set[Path]) -> dict:
+    """Load a YAML file, resolving a single ``_base_`` chain (relative to the file)."""
+    path = path.resolve()
+    if path in _seen:
+        raise ConfigError(f"circular _base_ reference at {path}")
+    _seen.add(path)
+    if not path.exists():
+        raise ConfigError(f"config file not found: {path}")
+    data = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(data, dict):
+        raise ConfigError(f"config root must be a mapping: {path}")
+    base_ref = data.pop("_base_", None)
+    if base_ref:
+        base_path = (path.parent / base_ref).resolve()
+        base_data = _load_raw(base_path, _seen)
+        data = _deep_merge(base_data, data)
+    return data
+
+
+def _resolve_context(agent: dict, base_dir: Path) -> None:
+    """Resolve an ``agent.context: "@file"`` reference into inline text."""
+    ctx = agent.get("context")
+    if isinstance(ctx, str) and ctx.startswith("@"):
+        ctx_path = (base_dir / ctx[1:]).resolve()
+        if not ctx_path.exists():
+            raise ConfigError(f"agent.context file not found: {ctx_path}")
+        agent["context"] = ctx_path.read_text()
+
+
+def _normalize_provider(raw: dict) -> dict:
+    """Fold a legacy top-level ``quant:`` block into ``provider: {type: quantize}``.
+
+    Eval-centric configs use ``provider:``; older quant-centric run.yaml files put
+    ``quant:`` at the top level.  This shim keeps those working unchanged: a
+    top-level ``quant`` becomes the quantize provider's config.  Raises if a config
+    sets both ``quant:`` and a non-quantize ``provider:`` (ambiguous intent).
+    """
+    if not isinstance(raw, dict) or "quant" not in raw:
+        return raw
+    quant = raw.pop("quant")
+    if quant is None:  # explicit `quant: null` => eval-only, just drop it.
+        return raw
+    provider = raw.get("provider")
+    if provider is None:
+        raw["provider"] = {"type": "quantize", "quant": quant}
+    elif isinstance(provider, dict):
+        ptype = provider.get("type", "quantize")
+        if ptype != "quantize":
+            raise ConfigError(
+                f"config sets top-level `quant:` but provider.type={ptype!r}; "
+                "move quant under `provider: {type: quantize, quant: {...}}`"
+            )
+        provider.setdefault("type", "quantize")
+        provider.setdefault("quant", quant)
+    return raw
+
+
+def load_run_config(path: str | Path) -> RunConfig:
+    """Load, compose, env-expand, and validate a ``run.yaml`` into a RunConfig."""
+    p = Path(path)
+    raw = _load_raw(p, set())
+    raw = _expand_env(raw)
+    raw = _normalize_provider(raw)
+    if isinstance(raw.get("agent"), dict):
+        _resolve_context(raw["agent"], p.resolve().parent)
+    try:
+        return RunConfig.model_validate(raw)
+    except Exception as exc:  # pydantic ValidationError -> ConfigError
+        raise ConfigError(f"invalid run config {p}: {exc}") from exc
+
+
+def parse_run_config(data: dict) -> RunConfig:
+    """Validate an in-memory dict (already composed) into a RunConfig."""
+    return RunConfig.model_validate(_normalize_provider(_expand_env(dict(data))))

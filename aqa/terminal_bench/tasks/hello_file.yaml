@@ -1,0 +1,9 @@
+id: hello-file
+instruction: |
+  Create a file named `hello.txt` in the current directory whose contents are
+  exactly the single line: hello world
+max_turns: 6
+verify:
+  files:
+    - path: hello.txt
+      equals: "hello world"

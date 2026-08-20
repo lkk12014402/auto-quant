@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "profiles": {
+    "minimax-global": {
+      "provider": "minimax",
+      "type": "api_key",
+      "key": "<your-minimax-api-key>"
+    },
+    "litellm:default": {
+      "type": "api_key",
+      "provider": "litellm",
+      "key": "<your-litellm-api-key>"
+    },
+    "minimax:cn": {
+      "type": "api_key",
+      "provider": "minimax",
+      "key": "<your-minimax-cn-api-key>"
+    },
+    "minimax:global": {
+      "type": "api_key",
+      "provider": "minimax",
+      "key": "<your-minimax-api-key>"
+    }
+  },
+  "lastGood": {
+    "minimax": "minimax:cn"
+  },
+  "usageStats": {}
+}

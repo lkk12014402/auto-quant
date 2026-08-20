@@ -1,0 +1,168 @@
+"""``aqa`` command-line interface.
+
+Verbs mirror NeMo Evaluator's ``nel``: run / eval / quant / validate / list /
+compare / gate / report -- a clear, declarative surface over the pipeline.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import click
+
+from . import __version__
+from .config import load_run_config
+from .eval.registry import BenchmarkRegistry
+from .logging_util import AqaError, get_logger
+from .registry import EXECUTORS, all_registries
+
+_log = get_logger("cli")
+
+
+@click.group()
+@click.version_option(__version__, prog_name="aqa")
+def main() -> None:
+    """autoquant-agent: agent-driven quantize / evaluate / self-heal."""
+
+
+@main.command()
+@click.argument("config", type=click.Path(exists=True, dir_okay=False))
+@click.option("--dry-run", is_flag=True, help="Validate and print the plan without executing.")
+@click.option("--resume", is_flag=True, help="Resume an interrupted run if detected.")
+def run(config: str, dry_run: bool, resume: bool) -> None:
+    """Run a full quantize -> evaluate -> gate pipeline from a run.yaml."""
+    cfg = load_run_config(config)
+    executor = EXECUTORS.create(cfg.executor.type, **cfg.executor.options)
+    result = executor.run(cfg, dry_run=dry_run, resume=resume)
+    click.echo(f"state={result.state.value} output={result.output_dir}")
+
+
+@main.command()
+@click.argument("config", type=click.Path(exists=True, dir_okay=False))
+def validate(config: str) -> None:
+    """Type-check + sanity-check a run.yaml (no execution)."""
+    cfg = load_run_config(config)
+    reg = BenchmarkRegistry()
+    known = set(reg.names())
+    unknown = [b for b in cfg.eval.benchmarks if b not in known]
+    click.echo(f"OK: model={cfg.model} executor={cfg.executor.type} backend={cfg.eval.backend}")
+    click.echo(f"    benchmarks={cfg.eval.benchmarks}")
+    if unknown:
+        click.echo(f"    note: no recipe file for {unknown} (will fall back to bare lm_eval tasks)")
+    if cfg.executor.type not in EXECUTORS.names():
+        raise click.ClickException(f"unknown executor {cfg.executor.type!r}")
+    if cfg.eval.backend not in _backend_names():
+        raise click.ClickException(f"unknown backend {cfg.eval.backend!r}")
+
+
+@main.command()
+@click.argument("dataset", type=click.Path(exists=True, dir_okay=False))
+@click.option("--base-url", required=True, help="OpenAI-compatible endpoint of the served model.")
+@click.option("--model", "served_model", required=True, help="Served model name (endpoint id).")
+@click.option("--api-key-env", default=None, help="Env var holding the endpoint API key.")
+@click.option("--out", type=click.Path(), default="./results/swebench", help="Output directory.")
+@click.option("--limit", type=int, default=None, help="Cap the number of instances.")
+@click.option("--instance-id", "instance_ids", multiple=True, help="Only these instance ids.")
+@click.option("--difficulty", default=None, help="Only instances of this difficulty.")
+@click.option("--concurrency", type=int, default=4, help="Instances graded in parallel.")
+@click.option("--max-turns", type=int, default=40, help="ReAct turn budget per instance.")
+@click.option("--namespace", default="swebench", help="Docker namespace for eval images.")
+def swebench(
+    dataset: str, base_url: str, served_model: str, api_key_env: str | None, out: str,
+    limit: int | None, instance_ids: tuple[str, ...], difficulty: str | None,
+    concurrency: int, max_turns: int, namespace: str,
+) -> None:
+    """Evaluate a served model on SWE-bench Verified (agentic, official scoring)."""
+    import os
+
+    from .agent_eval.client import ModelClient
+    from .swebench import load_swebench, run_swebench
+    from .swebench.run import default_sandbox_factory
+
+    instances = load_swebench(
+        dataset, instance_ids=list(instance_ids) or None,
+        limit=limit, difficulty=difficulty)
+    if not instances:
+        raise click.ClickException("no SWE-bench instances selected")
+    api_key = os.environ.get(api_key_env) if api_key_env else None
+    client = ModelClient(base_url=base_url, model=served_model, api_key=api_key)
+    _, report = run_swebench(
+        instances, client, model_name=served_model, out_dir=out,
+        concurrency=concurrency, max_turns=max_turns,
+        sandbox_factory=default_sandbox_factory(namespace=namespace),
+    )
+    resolved = sum(1 for r in report.results if r.resolved)
+    click.echo(f"SWE-bench: resolved {resolved}/{len(report.results)} "
+               f"({100 * report.resolved_rate:.1f}%) -> {out}")
+
+
+@main.command(name="list")
+@click.option("--what", type=click.Choice(["benchmarks", "plugins", "all"]), default="all")
+def list_cmd(what: str) -> None:
+    """List available benchmarks and/or registered plugins."""
+    if what in ("benchmarks", "all"):
+        click.echo("benchmarks:")
+        for name in BenchmarkRegistry().names():
+            click.echo(f"  {name}")
+    if what in ("plugins", "all"):
+        click.echo("plugins:")
+        for group, reg in all_registries().items():
+            click.echo(f"  {group}: {', '.join(reg.names()) or '<none>'}")
+
+
+@main.command()
+@click.argument("config", type=click.Path(exists=True, dir_okay=False))
+@click.option("--out", type=click.Path(), default="./results", help="Output directory.")
+def eval(config: str, out: str) -> None:
+    """Evaluate a model (no quantization) from a run.yaml, locally in-process."""
+    from .eval.runner import run_evaluation
+
+    cfg = load_run_config(config)
+    result = run_evaluation(cfg.model, cfg.eval, Path(out))
+    click.echo(json.dumps(result.to_dict(), indent=2))
+
+
+@main.command()
+@click.argument("baseline", type=click.Path(exists=True))
+@click.argument("candidate", type=click.Path(exists=True))
+def compare(baseline: str, candidate: str) -> None:
+    """Compare two accuracy.json result dirs/files and print score deltas."""
+    b = _load_accuracy(baseline)
+    c = _load_accuracy(candidate)
+    click.echo(f"{'benchmark':<20}{'baseline':>10}{'candidate':>12}{'delta':>10}")
+    for name in sorted(set(b) | set(c)):
+        bs, cs = b.get(name), c.get(name)
+        delta = (cs - bs) if (bs is not None and cs is not None) else float("nan")
+        click.echo(f"{name:<20}{_fmt(bs):>10}{_fmt(cs):>12}{delta:>10.4f}")
+
+
+def _fmt(v):
+    return "-" if v is None else f"{v:.4f}"
+
+
+def _load_accuracy(path: str) -> dict[str, float]:
+    p = Path(path)
+    if p.is_dir():
+        p = p / "accuracy.json"
+    data = json.loads(p.read_text())
+    return {k: v.get("score") for k, v in data.get("results", {}).items()}
+
+
+def _backend_names() -> list[str]:
+    from .registry import BACKENDS
+
+    return BACKENDS.names()
+
+
+def main_entry() -> None:  # pragma: no cover
+    try:
+        main()
+    except AqaError as exc:
+        click.echo(f"error: {exc}", err=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main_entry()

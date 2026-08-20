@@ -1,0 +1,25 @@
+# gsm8k: grade-school math word problems.
+#
+# Generative task — the model must PRODUCE the answer, so it needs the chat
+# template applied, few-shot examples fed as prior turns, and a generation budget.
+# All of these per-task knobs live HERE (single source of truth) rather than in
+# run.yaml, so every run that evaluates gsm8k gets the same, correct settings.
+#
+# This mirrors scripts/t_vllm.sh / t_hf.sh:
+#   lm_eval ... --tasks gsm8k --batch_size 64 \
+#       --apply_chat_template --fewshot_as_multiturn --gen_kwargs max_gen_toks=2048
+name: gsm8k
+harness: lm_eval
+type: generative
+
+apply_chat_template: true      # wrap prompts in the model's chat template
+fewshot_as_multiturn: true     # feed the few-shot examples as prior chat turns
+num_fewshot: 5                 # gsm8k standard: 5-shot
+gen_kwargs: { max_gen_toks: 2048 }   # generation budget (hf backend passes --gen_kwargs)
+batch_size: "64"               # per-task override (scripts use 64, not auto)
+
+scoring:
+  metric: "exact_match,strict-match"
+  prefer: ["exact_match,strict-match", "exact_match,flexible-extract"]
+
+description: Grade-school math word problems (generative, chat-template).

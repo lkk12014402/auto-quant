@@ -1,0 +1,21 @@
+# IFBench / IFEval: verifiable instruction-following (NEL instruct suite).
+# Prompts carry checkable constraints ("answer in 3 bullet points", "no commas").
+# Generative; lm_eval grades with deterministic verifiers, no model judge needed.
+name: ifeval
+harness: lm_eval
+lm_eval_task: ifeval
+type: generative
+
+apply_chat_template: true
+fewshot_as_multiturn: false
+num_fewshot: 0
+gen_kwargs: { max_gen_toks: 2048 }
+
+scoring:
+  metric: "prompt_level_strict_acc,none"
+  prefer:
+    - "prompt_level_strict_acc,none"
+    - "inst_level_strict_acc,none"
+    - "prompt_level_loose_acc,none"
+
+description: Instruction-following with verifiable constraints (strict prompt-level acc).

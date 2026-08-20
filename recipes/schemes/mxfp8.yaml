@@ -1,0 +1,8 @@
+name: MXFP8
+bits: 8
+group_size: 32
+data_type: mx_fp
+act_bits: 8
+act_data_type: mx_fp
+act_group_size: 32
+notes: MX FP8; higher accuracy than MXFP4, larger footprint.

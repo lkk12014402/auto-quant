@@ -1,0 +1,5 @@
+name: W4A16
+bits: 4
+group_size: 128
+act_bits: 16
+notes: Weight-only 4-bit, 16-bit activations. Broadest hardware support.

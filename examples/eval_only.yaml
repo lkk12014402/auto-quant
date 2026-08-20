@@ -1,0 +1,10 @@
+# Evaluate an existing model with no quantization (eval is a first-class verb).
+model: Qwen/Qwen3-0.6B
+eval:
+  benchmarks: [piqa, hellaswag]
+  backend: hf
+  limit: 8            # smoke: cap samples per benchmark
+executor:
+  type: local
+output:
+  dir: ./results/qwen3-0.6b-eval

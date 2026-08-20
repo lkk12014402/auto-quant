@@ -1,0 +1,6 @@
+name: truthfulqa
+harness: lm_eval
+lm_eval_task: truthfulqa_mc2
+type: loglikelihood
+scoring: { metric: "acc,none" }
+description: TruthfulQA multiple-choice (MC2) — truthfulness under misconceptions.

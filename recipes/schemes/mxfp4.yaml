@@ -1,0 +1,13 @@
+name: MXFP4
+bits: 4
+group_size: 32
+data_type: mx_fp
+act_bits: 4
+act_data_type: mx_fp
+act_group_size: 32
+act_sym: true
+act_dynamic: true
+notes: >
+  OCP MX standard, E8M0 (uint8) scale, group_size fixed at 32. Recommended export
+  format llm_compressor (vLLM-loadable). Inference needs compute capability >= 9.0
+  (H100/B200) or Triton >= 3.4 + triton_kernels. enable_alg_ext improves accuracy.

@@ -1,0 +1,14 @@
+autoquant-agent
+Copyright 2026 autoquant-agent contributors
+
+This product includes software adapted from the following Apache-2.0 projects:
+
+- NVIDIA-NeMo/Evaluator (https://github.com/NVIDIA-NeMo/Evaluator)
+  Portions of the native evaluation kernel (scorer library, evaluation loop,
+  dataset URI loading, and sandbox handling under aqa/eval/) are adapted from
+  NeMo Evaluator, licensed under the Apache License, Version 2.0.
+
+- EleutherAI/lm-evaluation-harness (https://github.com/EleutherAI/lm-evaluation-harness)
+  Used as an optional evaluation harness via the `lm_eval` adapter.
+
+Each adapted file retains an attribution header pointing to its upstream source.

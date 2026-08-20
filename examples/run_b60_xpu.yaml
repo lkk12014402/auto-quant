@@ -1,0 +1,89 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Port of local_dispatch's Intel B60 (XPU) path  ->  a single declarative run.
+#
+# This mirrors what local_dispatch/xpu/xpu_dispatch.py did on the b60-xpu host,
+# but through the SAME `aqa run` pipeline used for CUDA -- the only difference is
+# `executor.ssh.accelerator: xpu`, which switches the remote docker run to Intel
+# GPU passthrough (/dev/dri + ZE_AFFINITY_MASK) and the Intel vllm-xpu base image.
+#
+# Target machine: Intel B60 (8 cards) reached over a 3-hop SSH chain:
+#   tensorflow@<jump>  ->  guest@146.152.205.45  ->  sdp@192.168.11.2
+#
+# Every secret is read ONLY from an environment variable -- nothing private is
+# stored in this file (safe to commit).  Provide them via a git-ignored `env.sh`
+# you `source` before `aqa run`:
+#   export LOCAL_JUMP_SSH_PASS=...   # first hop (tensorflow jump)
+#   export B60_SSH_PASS=...          # final hop (sdp@192.168.11.2)
+#   export LOCAL_RESULTS_HF_TOKEN=...
+# ─────────────────────────────────────────────────────────────────────────────
+
+model: Qwen/Qwen3-0.6B
+
+quant:
+  scheme: MXFP4                # Intel XPU MXFP4 path
+  method: model_free          # weight-only RTN, no calibration
+  export_format: llm_compressor  # MXFP4 model-free forces llm_compressor
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm               # vllm auto-detects the XPU device inside the Intel image
+  batch_size: auto
+  baseline: true              # also eval the bf16 original for the accuracy gate
+  harness: lm_eval            # default harness for bare tasks (lm_eval | evalscope | native)
+  lm_eval:
+    # Extra `--model_args` appended to the backend defaults (user overrides win).
+    # Qwen3 reasoning models: disable thinking + set the reasoning parser for eval.
+    model_args:
+      enable_thinking: false
+      reasoning_parser: qwen3
+      max_num_seqs: 128
+    group: true               # piqa+hellaswag+mmlu run in ONE lm_eval call; gsm8k
+                              # runs separately per its recipe
+                              # (recipes/benchmarks/gsm8k.yaml: chat-template +
+                              # fewshot-as-multiturn + num_fewshot:5 + batch_size:64).
+    seed: 42
+
+gate:
+  max_accuracy_drop: 0.02     # NO-GO if MXFP4 drops > 2 pts vs the bf16 baseline
+
+agent:
+  optimize: true              # analyse model -> quant recipe (MoE ignore, router protection)
+  fix_loop: true              # root-cause + fix + retry failing phases
+  context: "@xpu_context.txt" # Intel XPU / vllm-xpu environment notes for the agent
+  tiers: [opus]
+  patch:
+    capture: true
+
+executor:
+  type: ssh
+  image:
+    # Intel base image ships torch-xpu + vLLM-XPU. `dockerfile: local` builds the
+    # shipped docker/xpu.dockerfile ON TOP of it (adds tooling + Node + openclaw for
+    # the agent fix-loop) WITHOUT reinstalling torch/vllm. Omit `dockerfile` to run
+    # the base image directly (the bootstrap then installs Node/openclaw at runtime).
+    xpu: intel/llm-scaler-vllm:0.21.0-b1
+    dockerfile: local
+  proxy:
+    http_proxy: ${LOCAL_HTTP_PROXY:-}
+    https_proxy: ${LOCAL_HTTPS_PROXY:-}
+  ssh:
+    host: ${B60_HOST:-sdp@192.168.11.2}
+    gpus: "0,1"               # ZE_AFFINITY_MASK re-indexes these to 0..N-1 in-container
+    accelerator: xpu          # <- switches device flags + base image to Intel XPU
+    auth:
+      method: password
+      password_env: B60_SSH_PASS
+    jump:
+      - host: ${B60_JUMP_HOST:-tensorflow@jump-box}
+        auth: { method: password, password_env: LOCAL_JUMP_SSH_PASS }
+      - host: ${B60_HOP2_HOST:-guest@146.152.205.45}
+        auth: { method: key }   # jump-host key ~/.ssh/id_rsa_4096
+
+output:
+  dir: ./results/qwen3-0.6b-mxfp4-xpu
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+      request_filename: true

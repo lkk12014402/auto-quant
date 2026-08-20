@@ -1,0 +1,16 @@
+# BBH: BIG-Bench Hard, 23 challenging reasoning subtasks, 3-shot chain-of-thought.
+name: bbh
+harness: lm_eval
+lm_eval_task: bbh_cot_fewshot
+type: generative
+
+apply_chat_template: true
+fewshot_as_multiturn: true
+num_fewshot: 3
+gen_kwargs: { max_gen_toks: 1024 }
+
+scoring:
+  metric: "exact_match,get-answer"
+  prefer: ["exact_match,get-answer", "exact_match,none", "acc,none"]
+
+description: BIG-Bench Hard reasoning suite (3-shot CoT).

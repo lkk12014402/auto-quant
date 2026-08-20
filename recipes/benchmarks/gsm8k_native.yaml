@@ -1,0 +1,9 @@
+name: gsm8k_native
+harness: native
+type: generative
+dataset: hf://openai/gsm8k?split=test&name=main
+prompt: "Question: {question}\nAnswer:"
+target_field: answer
+gen_kwargs: { max_gen_toks: 256 }
+scoring: { scorer: numeric_match }
+description: GSM8K via the native kernel (dataset URI + prompt + numeric_match scorer).

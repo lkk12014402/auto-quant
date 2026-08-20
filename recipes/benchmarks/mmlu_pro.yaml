@@ -1,0 +1,18 @@
+# MMLU-Pro: 10-choice, reasoning-heavy successor to MMLU (NEL instruct suite).
+# Standard setup is 5-shot chain-of-thought, generative (the model writes the
+# reasoning then "The answer is (X)"), scored by exact-match on the extracted letter.
+name: mmlu_pro
+harness: lm_eval
+lm_eval_task: mmlu_pro
+type: generative
+
+apply_chat_template: true
+fewshot_as_multiturn: true
+num_fewshot: 5
+gen_kwargs: { max_gen_toks: 2048 }
+
+scoring:
+  metric: "exact_match,custom-extract"
+  prefer: ["exact_match,custom-extract", "exact_match,none", "acc,none"]
+
+description: Massive multitask language understanding, professional 10-choice (5-shot CoT).

@@ -1,0 +1,24 @@
+# Example: open-ended QA graded by an LLM judge (the "model-as-judge" family that
+# NEL uses for AA-Omniscience / GDPVal). The native kernel renders the prompt,
+# generates with the model under test, then the `llm_judge` scorer asks a judge
+# endpoint to rate correctness 0..scale and normalises to [0, 1].
+#
+# The judge is any OpenAI-compatible endpoint. Set OPENAI_BASE_URL / the api key
+# env below. Swap `dataset` for your own open-ended set.
+name: openqa_judge
+harness: native
+type: generative
+dataset: hf://openai/gsm8k?split=test&name=main
+prompt: "Answer the question.\n\nQuestion: {question}\nAnswer:"
+target_field: answer
+gen_kwargs: { max_gen_toks: 512 }
+
+scoring:
+  scorer: llm_judge
+  judge:
+    model: gpt-4o-mini
+    api_key_env: OPENAI_API_KEY
+    scale: 10
+    # threshold: 7        # uncomment to binarise into pass/fail
+
+description: Open-ended QA graded by an LLM judge (model-as-judge / rubric).

@@ -1,0 +1,25 @@
+# Full quantize -> evaluate -> gate run on a local GPU machine.
+model: Qwen/Qwen3-0.6B
+quant:
+  scheme: MXFP4
+  method: model_free
+  export_format: llm_compressor
+  recipe: auto            # auto => agent-optimize; or a key/path into the recipe store
+eval:
+  benchmarks: [piqa, hellaswag, gsm8k]
+  backend: vllm           # hf | vllm | vllm_xpu (plugin)
+  batch_size: auto
+  baseline: true          # also evaluate the bf16 original for comparison
+gate:
+  max_accuracy_drop: 0.02 # NO-GO if quantized drops > 2% vs baseline
+agent:
+  fix_loop: true
+  optimize: true
+  tiers: [openclaw, minimax, opus]
+executor:
+  type: local             # local | ssh | intel_reserve (plugin)
+output:
+  dir: ./results/qwen3-0.6b-mxfp4
+  sinks:
+    - type: local_fs
+    # - { type: hf_dataset, repo: your-org/lb_local }

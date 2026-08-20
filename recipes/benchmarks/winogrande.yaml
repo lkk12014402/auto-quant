@@ -1,0 +1,7 @@
+name: winogrande
+harness: lm_eval
+lm_eval_task: winogrande
+type: loglikelihood
+num_fewshot: 5
+scoring: { metric: "acc,none" }
+description: Winograd-style commonsense coreference (5-shot, loglikelihood).

@@ -1,0 +1,5 @@
+name: mmlu
+harness: lm_eval
+type: loglikelihood
+scoring: { metric: "acc,none" }
+description: Massive multitask language understanding (57 subjects).

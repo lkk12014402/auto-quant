@@ -1,0 +1,18 @@
+This run executes on NVIDIA CUDA GPUs (RTX 5000 Pro), inside the NGC container
+`nvcr.io/nvidia/pytorch:26.01-py3` (built as an independent local Dockerfile).
+
+Environment conventions for the quantize + evaluate phases:
+- Use the container's preinstalled PyTorch/CUDA stack. Do NOT create a new venv or
+  conda env, and do NOT reinstall/downgrade torch (the image ships a matched
+  torch + CUDA build; `pip install torch` can pull a mismatched wheel and break it).
+- If you hit a vLLM error, first check whether the installed vLLM matches the
+  container's torch/CUDA; prefer the matching prebuilt wheel, or build vLLM from
+  source against the container's torch if a source fix is required.
+- Select GPUs with `CUDA_VISIBLE_DEVICES` (this run is pinned to card 6).
+- Keep custom model code on CUDA: `.cuda()` / `device='cuda'` are fine here.
+- For MXFP8 export via llm_compressor, verify the produced checkpoint loads back
+  under vLLM before declaring the quantize phase successful.
+
+When a phase fails, root-cause from the captured logs (driver/CUDA/toolkit version
+mismatches are the most common cause on a fresh image), apply the minimal fix,
+and retry. If the fix belongs in the auto-round tool itself, capture it as a patch.

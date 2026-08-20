@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autoquant-agent"
+version = "0.1.0"
+description = "Agent-driven automatic model quantization, evaluation, and self-healing framework."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "autoquant-agent contributors" }]
+keywords = ["quantization", "llm", "evaluation", "auto-round", "agent", "vllm"]
+dependencies = [
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+lm-eval = ["lm-eval>=0.4.0"]
+hf = ["transformers>=4.40", "torch>=2.1"]
+ssh = ["paramiko>=3.0"]
+agent = ["httpx>=0.24"]
+swebench = ["pyarrow>=14"]
+ray = ["ray>=2.9"]
+dev = ["pytest>=7.0", "ruff>=0.4", "paramiko>=3.0", "httpx>=0.24"]
+
+[project.scripts]
+aqa = "aqa.cli:main_entry"
+
+# ── Plugin registries (open-source extension points) ──────────────────────────
+# Third parties add executors / harnesses / backends / sinks / recipe-stores /
+# scorers by publishing a pip package that declares one of these entry-point
+# groups — no fork of the core repo required.
+[project.entry-points."aqa.providers"]
+pretrained = "aqa.providers.builtin:PretrainedProvider"
+quantize = "aqa.providers.builtin:QuantizeProvider"
+endpoint = "aqa.providers.builtin:EndpointProvider"
+
+[project.entry-points."aqa.executors"]
+local = "aqa.executors.local:LocalExecutor"
+ssh = "aqa.executors.ssh:SshExecutor"
+
+[project.entry-points."aqa.harnesses"]
+native = "aqa.eval.harness.native:NativeHarness"
+lm_eval = "aqa.eval.harness.lm_eval:LmEvalHarness"
+
+[project.entry-points."aqa.backends"]
+hf = "aqa.backends.hf:HfBackend"
+vllm = "aqa.backends.vllm:VllmBackend"
+
+[project.entry-points."aqa.sinks"]
+local_fs = "aqa.report.sinks:LocalFsSink"
+hf_dataset = "aqa.report.sinks:HfDatasetSink"
+hf_model = "aqa.report.sinks:HfModelSink"
+
+[project.entry-points."aqa.sandboxes"]
+local = "aqa.sandbox.local:LocalSandbox"
+docker = "aqa.sandbox.docker:DockerSandbox"
+
+[project.entry-points."aqa.recipe_stores"]
+repo_dir = "aqa.recipe_store:RepoDirStore"
+hf_dataset = "aqa.recipe_store:HfDatasetStore"
+
+[project.entry-points."aqa.scorers"]
+exact_match = "aqa.eval.scoring:exact_match"
+numeric_match = "aqa.eval.scoring:numeric_match"
+multichoice_regex = "aqa.eval.scoring:multichoice_regex"
+fuzzy_match = "aqa.eval.scoring:fuzzy_match"
+answer_line = "aqa.eval.scoring:answer_line"
+llm_judge = "aqa.eval.scoring:_default_llm_judge"
+code_exec = "aqa.eval.code_exec:_default_code_exec"
+
+[tool.setuptools.packages.find]
+include = ["aqa*"]
+
+[tool.setuptools.package-data]
+aqa = ["py.typed"]
+"aqa.agent" = ["assets/**/*.json"]
+"aqa.terminal_bench" = ["tasks/*.yaml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

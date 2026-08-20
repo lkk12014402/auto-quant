@@ -1,0 +1,32 @@
+# Example: functional code generation graded by EXECUTION (the LiveCodeBench /
+# HumanEval / MBPP family). The native kernel renders the prompt, the model writes
+# a solution, then the `code_exec` scorer assembles [completion + test + check(...)]
+# into one program and runs it in a sandbox — pass iff it exits cleanly.
+#
+# Swap `dataset` for openai_humaneval / mbpp / livecodebench once you point it at a
+# set that carries `prompt`, `test`, and `entry_point` columns.
+#
+# Safety: the default runner executes generated code on the host in a throwaway
+# temp dir. For untrusted models, inject a Docker-backed runner (see code_exec.py).
+name: humaneval
+harness: native
+type: generative
+dataset: hf://openai/openai_humaneval?split=test
+prompt: "{prompt}"
+target_field: entry_point
+gen_kwargs: { max_gen_toks: 1024 }
+
+scoring:
+  scorer: code_exec
+  code_exec:
+    language: python
+    interpreter: python3
+    timeout_s: 30
+    extract: true            # pull the fenced ```python block from the completion
+    include_prompt: true     # prepend the function signature to the completion
+    prompt_field: prompt
+    test_field: test
+    entry_point_field: entry_point
+    check_template: "\ncheck({entry_point})\n"
+
+description: HumanEval-style functional code generation graded by execution (pass@1).
