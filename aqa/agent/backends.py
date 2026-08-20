@@ -44,6 +44,40 @@ def _run(cmd: list[str], log_path: Path, timeout: int, env: dict[str, str]) -> i
     return rc
 
 
+def _archive_agent_session(
+    backend: str, session_id: str, log_path: Path, env: dict[str, str],
+) -> None:
+    """Copy the agent CLI's own session transcript next to ``log_path``.
+
+    The streamed stdout in ``log_path`` is the rich-UI view and is often truncated
+    when a slow run is SIGTERM'd on timeout. The CLI also persists a structured
+    session (copilot ``events.jsonl`` / openclaw ``<id>.jsonl``) with the full
+    reasoning + tool calls. We archive it under ``logs/agent_fixes/<phase>/`` so it
+    is uploaded with the results and fetched back -- mirroring local_dispatch, whose
+    report reads these to recover the agent's diagnosis/fix record.
+    """
+    import shutil
+
+    stem = log_path.stem
+    try:
+        if backend == "copilot":
+            state_root = env.get("COPILOT_SESSION_STATE_DIR") or str(
+                Path(env.get("HOME", "/root")) / ".copilot" / "session-state"
+            )
+            events = Path(state_root) / session_id / "events.jsonl"
+            if events.is_file():
+                shutil.copy2(events, log_path.with_name(f"{stem}.events.jsonl"))
+        else:  # openclaw
+            sessions_dir = env.get("OPENCLAW_SESSIONS_DIR") or str(
+                Path(env.get("HOME", "/root")) / ".openclaw" / "agents" / "main" / "sessions"
+            )
+            session = Path(sessions_dir) / f"{session_id}.jsonl"
+            if session.is_file():
+                shutil.copy2(session, log_path.with_name(f"{stem}.session.jsonl"))
+    except OSError as exc:  # best-effort archival; never fail the fix on this
+        _log.warning("could not archive %s session %s: %s", backend, session_id, exc)
+
+
 def _openclaw_fix(prompt: str, log_path: Path, session_id: str, tier: Tier,
                   timeout: int, workdir: Path) -> int:
     if shutil.which("openclaw") is None:
@@ -56,7 +90,9 @@ def _openclaw_fix(prompt: str, log_path: Path, session_id: str, tier: Tier,
         "--timeout", str(timeout),
     ]
     _log.info("openclaw agent (session=%s, timeout=%ss)", session_id, timeout)
-    return _run(cmd, log_path, timeout, env)
+    rc = _run(cmd, log_path, timeout, env)
+    _archive_agent_session("openclaw", session_id, log_path, env)
+    return rc
 
 
 def _copilot_fix(prompt: str, log_path: Path, session_id: str, tier: Tier,
@@ -74,7 +110,18 @@ def _copilot_fix(prompt: str, log_path: Path, session_id: str, tier: Tier,
     elif not (env.get("COPILOT_GITHUB_TOKEN") or env.get("GH_TOKEN") or env.get("GITHUB_TOKEN")):
         raise AgentUnavailable("copilot needs COPILOT_GITHUB_TOKEN (or BYOK provider)")
 
-    cmd = ["copilot", "-p", prompt, "--allow-all-tools", "--no-color"]
+    # A human-readable transcript (--share) + the CLI's own log dir land next to the
+    # attempt log so they upload with the results; --session-id ties the run to the
+    # session-state we archive afterwards.
+    share_md = log_path.with_name(f"{log_path.stem}.share.md")
+    copilot_logs = log_path.with_name(f"{log_path.stem}_copilot_logs")
+    cmd = [
+        "copilot", "-p", prompt, "--allow-all-tools", "--no-color",
+        "--session-id", session_id,
+        "--share", str(share_md),
+        "--log-dir", str(copilot_logs),
+        "--log-level", "error",
+    ]
     # Directory sandbox: authorise the workdir + common install prefixes.
     for d in (str(workdir), os.environ.get("HOME", "/root"), "/opt", "/usr", "/tmp"):
         cmd += ["--add-dir", d]
@@ -82,7 +129,9 @@ def _copilot_fix(prompt: str, log_path: Path, session_id: str, tier: Tier,
         cmd += ["--model", tier.model]
     _log.info("copilot agent (session=%s, byok=%s, model=%s, timeout=%ss)",
               session_id, byok, tier.model or "default", timeout)
-    return _run(cmd, log_path, timeout, env)
+    rc = _run(cmd, log_path, timeout, env)
+    _archive_agent_session("copilot", session_id, log_path, env)
+    return rc
 
 
 def run_agent_fix(tier: Tier, prompt: str, log_path: Path, *,

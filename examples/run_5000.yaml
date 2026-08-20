@@ -23,6 +23,18 @@ quant:
   method: model_free           # --method MODEL_FREE
   export_format: llm_compressor  # --export-format llm_compressor
 
+# Push the quantized checkpoint to a HF *model* repo after a successful eval.
+# (Top-level `quant:` above is folded into this quantize provider by the loader.)
+provider:
+  type: quantize
+  upload:
+    repo: LeaderboardModel1          # HF org/owner to create the model repo under
+    repo_name: Qwen3.5-9B-AutoRound-MXFP8   # repo id under `repo` (default: artifact name)
+    token_env: INC4AI_HF_TOKEN       # model-upload token (export before `aqa run`)
+    private: false
+    model_card: true                 # auto-generate a README model card
+    # disable_xet: true              # uncomment if a valid write token hits a Xet 403
+
 eval:
   #benchmarks: [piqa, hellaswag, mmlu, gsm8k]  # --eval-tasks
   benchmarks: [piqa]

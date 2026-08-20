@@ -194,13 +194,23 @@ def _sftp_makedirs(sftp, path: str) -> None:
             sftp.mkdir(cur)
 
 
-def _sftp_fetch_tree(sftp, remote_dir: str, local_dir: Path) -> int:
+def _sftp_fetch_tree(
+    sftp, remote_dir: str, local_dir: Path, *, max_bytes: int = 500 * 1024 * 1024
+) -> int:
     """Recursively download ``remote_dir`` into ``local_dir``; return file count.
+
+    Skips weights/caches (the same set excluded from result uploads) so we never
+    drag multi-GB ``.safetensors`` back over SFTP -- that both wastes bandwidth and
+    can stall paramiko's prefetch indefinitely (the run's own hf_dataset sink is
+    what publishes results; this fetch is only for local log/json inspection). A
+    ``max_bytes`` backstop skips any unexpectedly large blob rather than hanging.
 
     Silently returns 0 if the remote dir does not exist (e.g. run failed before
     producing any results).
     """
     import stat as _stat
+
+    from ..report.scrub import EXCLUDED_DIRS, EXCLUDED_SUFFIXES
 
     try:
         entries = sftp.listdir_attr(remote_dir)
@@ -212,7 +222,16 @@ def _sftp_fetch_tree(sftp, remote_dir: str, local_dir: Path) -> int:
         rpath = f"{remote_dir}/{entry.filename}"
         lpath = local_dir / entry.filename
         if _stat.S_ISDIR(entry.st_mode):
-            count += _sftp_fetch_tree(sftp, rpath, lpath)
+            if entry.filename in EXCLUDED_DIRS:
+                _log.info("skipping excluded dir %s", rpath)
+                continue
+            count += _sftp_fetch_tree(sftp, rpath, lpath, max_bytes=max_bytes)
+        elif not _stat.S_ISREG(entry.st_mode):
+            _log.info("skipping non-regular file %s", rpath)  # fifo/socket/device
+        elif Path(entry.filename).suffix.lower() in EXCLUDED_SUFFIXES:
+            _log.info("skipping weight/blob %s", rpath)
+        elif entry.st_size is not None and entry.st_size > max_bytes:
+            _log.warning("skipping oversized file %s (%d bytes)", rpath, entry.st_size)
         else:
             try:
                 sftp.get(rpath, str(lpath))
