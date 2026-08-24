@@ -18,6 +18,26 @@ from ..registry import BenchmarkRecipe, BenchmarkResult
 
 _log = get_logger("harness.lm_eval")
 
+# How many trailing log lines to fold into a harness failure so the real
+# traceback (not just the "rc=1" wrapper) reaches the fix-loop's error signature.
+_FAIL_TAIL_LINES = 120
+
+
+def _log_tail(path: Path, lines: int = _FAIL_TAIL_LINES) -> str:
+    """Return the tail of an lm_eval run log, prefixed for readability.
+
+    The exception the harness raises otherwise carries only a generic
+    ``lm_eval failed for … (rc=1)`` wrapper; embedding the log tail lets
+    ``extract_signature``/``classify_error`` key knowledge on the *actual*
+    error (e.g. an ``AssertionError`` from a kernel) instead of the task list.
+    """
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return ""
+    tail = "\n".join(text.splitlines()[-lines:]).strip()
+    return f"\n--- {path.name} (last {lines} lines) ---\n{tail}" if tail else ""
+
 
 class LmEvalHarness:
     name = "lm_eval"
@@ -132,9 +152,16 @@ class LmEvalHarness:
 
         rc = stream_subprocess(cmd, log_path, env=env)
         if rc != 0:
-            raise AqaError(f"lm_eval failed for {tag} (rc={rc}); see {log_path}")
+            raise AqaError(
+                f"lm_eval failed for {tag} (rc={rc}); see {log_path}"
+                + _log_tail(log_path)
+            )
         data = self._load_results(out_dir)
-        return [self._result_for(recipe, data) for recipe in recipes]
+        cmd_str = shlex.join(cmd)
+        results = [self._result_for(recipe, data) for recipe in recipes]
+        for r in results:
+            r.command = cmd_str
+        return results
 
     def parse_results(self, recipe: BenchmarkRecipe, out_dir: Path) -> BenchmarkResult:
         return self._result_for(recipe, self._load_results(out_dir))

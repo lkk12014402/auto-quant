@@ -65,6 +65,16 @@ agent:
   tiers: [opus]                # escalation ladder; run_5000.sh sets AGENT_TIERS="opus"
   patch:
     capture: true              # save any auto-round fix as a patch with the run
+  knowledge:
+    # Shared, persistent fix-knowledge: lessons + replayable patches keyed by
+    # error signature, reused across runs AND different models. Pointed at the
+    # SAME results dataset -> its `knowledge/` subtree (default `path_in_repo`)
+    # is synced down at run start and pushed back after a fix, so a new model run
+    # replays a recorded auto_round/vllm fix before ever spending an agent tier.
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN   # write token for push (public read needs none)
+    replay: true                        # try recorded patches before the agent
+    push: true                          # upload new lessons/patches back to the repo
 
 executor:
   type: ssh                    # --server 5000pro_7cards (direct CUDA machine)

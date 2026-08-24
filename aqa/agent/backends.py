@@ -95,6 +95,21 @@ def _openclaw_fix(prompt: str, log_path: Path, session_id: str, tier: Tier,
     return rc
 
 
+def _copilot_session_id(label: str) -> str:
+    """Copilot's CLI requires ``--session-id`` to be a valid UUID.
+
+    Fix-loop session ids are human-readable labels (e.g. ``fix_evaluate_7369e9fa``)
+    that the CLI rejects ("not a valid UUID, so a new session cannot be created").
+    If the label is already a UUID, pass it through; otherwise derive a stable
+    UUIDv5 from it so the same label always maps to the same session id (and the
+    session-state we archive afterwards is found under that same uuid dir).
+    """
+    try:
+        return str(uuid.UUID(label))
+    except (ValueError, AttributeError, TypeError):
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"aqa-agent-fix/{label}"))
+
+
 def _copilot_fix(prompt: str, log_path: Path, session_id: str, tier: Tier,
                  timeout: int, workdir: Path) -> int:
     if shutil.which("copilot") is None:
@@ -110,6 +125,8 @@ def _copilot_fix(prompt: str, log_path: Path, session_id: str, tier: Tier,
     elif not (env.get("COPILOT_GITHUB_TOKEN") or env.get("GH_TOKEN") or env.get("GITHUB_TOKEN")):
         raise AgentUnavailable("copilot needs COPILOT_GITHUB_TOKEN (or BYOK provider)")
 
+    # Copilot requires a UUID session id; coerce the human-readable label.
+    cli_session_id = _copilot_session_id(session_id)
     # A human-readable transcript (--share) + the CLI's own log dir land next to the
     # attempt log so they upload with the results; --session-id ties the run to the
     # session-state we archive afterwards.
@@ -117,20 +134,23 @@ def _copilot_fix(prompt: str, log_path: Path, session_id: str, tier: Tier,
     copilot_logs = log_path.with_name(f"{log_path.stem}_copilot_logs")
     cmd = [
         "copilot", "-p", prompt, "--allow-all-tools", "--no-color",
-        "--session-id", session_id,
+        "--session-id", cli_session_id,
         "--share", str(share_md),
         "--log-dir", str(copilot_logs),
         "--log-level", "error",
     ]
-    # Directory sandbox: authorise the workdir + common install prefixes.
-    for d in (str(workdir), os.environ.get("HOME", "/root"), "/opt", "/usr", "/tmp"):
+    # Directory sandbox: authorise the workdir + common install prefixes. The attempt-log
+    # dir is added explicitly so the agent can read prior attempts' transcripts/prompts
+    # (the prior-state block points it at those files) even if it lives outside workdir.
+    for d in (str(workdir), str(log_path.parent), os.environ.get("HOME", "/root"),
+              "/opt", "/usr", "/tmp"):
         cmd += ["--add-dir", d]
     if not byok and tier.model:
         cmd += ["--model", tier.model]
     _log.info("copilot agent (session=%s, byok=%s, model=%s, timeout=%ss)",
-              session_id, byok, tier.model or "default", timeout)
+              cli_session_id, byok, tier.model or "default", timeout)
     rc = _run(cmd, log_path, timeout, env)
-    _archive_agent_session("copilot", session_id, log_path, env)
+    _archive_agent_session("copilot", cli_session_id, log_path, env)
     return rc
 
 

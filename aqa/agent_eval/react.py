@@ -24,11 +24,13 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from ..logging_util import get_logger
 from .loop import AgentEvalResult, TaskOutcome
 from .solver import Task
+from .stats import TokenStats
+from .verifier import EvalVerdict, Verifier, coerce_verdict, verdict_from_exception
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable
@@ -108,6 +110,8 @@ class Trajectory:
     solved: bool = False
     reward: float = 0.0
     hit_turn_limit: bool = False
+    verdict: EvalVerdict | None = None
+    stats: TokenStats = field(default_factory=TokenStats)
 
     @property
     def turns(self) -> int:
@@ -127,6 +131,7 @@ class ToolUseSolver:
     max_turns: int = 10
     params: dict[str, Any] = field(default_factory=dict)
     observation_template: str = "Observation:\n{obs}"
+    verifier: Verifier | None = None
 
     def _initial_user(self, task: Task, obs_text: str) -> str:
         parts = [task.prompt]
@@ -134,12 +139,27 @@ class ToolUseSolver:
             parts.append(self.observation_template.format(obs=obs_text))
         return "\n\n".join(parts)
 
-    async def _terminal_reward(self, env: Environment, last: float) -> tuple[bool, float]:
+    async def _terminal_verdict(self, task: Task, traj: Trajectory,
+                                env: Environment, last: float) -> EvalVerdict:
+        """Grade the finished trajectory.
+
+        Uses the injected :class:`Verifier` when present (structured, may carry
+        sub-metrics + a failure category); otherwise falls back to the legacy
+        ``is_solved`` / last-step-reward scalar path, wrapped as a scored verdict.
+        A verifier that raises is turned into a non-scored (infra/parse) verdict
+        so a grading crash never masquerades as the model being wrong.
+        """
+        if self.verifier is not None:
+            try:
+                return await self.verifier.verify(task, traj, env)
+            except Exception as exc:  # noqa: BLE001 - grading crash != model wrong
+                _log.warning("verifier failed for %s: %s", task.id, exc)
+                return verdict_from_exception(exc)
         is_solved = getattr(env, "is_solved", None)
         if callable(is_solved):
             solved = bool(await is_solved())
-            return solved, (1.0 if solved else 0.0)
-        return last > 0.0, last
+            return EvalVerdict.from_reward(1.0 if solved else 0.0, solved=solved)
+        return EvalVerdict.from_reward(last, solved=last > 0.0)
 
     async def run(self, task: Task) -> Trajectory:
         env = self.env_factory(task)
@@ -152,13 +172,14 @@ class ToolUseSolver:
                 {"role": "user", "content": self._initial_user(task, first.text)},
             ]
             for _ in range(self.max_turns):
-                output = await self.client.chat(messages, **self.params)
+                output = await self._chat(messages, traj)
                 messages.append({"role": "assistant", "content": output})
                 action = parse_action(output)
                 if isinstance(action, Finish):
                     traj.steps.append(ReActStep(output, action))
                     traj.final_answer = action.answer
-                    traj.solved, traj.reward = await self._terminal_reward(env, last_reward)
+                    self._settle(traj, await self._terminal_verdict(
+                        task, traj, env, last_reward))
                     break
                 obs = await env.step(action.cmd)
                 last_reward = max(last_reward, obs.reward)
@@ -168,17 +189,41 @@ class ToolUseSolver:
                      "content": self.observation_template.format(obs=obs.text)}
                 )
                 if obs.done:
-                    traj.solved, traj.reward = await self._terminal_reward(env, last_reward)
+                    self._settle(traj, await self._terminal_verdict(
+                        task, traj, env, last_reward))
                     break
             else:
                 traj.hit_turn_limit = True
-                traj.solved, traj.reward = await self._terminal_reward(env, last_reward)
+                self._settle(traj, await self._terminal_verdict(
+                    task, traj, env, last_reward))
         finally:
             await env.close()
-        _log.info("task %s: turns=%d solved=%s reward=%.3f%s",
+        _log.info("task %s: turns=%d solved=%s reward=%.3f cat=%s tok=%d/%d%s",
                   task.id, traj.turns, traj.solved, traj.reward,
+                  traj.verdict.category if traj.verdict else "-",
+                  traj.stats.n_input_tokens, traj.stats.n_output_tokens,
                   " (turn-limit)" if traj.hit_turn_limit else "")
         return traj
+
+    @staticmethod
+    def _settle(traj: Trajectory, verdict: EvalVerdict) -> None:
+        traj.verdict = verdict
+        traj.solved = verdict.solved
+        traj.reward = verdict.reward
+
+    async def _chat(self, messages: list[dict[str, str]], traj: Trajectory) -> str:
+        """One model turn, folding any reported ``usage`` into ``traj.stats``.
+
+        Falls back to the plain :meth:`ModelClient.chat` for clients (or fakes)
+        that predate ``chat_with_usage``, so token accounting is best-effort and
+        never a hard dependency.
+        """
+        with_usage = getattr(self.client, "chat_with_usage", None)
+        if callable(with_usage):
+            output, usage = await with_usage(messages, **self.params)
+            traj.stats.add_usage(usage)
+            return output
+        return await self.client.chat(messages, **self.params)
 
     async def solve(self, task: Task) -> str:
         """:class:`Solver` adapter -- returns the final answer text."""
@@ -188,15 +233,26 @@ class ToolUseSolver:
 # --------------------------------------------------------------------------
 # Aggregation
 # --------------------------------------------------------------------------
+@runtime_checkable
+class TrajectoryAgent(Protocol):
+    """Anything that turns a task into a graded :class:`Trajectory`.
+
+    Both :class:`ToolUseSolver` and the pluggable scaffolds satisfy this, so the
+    aggregator below is agent-infra agnostic.
+    """
+
+    async def run(self, task: Task) -> Trajectory: ...
+
+
 async def run_tool_use_eval(
     name: str,
     tasks: list[Task],
-    agent: ToolUseSolver,
+    agent: TrajectoryAgent,
     *,
     concurrency: int = 4,
     score_fn: Callable[[Task, Trajectory], float] | None = None,
 ) -> AgentEvalResult:
-    """Run the ReAct agent over ``tasks`` and aggregate rewards (bounded pool)."""
+    """Run any trajectory agent over ``tasks`` and aggregate rewards (bounded pool)."""
     sem = asyncio.Semaphore(max(1, concurrency))
     outcomes: list[TaskOutcome | None] = [None] * len(tasks)
 
@@ -206,15 +262,25 @@ async def run_tool_use_eval(
                 traj = await agent.run(task)
             except Exception as exc:  # noqa: BLE001 - isolate per-task failures
                 _log.warning("task %s failed: %s", task.id, exc)
-                outcomes[idx] = TaskOutcome(task.id, "", 0.0, error=str(exc))
+                outcomes[idx] = TaskOutcome(
+                    task.id, "", 0.0, error=str(exc),
+                    verdict=verdict_from_exception(exc))
                 return
             try:
-                score = traj.reward if score_fn is None else float(score_fn(task, traj))
+                if score_fn is None:
+                    score, verdict = traj.reward, traj.verdict
+                else:
+                    score = float(score_fn(task, traj))
+                    verdict = coerce_verdict(score)
             except Exception as exc:  # noqa: BLE001 - scoring error is per-task
                 outcomes[idx] = TaskOutcome(task.id, traj.final_answer, 0.0,
-                                            error=f"score: {exc}")
+                                            error=f"score: {exc}",
+                                            verdict=verdict_from_exception(exc),
+                                            stats=traj.stats, turns=traj.turns)
                 return
-            outcomes[idx] = TaskOutcome(task.id, traj.final_answer, score)
+            outcomes[idx] = TaskOutcome(task.id, traj.final_answer, score,
+                                        verdict=verdict,
+                                        stats=traj.stats, turns=traj.turns)
 
     await asyncio.gather(*(_one(i, t) for i, t in enumerate(tasks)))
     result = AgentEvalResult(name=name, outcomes=[o for o in outcomes if o is not None])

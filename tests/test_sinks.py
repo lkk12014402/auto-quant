@@ -171,6 +171,32 @@ def test_full_run_disabled_falls_back_to_flat(tmp_path, monkeypatch):
     assert url == "https://huggingface.co/datasets/org/ds/tree/main/results/Base-w4a16"
 
 
+def test_full_run_ships_shared_knowledge(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "t")
+    api = _FakeApi()
+    _patch_api(monkeypatch, api)
+    run = _make_run(tmp_path)
+    # A shared knowledge dir (lessons + patch + stats + a binary to be excluded).
+    kn = tmp_path / "knowledge"
+    (kn / "lessons").mkdir(parents=True)
+    (kn / "lessons" / "quantize.jsonl").write_text('{"signature": "s"}\n')
+    (kn / "patches" / "quantize" / "abc").mkdir(parents=True)
+    (kn / "patches" / "quantize" / "abc" / "auto_round.patch").write_text("--- a\n+++ b\n")
+    (kn / "patches" / "quantize" / "abc" / "meta.json").write_text('{"exc_type": "RuntimeError"}')
+    (kn / "stats").mkdir()
+    (kn / "stats" / "events.jsonl").write_text('{"outcome": "replay_hit"}\n')
+    (kn / "patch_snapshot.bin").write_bytes(b"\x00" * 8)  # excluded (not text artifact)
+
+    meta = _full_meta(run)
+    meta.knowledge_dir = kn
+    HfDatasetSink(repo="org/ds").upload(run, meta)
+    staged = api.staged
+    assert any(k == "knowledge/lessons/quantize.jsonl" for k in staged)
+    assert any(k.endswith("knowledge/patches/quantize/abc/auto_round.patch") for k in staged)
+    assert any(k == "knowledge/stats/events.jsonl" for k in staged)
+    assert not any("patch_snapshot.bin" in k for k in staged)  # binary excluded
+
+
 def test_status_written_reflects_meta(tmp_path, monkeypatch):
     import json
 

@@ -24,14 +24,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..logging_util import get_logger
+from ..proc import TIMEOUT_RC
 from .backends import DEFAULT_TIMEOUT, AgentUnavailable, run_agent_fix
 from .drift import classify_error, extract_progress, logs_similarity
 from .lessons import LessonStore
-from .prompt import build_fix_prompt
+from .prompt import build_fix_prompt, load_fix_playbook
 from .tiers import Tier, resolve_tiers
+from .trajectories import build_summary
 from .verdict import AgentAnalysis, Verdict
 
 if TYPE_CHECKING:
+    from ..agent_eval.stats import TokenStats
+    from .knowledge import KnowledgeStore
     from .patch import PatchCapture
 
 _log = get_logger("agent.fixloop")
@@ -51,8 +55,31 @@ class PhaseResult:
 
 # Runs the phase once and returns its result.
 PhaseRunner = Callable[[], PhaseResult]
-# Runs the agent for one tier: (tier, prompt, attempt_log_path, session_id) -> output text.
-AgentRunner = Callable[[Tier, str, Path, str], str]
+
+
+@dataclass
+class AgentOutcome:
+    """Structured result of one agent CLI invocation.
+
+    Carries the process ``rc`` (and the derived ``timed_out``) alongside the
+    captured ``text`` so the fix-loop can tell a wall-clock-killed attempt (whose
+    streamed log is usually truncated mid-thought) apart from a clean finish -- a
+    distinction the old ``str``-only contract silently dropped.
+    """
+
+    text: str
+    rc: int = 0
+    timed_out: bool = False
+
+
+# Runs the agent for one tier: (tier, prompt, attempt_log_path, session_id) -> outcome.
+# A plain ``str`` return is still accepted (coerced) for backward-compatible test doubles.
+AgentRunner = Callable[[Tier, str, Path, str], "AgentOutcome | str"]
+
+
+def _coerce_outcome(value: AgentOutcome | str) -> AgentOutcome:
+    """Accept either an :class:`AgentOutcome` or a bare ``str`` (legacy runners)."""
+    return value if isinstance(value, AgentOutcome) else AgentOutcome(text=str(value))
 
 
 @dataclass
@@ -72,17 +99,40 @@ class FixResult:
     tier_index: int
     reason: str = ""
     final_analysis: AgentAnalysis | None = None
+    tokens: TokenStats | None = None  # best-effort self-heal token usage (if reported)
+
+
+@dataclass
+class PriorAttempt:
+    """Distilled state of the immediately preceding fix attempt.
+
+    Injected into the next attempt's prompt so the loop survives what the agent's
+    own session memory cannot carry across a tier escalation (a different backend
+    shares no session state) or a SIGTERM-truncated transcript. The one field no
+    agent-side artifact contains -- the fix-loop's OWN authoritative ``run_phase``
+    re-verification -- lives here (``actual_ok`` / ``actual_class``).
+    """
+
+    attempt: int
+    agent_verdict: str = ""      # what the agent CLAIMED (may be empty if truncated)
+    agent_summary: str = ""      # its one-line root-cause / fix plan
+    actual_ok: bool = False      # authoritative: did the fix-loop's re-run pass?
+    actual_class: str = ""       # error class of that re-run (if still failing)
+    truncated: bool = False      # attempt was wall-clock-killed (edits may be half-done)
+    diff: str = ""               # cumulative on-disk edits so far
 
 
 def default_agent_runner(timeout: int) -> AgentRunner:
-    def _runner(tier: Tier, prompt: str, log_path: Path, session_id: str) -> str:
+    def _runner(tier: Tier, prompt: str, log_path: Path, session_id: str) -> AgentOutcome:
+        rc = -1
         try:
-            run_agent_fix(tier, prompt, log_path, session_id=session_id, timeout=timeout)
+            rc = run_agent_fix(tier, prompt, log_path, session_id=session_id, timeout=timeout)
         except AgentUnavailable as exc:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_path.write_text(f"[agent-unavailable] {exc}\n")
             _log.warning("tier %s unavailable: %s", tier.name, exc)
-        return log_path.read_text() if log_path.exists() else ""
+        text = log_path.read_text() if log_path.exists() else ""
+        return AgentOutcome(text=text, rc=rc, timed_out=(rc == TIMEOUT_RC))
     return _runner
 
 
@@ -103,6 +153,9 @@ class FixLoop:
         method: str = "",
         cuda_guard: Callable[[], bool] | None = None,
         patch_capture: PatchCapture | None = None,
+        knowledge: KnowledgeStore | None = None,
+        replay: bool = True,
+        run_id: str = "",
     ):
         self.phase_name = phase_name
         self.run_phase = run_phase
@@ -110,7 +163,17 @@ class FixLoop:
         self.out_dir = Path(out_dir or Path.cwd())
         self.fix_log_dir = self.out_dir / "logs" / "agent_fixes" / phase_name
         self.run_agent = run_agent or default_agent_runner(self.cfg.agent_timeout)
-        self.lessons = lesson_store or LessonStore(self.out_dir / "lessons")
+        self.knowledge = knowledge
+        self.replay = replay
+        self.run_id = run_id
+        # Lessons accumulate in the shared knowledge store when available, so they
+        # outlive the run (and are pushed cross-machine); else fall back to run-local.
+        if lesson_store is not None:
+            self.lessons = lesson_store
+        elif knowledge is not None:
+            self.lessons = knowledge.lessons
+        else:
+            self.lessons = LessonStore(self.out_dir / "lessons")
         self.model_id = model_id
         self.scheme = scheme
         self.method = method
@@ -144,19 +207,220 @@ class FixLoop:
                           model_id=self.model_id, scheme=self.scheme,
                           method=self.method, analysis=analysis)
 
-    def _write_patches(self) -> None:
+    def _write_patches(self) -> dict[str, Path]:
         if self.patch_capture is None:
-            return
+            return {}
         try:
             written = self.patch_capture.write_patches(
                 self.out_dir / "patches" / self.phase_name)
             if written:
                 _log.info("patch: captured %d source patch(es)", len(written))
+            return written
         except Exception as exc:  # noqa: BLE001 - patch capture is best-effort
             _log.warning("patch write failed: %s", exc)
+            return {}
+
+    def _record_patch(self, err_text: str) -> None:
+        """Archive the just-written patches into the shared knowledge store."""
+        if self.knowledge is None:
+            return
+        written = self._write_patches()
+        if not written:
+            return
+        try:
+            self.knowledge.record(
+                self.phase_name, err_text, written,
+                model_id=self.model_id, scheme=self.scheme, method=self.method)
+            self.knowledge.push_up()
+        except Exception as exc:  # noqa: BLE001 - knowledge is best-effort
+            _log.warning("knowledge: record failed: %s", exc)
+
+    @staticmethod
+    def _trail_append(trail: list[str], analysis: AgentAnalysis) -> None:
+        """Record one attempt's hypothesis as a compact 'class: root_cause' line."""
+        cls = (analysis.error_class or "").strip()
+        cause = (analysis.root_cause or analysis.fix_plan or "").strip()
+        if not cause:
+            return
+        entry = f"{cls}: {cause}" if cls else cause
+        entry = entry[:160]
+        if entry not in trail:
+            trail.append(entry)
+
+    def _make_prior(self, attempt: int, outcome: AgentOutcome,
+                    analysis: AgentAnalysis, result: PhaseResult) -> PriorAttempt:
+        """Snapshot the attempt that just ran, for injection into the next one.
+
+        ``result`` is the authoritative state AFTER this attempt (the fix-loop's own
+        ``run_phase`` re-run, or the pre-attempt failure on a punt/escalate path) --
+        the single signal the agent's own transcript never contains.
+        """
+        diff = ""
+        if self.patch_capture is not None:
+            try:
+                diff = self.patch_capture.combined_diff()
+            except Exception as exc:  # noqa: BLE001 - diff is best-effort
+                _log.debug("prior-state diff failed: %s", exc)
+        return PriorAttempt(
+            attempt=attempt,
+            agent_verdict=(analysis.verdict.name if analysis.verdict else ""),
+            agent_summary=(analysis.root_cause or analysis.fix_plan or "").strip()[:200],
+            actual_ok=result.ok,
+            actual_class=classify_error(result.log_text),
+            truncated=outcome.timed_out,
+            diff=diff,
+        )
+
+    def _prior_attempt_files(self, attempt: int) -> list[str]:
+        """Existing artifact files for ``attempt`` the next agent may read for depth."""
+        stem = f"attempt_{attempt}"
+        candidates = [
+            f"{stem}.share.md",         # copilot human-readable transcript
+            f"{stem}.events.jsonl",     # copilot structured session (survives truncation)
+            f"{stem}.session.jsonl",    # openclaw structured session
+            f"{stem}.log",              # streamed stdout (may be truncated)
+            f"prompt_{attempt}.txt",    # the exact prompt that attempt received
+        ]
+        return [str(self.fix_log_dir / name)
+                for name in candidates if (self.fix_log_dir / name).exists()]
+
+    def _format_prior_state(self, prior: PriorAttempt | None) -> str:
+        """Render the prior attempt into the prompt's high-priority state block."""
+        if prior is None:
+            return ""
+        verdict = prior.agent_verdict or "<none -- output truncated>"
+        lines = [
+            f"- agent self-report: {verdict}"
+            + (f" / plan: {prior.agent_summary}" if prior.agent_summary else ""),
+        ]
+        if prior.actual_ok:
+            lines.append("- ACTUAL re-run (authoritative, the fix-loop verified this): PASSED")
+        else:
+            cls = f", error_class={prior.actual_class}" if prior.actual_class else ""
+            lines.append(
+                "- ACTUAL re-run (authoritative, the fix-loop verified this): STILL FAILING"
+                f"{cls} -- so the previous attempt did NOT resolve it; do not just repeat it")
+        if prior.truncated:
+            lines.append("- timed out / truncated: YES -- edits may be HALF-APPLIED; reconcile "
+                         "against the diff below before continuing (do not blindly redo them)")
+        files = self._prior_attempt_files(prior.attempt)
+        if files:
+            lines.append("- full record of that attempt (READ these if you need its reasoning / "
+                         "tool calls / evidence): " + ", ".join(files))
+        return "\n".join(lines)
+
+    def _accrue_tokens(self, agent_output: str) -> None:
+        """Fold an agent attempt's self-reported token usage into the running total.
+
+        CLI fix agents (codex/openclaw/...) emit their own token accounting as JSON
+        events in the attempt log; parsing is best-effort so a silent agent simply
+        contributes turns (attempts) without tokens.
+        """
+        from ..agent_eval.stats import parse_usage_from_text
+        try:
+            self._heal_tokens.merge(parse_usage_from_text(agent_output))
+        except Exception as exc:  # noqa: BLE001 - token accounting must never break a fix
+            _log.debug("heal token parse failed: %s", exc)
+
+    def _trajectory_playbook(self, prior_class: str) -> str:
+        """Distilled reasoning playbook from past successful fixes (best-effort)."""
+        if self.knowledge is None:
+            return ""
+        try:
+            return self.knowledge.trajectories.format_for_prompt(
+                self.phase_name, error_class=prior_class)
+        except Exception as exc:  # noqa: BLE001 - retrieval is best-effort
+            _log.warning("knowledge: trajectory lookup failed: %s", exc)
+            return ""
+
+    def _record_trajectory(self, err_text: str, analysis: AgentAnalysis,
+                           trail: list[str], *, tier: str, steps: int) -> None:
+        """Distil and persist the winning fix trajectory (best-effort).
+
+        The winning hypothesis is the last trail entry; everything before it is
+        the dead-end path future runs should skip.
+        """
+        if self.knowledge is None:
+            return
+        rejected = trail[:-1] if trail else []
+        try:
+            summary = build_summary(
+                self.phase_name, err_text, analysis,
+                tried_and_rejected=rejected, tier=tier, steps=steps,
+                model_id=self.model_id, scheme=self.scheme, method=self.method,
+                run_id=self.run_id,
+            )
+            self.knowledge.record_trajectory(summary)
+        except Exception as exc:  # noqa: BLE001 - knowledge is best-effort
+            _log.warning("knowledge: trajectory record failed: %s", exc)
+
+    def _replay_reference(self, error_text: str, *, max_candidates: int = 2,
+                          inline_threshold: int = 1500, total_budget: int = 3000) -> str:
+        """Format recorded fixes for THIS failure as agent *reference* (Option A).
+
+        We deliberately do NOT auto-apply recorded patches: a diff captured on a
+        different model/checkpoint can silently break the environment, and the
+        revert path is itself risky. Instead the best-matching recorded diffs +
+        their provenance are handed to the agent, which decides whether the
+        mechanism applies to the current model/checkpoint and adapts or ignores it.
+
+        To keep the prompt lean, only SMALL diffs are inlined; a large (e.g.
+        multi-file source) patch is summarised (files touched, +/- line counts)
+        with a pointer to its on-disk path for the agent to read on demand -- never
+        hard-truncated mid-hunk. A running ``total_budget`` caps inlined bytes so
+        two large candidates cannot both bloat the prompt. Returns "" when replay
+        is disabled, there is no knowledge store, or nothing matches.
+        """
+        if not (self.replay and self.knowledge):
+            return ""
+        try:
+            records = self.knowledge.find_patches(self.phase_name, error_text)
+        except Exception as exc:  # noqa: BLE001 - lookup is best-effort
+            _log.warning("replay: lookup failed: %s", exc)
+            return ""
+        blocks: list[str] = []
+        remaining = total_budget
+        for rec in records[:max_candidates]:
+            prov = (f"model={rec.model_id or '?'} scheme={rec.scheme or '?'} "
+                    f"class={rec.error_class or '?'} sig={rec.sig_hash}")
+            diff = rec.diff_text(max_chars=inline_threshold + 1)
+            if diff and len(diff) <= inline_threshold and len(diff) <= remaining:
+                remaining -= len(diff)
+                blocks.append(f"### candidate ({prov})\n```diff\n{diff}\n```")
+            else:
+                # Too big to inline: summarise + point the agent at the patch on disk.
+                paths = ", ".join(rec.patch_paths())
+                blocks.append(
+                    f"### candidate ({prov})\n{rec.stat_summary()}\n"
+                    f"full patch on disk (READ it if the mechanism looks relevant): {paths}")
+        if not blocks:
+            return ""
+        _log.info("replay: injecting %d recorded fix(es) as reference for %s "
+                  "(no auto-apply)", len(blocks), self.phase_name)
+        return "\n\n".join(blocks)
+
+    def _log_stat(self, outcome: str, *, sig_hash: str = "", error_class: str = "",
+                  tier: str = "") -> None:
+        if self.knowledge is None:
+            return
+        try:
+            self.knowledge.log_event(self.phase_name, outcome, sig_hash=sig_hash,
+                                     error_class=error_class, model_id=self.model_id,
+                                     tier=tier)
+        except Exception as exc:  # noqa: BLE001 - telemetry is best-effort
+            _log.warning("knowledge: stat log failed: %s", exc)
 
     # -- main loop -------------------------------------------------------
     def run(self) -> FixResult:
+        """Drive the phase to success, stamping best-effort self-heal token usage."""
+        from ..agent_eval.stats import TokenStats
+        self._heal_tokens = TokenStats()
+        fr = self._run_loop()
+        if not self._heal_tokens.is_empty():
+            fr.tokens = self._heal_tokens
+        return fr
+
+    def _run_loop(self) -> FixResult:
         cfg = self.cfg
         self.fix_log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -166,7 +430,11 @@ class FixLoop:
         drift_count = 0
         max_progress = -1
         prev_class = ""
+        # Distilled record of hypotheses tried on the way to a fix; on success the
+        # entries before the winner become the trajectory's "dead ends".
+        rejected_trail: list[str] = []
         prev_text = ""
+        prior: PriorAttempt | None = None  # distilled state of the previous attempt
 
         # Ensure the global cap lets every tier reach its budget.
         max_attempts = max(cfg.max_attempts, tier_count * cfg.tier_attempt_budget)
@@ -210,15 +478,32 @@ class FixLoop:
                       attempts_on_tier, cfg.tier_attempt_budget, prior_class, cur_progress)
 
             lessons = self.lessons.format_for_prompt(self.phase_name)
+            playbook = self._trajectory_playbook(prior_class)
+            known_fixes = self._replay_reference(err_text)
             prompt = build_fix_prompt(
                 self.phase_name, err_text, lessons=lessons, attempt=attempt,
                 prior_class=prior_class, user_context=cfg.user_context,
+                skill_playbook=load_fix_playbook(),
+                trajectories=playbook, known_fixes=known_fixes,
+                prior_diff=prior.diff if prior else "",
+                prior_state=self._format_prior_state(prior),
             )
             (self.fix_log_dir / f"prompt_{attempt}.txt").write_text(prompt)
 
             agent_log = self.fix_log_dir / f"attempt_{attempt}.log"
-            output = self.run_agent(tier, prompt, agent_log, self.session_id)
+            outcome = _coerce_outcome(
+                self.run_agent(tier, prompt, agent_log, self.session_id))
+            output = outcome.text
+            if outcome.timed_out:
+                _log.warning("attempt %d timed out (rc=%d); edits may be partial -- "
+                             "surfacing to next attempt as prior-state", attempt, outcome.rc)
+            self._accrue_tokens(output)
             analysis = AgentAnalysis.parse(output)
+            self._trail_append(rejected_trail, analysis)
+            # Snapshot this attempt for the NEXT one. On the punt/escalate paths below
+            # `result` is still the pre-attempt failure (correct: nothing was fixed);
+            # the re-run paths refresh it and re-snapshot before looping.
+            prior = self._make_prior(attempt, outcome, analysis, result)
 
             # UNFIXABLE: escalate if possible, else abort.
             if analysis.verdict is Verdict.UNFIXABLE:
@@ -231,6 +516,8 @@ class FixLoop:
                     continue
                 _log.warning("UNFIXABLE (%s), no stronger tier; aborting", reason)
                 self._save(err_text, "unfixable", f"UNFIXABLE: {reason}", analysis)
+                self._log_stat("unresolved", error_class=self._effective_class(analysis, err_text),
+                               tier=tier.name)
                 return FixResult(ok=False, attempts=attempt, tier_index=tier_idx,
                                  reason=f"unfixable: {reason}", final_analysis=analysis)
 
@@ -265,6 +552,7 @@ class FixLoop:
                         self._save(err_text, "drift",
                                    f"Stuck on '{eff_class}' for {drift_count} attempts",
                                    analysis)
+                        self._log_stat("unresolved", error_class=eff_class, tier=tier.name)
                         return FixResult(ok=False, attempts=attempt, tier_index=tier_idx,
                                          reason=f"drift: {eff_class}", final_analysis=analysis)
                 elif same is False:
@@ -289,6 +577,7 @@ class FixLoop:
                 self._save(err_text, "still_failing",
                            f"Fix broke CUDA (attempt {attempt}); refused CPU re-run", analysis)
                 result = PhaseResult(ok=False, log_text=agent_log.read_text())
+                prior = self._make_prior(attempt, outcome, analysis, result)
                 continue
 
             # Re-run the phase to verify the fix.
@@ -297,7 +586,11 @@ class FixLoop:
             if result.ok:
                 note = analysis.fix_plan or analysis.root_cause or f"fixed on attempt {attempt}"
                 self._save(err_text, "fixed", note[:500], analysis)
-                self._write_patches()
+                self._record_patch(err_text)
+                self._record_trajectory(err_text, analysis, rejected_trail,
+                                        tier=tier.name, steps=attempt)
+                self._log_stat("agent_fixed", error_class=self._effective_class(analysis, err_text),
+                               tier=tier.name)
                 _log.info("phase %s fixed on attempt %d (tier %s)",
                           self.phase_name, attempt, tier.name)
                 return FixResult(ok=True, attempts=attempt, tier_index=tier_idx,
@@ -305,8 +598,11 @@ class FixLoop:
 
             self._save(err_text, "still_failing",
                        f"Attempt {attempt} did not resolve", analysis)
+            # Refresh prior-state with the authoritative re-run outcome for the next attempt.
+            prior = self._make_prior(attempt, outcome, analysis, result)
 
         _log.error("%s failed after %d fix attempts", self.phase_name, max_attempts)
+        self._log_stat("unresolved", error_class=prev_class)
         return FixResult(ok=False, attempts=attempt, tier_index=tier_idx,
                          reason="max_attempts_exhausted")
 
@@ -324,10 +620,15 @@ def run_fix_loop(
     method: str = "",
     cuda_guard: Callable[[], bool] | None = None,
     patch_capture: PatchCapture | None = None,
+    knowledge: KnowledgeStore | None = None,
+    replay: bool = True,
+    run_id: str = "",
 ) -> FixResult:
     """Convenience wrapper constructing and running a :class:`FixLoop`."""
     return FixLoop(
         phase_name, run_phase, config=config, out_dir=out_dir, run_agent=run_agent,
         lesson_store=lesson_store, model_id=model_id, scheme=scheme, method=method,
         cuda_guard=cuda_guard, patch_capture=patch_capture,
+        knowledge=knowledge, replay=replay, run_id=run_id,
     ).run()
+

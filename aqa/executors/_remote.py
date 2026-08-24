@@ -96,7 +96,13 @@ def build_inner_config(run_cfg: RunConfig, run_id: str) -> str:
     via the docker ``--env-file``.
     """
     data = run_cfg.model_dump(mode="json", exclude_none=True)
-    data["executor"] = {"type": "local"}
+    # The container is launched with `--gpus device=<ids>`; the in-container run
+    # sees executor.type=local (no ssh block), so it would otherwise default to a
+    # single GPU. Carry the host's device count through so the remote pipeline uses
+    # the right vllm tensor_parallel_size and quantize --device_map.
+    ssh_gpus = run_cfg.executor.ssh.gpus if run_cfg.executor.ssh else ""
+    num_gpus = max(1, len([g for g in str(ssh_gpus).split(",") if g.strip()]))
+    data["executor"] = {"type": "local", "num_gpus": num_gpus}
     data.setdefault("output", {})
     data["output"]["dir"] = f"{CONTAINER_RESULTS}/{run_id}"
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)

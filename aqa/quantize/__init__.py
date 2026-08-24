@@ -19,9 +19,15 @@ _log = get_logger("quantize")
 
 
 def build_autoround_command(
-    model: str, cfg: QuantConfig, output_dir: Path
+    model: str, cfg: QuantConfig, output_dir: Path, *, num_gpus: int = 1
 ) -> list[str]:
-    """Construct the ``auto-round`` CLI command for a quantization run."""
+    """Construct the ``auto-round`` CLI command for a quantization run.
+
+    ``num_gpus`` drives device placement: with more than one visible GPU the
+    model is sharded across cards via ``--device_map auto`` (unless the user set
+    ``quant.device_map`` explicitly or already passed ``--device_map`` in
+    ``extra_args``).
+    """
     cmd = ["auto-round", "--model_name", model, "--scheme", cfg.scheme]
     if cfg.method == "model_free":
         cmd.append("--model_free")
@@ -41,15 +47,20 @@ def build_autoround_command(
         cmd.append("--quant_lm_head")
     if cfg.ignore_layers:
         cmd += ["--ignore_layers", cfg.ignore_layers]
+    device_map = resolve_device_map(cfg, num_gpus)
+    if device_map and "--device_map" not in cfg.extra_args:
+        cmd += ["--device_map", device_map]
     cmd += ["--format", cfg.export_format, "--output_dir", str(output_dir)]
     cmd += list(cfg.extra_args)
     return cmd
 
 
-def run_quantization(model: str, cfg: QuantConfig, output_dir: Path) -> Path:
+def run_quantization(
+    model: str, cfg: QuantConfig, output_dir: Path, *, num_gpus: int = 1
+) -> Path:
     """Run auto-round quantization and return the output model directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    cmd = build_autoround_command(model, cfg, output_dir)
+    cmd = build_autoround_command(model, cfg, output_dir, num_gpus=num_gpus)
     return _run_autoround(cmd, output_dir)
 
 
@@ -58,6 +69,23 @@ def run_quant_command(cmd: str | list[str], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     argv = shlex.split(cmd) if isinstance(cmd, str) else list(cmd)
     return _run_autoround(argv, output_dir)
+
+
+def resolve_device_map(cfg: QuantConfig, num_gpus: int) -> str | None:
+    """The effective ``--device_map`` value: explicit config, else auto on >1 GPU."""
+    return cfg.device_map or ("auto" if num_gpus > 1 else None)
+
+
+def ensure_device_map(cmd: str, cfg: QuantConfig, num_gpus: int) -> str:
+    """Append ``--device_map <value>`` to an agent-built command when missing.
+
+    Keeps the agent-optimize path multi-GPU aware without overriding a device_map
+    the agent (or the user via ``quant.device_map``) already chose.
+    """
+    device_map = resolve_device_map(cfg, num_gpus)
+    if not device_map or "--device_map" in shlex.split(cmd):
+        return cmd
+    return f"{cmd} --device_map {shlex.quote(device_map)}"
 
 
 def _run_autoround(cmd: list[str], output_dir: Path) -> Path:

@@ -296,6 +296,14 @@ status/<org>/<request_filename>.json       status write-back
 success: an empty result set **or any benchmark scoring exactly 0 → `Eval Failed`**;
 a failing gate → `Gate Failed`; otherwise `Finished`.
 
+**Failed runs still write back.** If a phase *crashes* (quantize/evaluate raises
+after the fix-loop), the pipeline does **not** vanish silently: it still uploads
+the run's eval logs, agent fix records and captured patches via the configured
+sinks, tagged `Quant Failed` / `Eval Failed`. And if quantization succeeded but
+evaluation crashed, the valid quantized checkpoint is **still** pushed to its
+model repo (when `provider.upload` is set). The original error is then re-raised
+so the process exit code still reflects the failure.
+
 The token is resolved as **explicit `token`** > **`token_env`** > `HF_TOKEN` /
 `HUGGING_FACE_HUB_TOKEN` / `HUGGINGFACEHUB_API_TOKEN`, and is forwarded into the
 remote container automatically (see the secret allowlist). Common failure:
@@ -351,7 +359,7 @@ aqa/
   executors/       local | ssh  (intel_reserve via plugin)
   report/          sinks (local_fs | hf_dataset) + gate/compare
   quantize/        auto-round command builder + runner
-  agent/           fix-loop / patch / optimize (Python orchestration)
+  agent/           fix-loop / patch / knowledge (replay) / optimize (Python orchestration)
   agent_eval/      E0-E3: client / endpoint / solver / ReAct / environment
   sandbox/         local | docker  (tool-use / terminal execution)
   terminal_bench/  E4 self-contained terminal tasks (YAML + verifier)
@@ -400,6 +408,18 @@ self-healing retry loop (enabled by `agent.fix_loop`, on by default):
 - **Patch capture** (`agent.patch.capture`): the installed `auto_round` / `vllm`
   source and HF model custom-code are snapshotted pristine before any edit, then
   the agent's changes are captured as unified-diff patches next to the results.
+- **Shared knowledge + deterministic replay** (`agent.knowledge`): lessons and
+  *successful patches* are archived to a persistent store keyed by the error
+  **signature** (not the model), so they are reused across runs, models and
+  machines. Before spending an agent tier, the loop looks up a recorded patch for
+  the current failure and — if it applies cleanly (`patch --dry-run`) and makes the
+  phase pass — **fixes it with zero agent calls**; a patch that doesn't apply or
+  doesn't fix is reverted from the snapshot and the agent takes over. Set
+  `agent.knowledge.repo: org/aqa-knowledge` to back the store with a Hugging Face
+  dataset (synced down at run start, pushed back after a fix) for cross-machine
+  sharing across ephemeral remote containers; leave it unset for a host-local store
+  (`~/.cache/aqa/knowledge`, override with `AQA_KNOWLEDGE_DIR` or
+  `agent.knowledge.local_dir`). Disable replay with `agent.knowledge.replay: false`.
 - **Agent-optimize** (`agent.optimize`): before quantizing, an agent analyses the
   model (download-free: config + safetensors index names) and proposes one optimal
   `auto-round` command; it is validated (never FP-protects routed experts) and used

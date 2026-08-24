@@ -79,7 +79,7 @@ include = ["aqa*"]
 
 [tool.setuptools.package-data]
 aqa = ["py.typed"]
-"aqa.agent" = ["assets/**/*.json"]
+"aqa.agent" = ["assets/**/*.json", "recipes/*.md"]
 "aqa.terminal_bench" = ["tasks/*.yaml"]
 
 [tool.ruff]

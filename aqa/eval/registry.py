@@ -115,6 +115,28 @@ class BenchmarkResult:
     num_samples: int = 0
     per_sample: list[float] | None = None  # per-sample correctness (0/1) for paired stats
     raw: dict[str, Any] = field(default_factory=dict)
+    command: str = ""  # the exact harness command that produced this result
+    stats: Any = None  # optional TokenStats (agentic benchmarks); efficiency provenance
+    turns: int = 0     # total agent turns spent (agentic benchmarks)
+
+    @classmethod
+    def from_agent_result(cls, agent_result: Any, *, name: str,
+                          metric: str = "resolved_rate") -> BenchmarkResult:
+        """Bridge an ``AgentEvalResult`` into a benchmark row.
+
+        Carries the agentic score plus its efficiency provenance (token totals +
+        turns), so an agentic benchmark folded into an :class:`EvalResult` lands
+        in the reproducibility manifest's ``efficiency`` block automatically.
+        """
+        return cls(
+            name=name,
+            score=agent_result.mean_score(),
+            metric=metric,
+            num_samples=agent_result.num_scored(),
+            per_sample=agent_result.per_sample() or None,
+            stats=agent_result.token_totals(),
+            turns=agent_result.total_turns(),
+        )
 
 
 @dataclass
@@ -124,17 +146,50 @@ class EvalResult:
     model: str
     backend: str
     benchmarks: dict[str, BenchmarkResult] = field(default_factory=dict)
+    commands: list[str] = field(default_factory=list)  # exact eval commands executed
+    healed: list[str] = field(default_factory=list)     # self-heal mutations applied
 
     def add(self, result: BenchmarkResult) -> None:
         self.benchmarks[result.name] = result
+        cmd = getattr(result, "command", "")
+        if cmd and cmd not in self.commands:
+            self.commands.append(cmd)
 
     def mean_score(self) -> float:
         if not self.benchmarks:
             return 0.0
         return sum(b.score for b in self.benchmarks.values()) / len(self.benchmarks)
 
+    def efficiency(self) -> dict[str, Any] | None:
+        """Token + turn totals across agentic benchmarks (``None`` if none carry any).
+
+        Only benchmarks produced by an agent (which attach a ``stats``/``turns``)
+        contribute; a pure lm_eval run has no such provenance and yields ``None``.
+        """
+        from ..agent_eval.stats import TokenStats
+
+        tokens = TokenStats()
+        total_turns = 0
+        contributing = 0
+        for b in self.benchmarks.values():
+            if b.stats is not None:
+                tokens.merge(b.stats)
+            if b.turns:
+                total_turns += b.turns
+            if b.stats is not None or b.turns:
+                contributing += 1
+        if contributing == 0:
+            return None
+        eff: dict[str, Any] = {
+            "num_benchmarks": contributing,
+            "total_turns": total_turns,
+        }
+        if not tokens.is_empty():
+            eff["tokens"] = tokens.to_dict()
+        return eff
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "model": self.model,
             "backend": self.backend,
             "mean_score": self.mean_score(),
@@ -142,7 +197,13 @@ class EvalResult:
                 name: {"score": b.score, "metric": b.metric, "num_samples": b.num_samples}
                 for name, b in self.benchmarks.items()
             },
+            "commands": list(self.commands),
+            "healed": list(self.healed),
         }
+        eff = self.efficiency()
+        if eff is not None:
+            out["efficiency"] = eff
+        return out
 
 
 class BenchmarkRegistry:

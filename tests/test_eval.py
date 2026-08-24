@@ -216,3 +216,40 @@ def test_registry_gsm8k_recipe_carries_all_generative_params():
     assert g.num_fewshot == 5
     assert g.gen_kwargs == {"max_gen_toks": 2048}
     assert g.batch_size == "64"
+
+
+def test_lm_eval_failure_embeds_log_tail(monkeypatch, tmp_path):
+    """A non-zero lm_eval exit folds the real traceback tail into the error so
+    the fix-loop signature keys on the true cause, not the generic wrapper."""
+    from aqa import proc
+    from aqa.logging_util import AqaError
+
+    h = LmEvalHarness()
+    recipes = [BenchmarkRecipe(name=n, type="loglikelihood")
+               for n in ("piqa", "hellaswag", "mmlu")]
+
+    real_tb = ("Developer debug context: raised exception AssertionError("
+               "[ConstantVariable(str: 'mm_mxfp8 requires N >= 128, got N=32.')])\n"
+               "RuntimeError: Engine core initialization failed.\n")
+
+    def _fake_stream(cmd, log_path, env=None):
+        Path(log_path).write_text("... lots of vllm noise ...\n" + real_tb)
+        return 1
+
+    monkeypatch.setattr(proc, "stream_subprocess", _fake_stream)
+    monkeypatch.setattr(h, "available", lambda: True)
+
+    try:
+        h.run_group(recipes, "org/m", VllmBackend(), tmp_path)
+    except AqaError as exc:
+        msg = str(exc)
+    else:
+        raise AssertionError("expected AqaError")
+
+    assert "rc=1" in msg
+    assert "mm_mxfp8 requires N >= 128" in msg  # real cause is now carried
+
+    from aqa.agent.drift import exception_type
+    from aqa.agent.lessons import extract_signature
+    assert exception_type(msg) == "AssertionError"
+    assert extract_signature(msg).startswith("AssertionError: mm_mxfp8")

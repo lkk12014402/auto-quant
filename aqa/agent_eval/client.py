@@ -78,10 +78,23 @@ class ModelClient:
 
     async def chat(self, messages: list[dict[str, str]], **params: Any) -> str:
         """Call ``/chat/completions`` and return the assistant message content."""
+        content, _ = await self.chat_with_usage(messages, **params)
+        return content
+
+    async def chat_with_usage(
+        self, messages: list[dict[str, str]], **params: Any
+    ) -> tuple[str, dict[str, Any]]:
+        """Like :meth:`chat` but also return the response ``usage`` block.
+
+        The usage dict is passed straight through from the endpoint (empty when
+        the server omits it) so callers can fold it into a
+        :class:`~aqa.agent_eval.stats.TokenStats`.
+        """
         payload = {"model": self.model, "messages": messages,
                    **self.default_params, **params}
         data = await self._post(self._url("chat/completions"), payload)
-        return data["choices"][0]["message"]["content"]
+        content = data["choices"][0]["message"]["content"]
+        return content, (data.get("usage") or {})
 
     async def complete(self, prompt: str, **params: Any) -> str:
         """Call ``/completions`` and return the generated text."""

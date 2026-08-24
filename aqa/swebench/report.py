@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover
+    from ..agent_eval.stats import TokenStats
     from .spec import ResolutionReport
 
 
@@ -29,6 +30,8 @@ class InstanceResult:
     model_patch: str = ""
     report: ResolutionReport | None = None
     error: str | None = None
+    stats: TokenStats | None = None
+    turns: int = 0
 
     def prediction(self, model_name: str) -> dict[str, Any]:
         """The official prediction row for this instance."""
@@ -55,7 +58,8 @@ def build_report(results: list[InstanceResult], model_name: str) -> dict[str, An
     completed = [r for r in results if r.error is None]
     resolved = [r for r in results if r.resolved]
     errored = [r for r in results if r.error is not None]
-    return {
+    efficiency = _efficiency(results)
+    report: dict[str, Any] = {
         "model_name_or_path": model_name,
         "total_instances": total,
         "completed_instances": len(completed),
@@ -69,11 +73,37 @@ def build_report(results: list[InstanceResult], model_name: str) -> dict[str, An
             r.instance_id: {
                 "resolved": r.resolved,
                 "error": r.error,
+                **({"turns": r.turns} if r.turns else {}),
+                **({"tokens": r.stats.to_dict()}
+                   if r.stats is not None and not r.stats.is_empty() else {}),
                 **(r.report.to_dict() if r.report is not None else {}),
             }
             for r in results
         },
     }
+    if efficiency is not None:
+        report["efficiency"] = efficiency
+    return report
+
+
+def _efficiency(results: list[InstanceResult]) -> dict[str, Any] | None:
+    """Aggregate token + turn efficiency across instances (None when unreported)."""
+    from ..agent_eval.stats import TokenStats
+
+    tokens = TokenStats()
+    total_turns = 0
+    for r in results:
+        tokens.merge(r.stats)
+        total_turns += r.turns
+    if tokens.is_empty() and total_turns == 0:
+        return None
+    n = len(results) or 1
+    eff: dict[str, Any] = {"num_instances": len(results),
+                           "total_turns": total_turns,
+                           "avg_turns": round(total_turns / n, 2)}
+    if not tokens.is_empty():
+        eff["tokens"] = tokens.to_dict()
+    return eff
 
 
 def write_report(path: str | Path, results: list[InstanceResult], model_name: str) -> Path:

@@ -80,6 +80,36 @@ def test_build_autoround_command_opt_rtn():
     assert "--disable_opt_rtn" in off and "--enable_opt_rtn" not in off
 
 
+def test_build_autoround_command_device_map_multi_gpu():
+    cfg = QuantConfig(scheme="MXFP8", method="model_free")
+    single = build_autoround_command("org/m", cfg, Path("/tmp/o"), num_gpus=1)
+    multi = build_autoround_command("org/m", cfg, Path("/tmp/o"), num_gpus=4)
+    assert "--device_map" not in single          # single GPU => auto-round default
+    assert _adjacent(multi, "--device_map") == "auto"
+
+
+def test_build_autoround_command_device_map_explicit_wins():
+    cfg = QuantConfig(scheme="MXFP8", method="model_free", device_map="0,1")
+    # explicit config is honored even on a single GPU, and not doubled on multi.
+    single = build_autoround_command("org/m", cfg, Path("/tmp/o"), num_gpus=1)
+    multi = build_autoround_command("org/m", cfg, Path("/tmp/o"), num_gpus=4)
+    assert _adjacent(single, "--device_map") == "0,1"
+    assert multi.count("--device_map") == 1 and _adjacent(multi, "--device_map") == "0,1"
+
+
+def test_ensure_device_map_injects_for_agent_command():
+    from aqa.quantize import ensure_device_map
+
+    cfg = QuantConfig(scheme="MXFP8", method="model_free")
+    base = "auto-round --model_name org/m --scheme MXFP8 --model_free"
+    assert ensure_device_map(base, cfg, num_gpus=1) == base            # single GPU: untouched
+    injected = ensure_device_map(base, cfg, num_gpus=8)
+    assert injected == base + " --device_map auto"
+    # already-present device_map is never doubled
+    with_dm = base + " --device_map cpu"
+    assert ensure_device_map(with_dm, cfg, num_gpus=8) == with_dm
+
+
 def test_quantconfig_rejects_unknown_algorithm():
     import pytest
 
@@ -112,3 +142,179 @@ def test_quantconfig_model_free_rejects_calibrated_algorithm():
 
     with pytest.raises(ValueError, match="calibration-free"):
         QuantConfig(method="model_free", algorithm="awq,auto_round")
+
+
+def test_pipeline_writes_back_status_on_eval_failure(tmp_path, monkeypatch):
+    """A crashed eval still uploads artifacts + a failure status (not silence)."""
+    import pytest
+
+    import aqa.pipeline as P
+    from aqa.config import RunConfig
+    from aqa.report.sinks import RunMeta
+
+    captured: list[RunMeta] = []
+
+    def _fake_dispatch(run_cfg, run_dir, meta):
+        captured.append(meta)
+
+    def _boom(*a, **k):
+        from aqa.logging_util import AqaError
+        raise AqaError("evaluate failed after fix-loop: drift: unknown")
+
+    monkeypatch.setattr(P, "_dispatch_sinks", _fake_dispatch)
+    monkeypatch.setattr(P, "_run_evaluate", _boom)
+
+    cfg = RunConfig.model_validate({
+        "model": "org/m",
+        "eval": {"benchmarks": ["piqa"], "backend": "vllm", "baseline": False},
+        "output": {"dir": str(tmp_path), "sinks": []},
+    })
+    with pytest.raises(P.AqaError, match="evaluate failed"):
+        P.run_pipeline(cfg, tmp_path)
+
+    assert captured, "failure path must still dispatch sinks"
+    assert captured[-1].status == "Eval Failed"
+    assert captured[-1].run_root == tmp_path
+
+
+def test_pipeline_failure_status_is_quant_failed_when_quantize_raises(tmp_path, monkeypatch):
+    import pytest
+
+    import aqa.pipeline as P
+    from aqa.config import RunConfig
+    from aqa.report.sinks import RunMeta
+
+    captured: list[RunMeta] = []
+    monkeypatch.setattr(P, "_dispatch_sinks", lambda rc, rd, m: captured.append(m))
+
+    def _boom(*a, **k):
+        raise P.AqaError("quantize failed after fix-loop: drift: oom")
+
+    monkeypatch.setattr(P, "_resolve_model", _boom)
+
+    cfg = RunConfig.model_validate({
+        "model": "org/m",
+        "provider": {"type": "quantize", "quant": {"scheme": "MXFP4"}},
+        "eval": {"benchmarks": ["piqa"], "backend": "vllm", "baseline": False},
+        "output": {"dir": str(tmp_path), "sinks": []},
+    })
+    with pytest.raises(P.AqaError, match="quantize failed"):
+        P.run_pipeline(cfg, tmp_path)
+
+    assert captured and captured[-1].status == "Quant Failed"
+
+
+
+# ── multi-GPU resolution + baseline agent-fix routing ─────────────────────────
+def test_num_gpus_prefers_explicit_executor_field():
+    import aqa.pipeline as P
+    from aqa.config import RunConfig
+
+    # In-container run: executor.type=local with an explicit device count.
+    cfg = RunConfig.model_validate({
+        "model": "org/m",
+        "eval": {"benchmarks": ["piqa"], "backend": "vllm"},
+        "executor": {"type": "local", "num_gpus": 4},
+    })
+    assert P._num_gpus(cfg) == 4
+
+
+def test_num_gpus_derived_from_ssh_gpu_list():
+    import aqa.pipeline as P
+    from aqa.config import RunConfig
+
+    cfg = RunConfig.model_validate({
+        "model": "org/m",
+        "eval": {"benchmarks": ["piqa"], "backend": "vllm"},
+        "executor": {"type": "ssh",
+                     "ssh": {"host": "u@h", "gpus": "5,6",
+                             "auth": {"method": "password", "password_env": "GPU_SSH_PASS"}}},
+    })
+    assert P._num_gpus(cfg) == 2
+
+
+def test_baseline_goes_through_agent_fix_wrapper(tmp_path, monkeypatch):
+    import aqa.pipeline as P
+    from aqa.config import RunConfig
+
+    monkeypatch.setattr(P, "_dispatch_sinks", lambda *a, **k: None)
+    monkeypatch.setattr(P, "_make_knowledge", lambda rc: None)
+    monkeypatch.setattr(P, "_finalize_knowledge", lambda k: None)
+    monkeypatch.setattr(P, "_maybe_upload_model", lambda *a, **k: None)
+
+    class _Resolved:
+        model = "org/m"
+        upload = None
+
+    monkeypatch.setattr(P, "_resolve_model", lambda *a, **k: _Resolved())
+
+    calls: list[str] = []
+
+    def _fake_eval(run_cfg, model, eval_dir, out_dir, num_gpus, knowledge=None,
+                   run_id="", phase_name="evaluate", heal=None):
+        calls.append(phase_name)
+        return _result({"piqa": 0.8})
+
+    monkeypatch.setattr(P, "_run_evaluate", _fake_eval)
+
+    cfg = RunConfig.model_validate({
+        "model": "org/m",
+        "provider": {"type": "quantize", "quant": {"scheme": "MXFP4"}},
+        "eval": {"benchmarks": ["piqa"], "backend": "vllm", "baseline": True},
+        "output": {"dir": str(tmp_path), "sinks": []},
+    })
+    P.run_pipeline(cfg, tmp_path)
+    # baseline AND the quantized eval both route through the fix-loop wrapper.
+    assert calls == ["baseline", "evaluate"]
+
+
+def test_pipeline_records_self_heal_in_manifest(tmp_path, monkeypatch):
+    import json
+
+    import aqa.pipeline as P
+    from aqa.agent.fix_loop import FixResult
+    from aqa.agent_eval.stats import TokenStats
+    from aqa.config import RunConfig
+
+    monkeypatch.setattr(P, "_dispatch_sinks", lambda *a, **k: None)
+    monkeypatch.setattr(P, "_make_knowledge", lambda rc: None)
+    monkeypatch.setattr(P, "_finalize_knowledge", lambda k: None)
+    monkeypatch.setattr(P, "_maybe_upload_model", lambda *a, **k: None)
+
+    class _Resolved:
+        model = "org/m"
+        upload = None
+
+    # Quantize provider path records a two-attempt agent fix into the tally.
+    def _fake_resolve(run_cfg, out_dir, num_gpus, knowledge=None, run_id="", heal=None):
+        if heal is not None:
+            heal.record_fix("quantize", FixResult(
+                ok=True, attempts=2, tier_index=0,
+                tokens=TokenStats(n_input_tokens=100, n_output_tokens=30)))
+        return _Resolved()
+
+    monkeypatch.setattr(P, "_resolve_model", _fake_resolve)
+
+    def _fake_eval(run_cfg, model, eval_dir, out_dir, num_gpus, knowledge=None,
+                   run_id="", phase_name="evaluate", heal=None):
+        if heal is not None:
+            heal.record_deterministic(phase_name, ["retry_oom"])
+        return _result({"piqa": 0.8})
+
+    monkeypatch.setattr(P, "_run_evaluate", _fake_eval)
+
+    cfg = RunConfig.model_validate({
+        "model": "org/m",
+        "provider": {"type": "quantize", "quant": {"scheme": "MXFP4"}},
+        "eval": {"benchmarks": ["piqa"], "backend": "vllm"},
+        "output": {"dir": str(tmp_path), "sinks": []},
+    })
+    P.run_pipeline(cfg, tmp_path)
+
+    manifest = json.loads((tmp_path / "run_manifest.json").read_text())
+    sh = manifest["results"]["self_heal"]
+    assert sh["agent_attempts"] == 2
+    assert sh["deterministic_heals"] == 1
+    assert sh["per_phase"]["quantize"]["agent_attempts"] == 2
+    assert sh["per_phase"]["evaluate"]["deterministic_heals"] == 1
+    assert sh["tokens"]["n_input_tokens"] == 100

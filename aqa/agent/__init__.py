@@ -12,10 +12,12 @@ from __future__ import annotations
 
 from .backends import AgentUnavailable, run_agent_fix
 from .fix_loop import FixLoop, FixLoopConfig, FixResult, PhaseResult, run_fix_loop
+from .knowledge import KnowledgeStore, PatchRecord
 from .lessons import LessonStore
 from .optimize import ModelAnalysis, analyze_model, run_agent_optimize
 from .patch import PatchArea, PatchCapture, find_editable_areas
 from .tiers import Tier, resolve_tiers
+from .trajectories import TrajectoryStore, TrajectorySummary, build_summary
 from .verdict import AgentAnalysis, Verdict, parse_verdict
 
 __all__ = [
@@ -24,14 +26,19 @@ __all__ = [
     "FixLoop",
     "FixLoopConfig",
     "FixResult",
+    "KnowledgeStore",
     "LessonStore",
     "ModelAnalysis",
     "PatchArea",
     "PatchCapture",
+    "PatchRecord",
     "PhaseResult",
     "Tier",
+    "TrajectoryStore",
+    "TrajectorySummary",
     "Verdict",
     "analyze_model",
+    "build_summary",
     "find_editable_areas",
     "parse_verdict",
     "resolve_tiers",

@@ -23,6 +23,14 @@ _PREFIX_RE = re.compile(
 )
 _EXC_RE = re.compile(r"\b([A-Za-z_][\w.]*(?:Error|Exception|Warning)|OSError)\b\s*:\s*\S")
 _WRAP_RE = re.compile(r"\b(?:failed|error)\b\s*[:\-]\s*(\S.+)", re.IGNORECASE)
+# torch-dynamo / compile wraps the real error as
+# ``raised exception AssertionError([ConstantVariable(str: 'the real message')])``
+# while the outer traceback ends in a generic ``RuntimeError: Engine core …``.
+# Capture the inner exception name + message so the signature reflects the true cause.
+_DYNAMO_EXC_RE = re.compile(
+    r"raised exception\s+([A-Za-z_][\w.]*(?:Error|Exception))\("
+    r"(?:[^'\"\n]*?str:\s*)?['\"]([^'\"\n]{4,}?)['\"]"
+)
 
 
 def _clean(line: str) -> str:
@@ -34,6 +42,12 @@ def extract_signature(text: str) -> str:
     lines = [ln for ln in (text or "").splitlines() if ln.strip()]
     if not lines:
         return "unknown error"
+    # torch-dynamo-wrapped assertions carry the real cause inside the parens;
+    # prefer it over the generic outer RuntimeError wrapper.
+    dynamo = _DYNAMO_EXC_RE.findall(text or "")
+    if dynamo:
+        name, msg = dynamo[-1]
+        return f"{name}: {msg}".strip()[:150]
     exc = [_clean(ln) for ln in lines if _EXC_RE.search(_clean(ln))]
     if exc:
         return exc[-1][:150]

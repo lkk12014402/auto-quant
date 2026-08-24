@@ -61,6 +61,10 @@ class RunMeta:
     run_id: str = ""
     status: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
+    # Shared fix-knowledge dir (lessons + replayable patches + replay stats). When
+    # set on a full-run upload it rides the results dataset under ``knowledge/`` so
+    # a later run can sync it back — cross-machine sharing without a separate repo.
+    knowledge_dir: Path | None = None
 
     @property
     def org(self) -> str:
@@ -224,6 +228,10 @@ class HfDatasetSink:
                     json.dumps(status_data, indent=2, ensure_ascii=False) + "\n",
                     encoding="utf-8")
 
+            # Shared fix-knowledge rides the results dataset under ``knowledge/``.
+            if meta.knowledge_dir and Path(meta.knowledge_dir).is_dir():
+                self._stage_knowledge(Path(meta.knowledge_dir), staging / "knowledge")
+
             self._upload_folder(api, token, staging, path_in_repo=None,
                                 commit_message=f"Add run for {artifact} ({run_id})")
 
@@ -231,6 +239,24 @@ class HfDatasetSink:
         url = f"https://huggingface.co/datasets/{self.repo}/tree/main/{target}"
         _log.info("results uploaded to %s (status=%s)", url, meta.status or "Finished")
         return url
+
+    @staticmethod
+    def _stage_knowledge(src: Path, dst: Path) -> None:
+        """Copy the knowledge tree (lessons/patches/stats) into the upload staging.
+
+        Only lightweight text artifacts (``.jsonl``/``.patch``/``.json``) are shipped;
+        the snapshot cache and any binaries are excluded.
+        """
+        import shutil
+
+        keep = (".jsonl", ".patch", ".json")
+        for p in src.rglob("*"):
+            if not p.is_file() or p.suffix not in keep:
+                continue
+            rel = p.relative_to(src)
+            out = dst / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, out)
 
     def _upload_folder(self, api, token: str, folder: Path, path_in_repo,
                        commit_message: str | None = None) -> None:

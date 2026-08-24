@@ -42,10 +42,20 @@ def _cfg():
 def test_inner_config_forces_local_executor():
     cfg = _cfg()
     inner = yaml.safe_load(build_inner_config(cfg, "run123"))
-    assert inner["executor"] == {"type": "local"}
+    # executor is forced local, but the host's GPU count is carried through so the
+    # in-container run uses the right tensor_parallel_size / device_map.
+    assert inner["executor"] == {"type": "local", "num_gpus": 1}
     assert inner["output"]["dir"].endswith("/run123")
     # sinks are preserved so results still upload from inside the container
     assert any(s["type"] == "hf_dataset" for s in inner["output"]["sinks"])
+
+
+def test_inner_config_carries_multi_gpu_count():
+    import copy
+    data = copy.deepcopy(_BASE)
+    data["executor"]["ssh"]["gpus"] = "5,6"  # two devices exposed to the container
+    inner = yaml.safe_load(build_inner_config(parse_run_config(data), "r"))
+    assert inner["executor"]["num_gpus"] == 2
 
 
 def test_remote_script_has_build_and_run(tmp_path):

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import stat as _stat
 
-from aqa.agent.backends import _archive_agent_session
+from aqa.agent.backends import _archive_agent_session, _copilot_session_id
 from aqa.executors.ssh import _sftp_fetch_tree
 
 
@@ -94,3 +94,22 @@ def test_archive_missing_session_is_noop(tmp_path):
     log_path.write_text("stream")
     _archive_agent_session("copilot", "absent", log_path, {"HOME": str(tmp_path)})
     assert not log_path.with_name("attempt_3.events.jsonl").exists()
+
+
+def test_copilot_session_id_coerces_label_to_uuid():
+    import uuid
+
+    # A human-readable fix-loop label is not a valid UUID -> must be coerced.
+    got = _copilot_session_id("fix_evaluate_7369e9fa")
+    assert uuid.UUID(got)  # parses as a valid UUID (no exception)
+    # Deterministic: same label -> same session id (so archival dir matches).
+    assert got == _copilot_session_id("fix_evaluate_7369e9fa")
+    # Distinct labels -> distinct ids.
+    assert got != _copilot_session_id("fix_quantize_7369e9fa")
+
+
+def test_copilot_session_id_passes_through_valid_uuid():
+    import uuid
+
+    valid = str(uuid.uuid4())
+    assert _copilot_session_id(valid) == valid

@@ -68,11 +68,13 @@ def validate(config: str) -> None:
 @click.option("--difficulty", default=None, help="Only instances of this difficulty.")
 @click.option("--concurrency", type=int, default=4, help="Instances graded in parallel.")
 @click.option("--max-turns", type=int, default=40, help="ReAct turn budget per instance.")
+@click.option("--scaffold", default="aqa-react",
+              help="Agent scaffold / infra: aqa-react (default), codex, swe-agent.")
 @click.option("--namespace", default="swebench", help="Docker namespace for eval images.")
 def swebench(
     dataset: str, base_url: str, served_model: str, api_key_env: str | None, out: str,
     limit: int | None, instance_ids: tuple[str, ...], difficulty: str | None,
-    concurrency: int, max_turns: int, namespace: str,
+    concurrency: int, max_turns: int, scaffold: str, namespace: str,
 ) -> None:
     """Evaluate a served model on SWE-bench Verified (agentic, official scoring)."""
     import os
@@ -90,7 +92,7 @@ def swebench(
     client = ModelClient(base_url=base_url, model=served_model, api_key=api_key)
     _, report = run_swebench(
         instances, client, model_name=served_model, out_dir=out,
-        concurrency=concurrency, max_turns=max_turns,
+        concurrency=concurrency, max_turns=max_turns, scaffold=scaffold,
         sandbox_factory=default_sandbox_factory(namespace=namespace),
     )
     resolved = sum(1 for r in report.results if r.resolved)

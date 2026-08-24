@@ -57,6 +57,11 @@ class QuantConfig(BaseModel):
     hadamard_type: Literal["hadamard", "random_hadamard", "quarot_hadamard"] | None = None
     # RTN optimized-rounding toggle (``--enable_opt_rtn`` / ``--disable_opt_rtn``).
     opt_rtn: bool | None = None
+    # Device placement for auto-round (``--device_map``). ``None`` => let the
+    # pipeline pick: ``"auto"`` when the run has >1 GPU (shard the model across
+    # visible cards), else auto-round's single-device default. Set explicitly
+    # (e.g. ``"auto"`` / ``"0,1"``) to override the automatic choice.
+    device_map: str | None = None
     extra_args: list[str] = Field(default_factory=list)
 
     _ALG_TOKENS = {
@@ -220,6 +225,28 @@ class PatchConfig(BaseModel):
     track_vllm: bool = True
 
 
+class KnowledgeConfig(BaseModel):
+    """Shared, persistent fix-knowledge store (lessons + replayable patches).
+
+    Lessons and successful patches are keyed by error *signature* so they are
+    reused across runs, models and machines -- not scoped to one run's output.
+    When ``repo`` is set the store is backed by a Hugging Face dataset (synced
+    down at run start, pushed back after a successful fix); otherwise it is a
+    local-only directory shared across runs on the same host.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    repo: str | None = None          # HF dataset repo, e.g. "org/aqa-knowledge"
+    path_in_repo: str = "knowledge"  # subtree inside the dataset
+    token_env: str | None = None     # env var holding the write token (else HF_TOKEN)
+    endpoint: str | None = None      # custom HF endpoint (mirrors the sink)
+    local_dir: str | None = None     # local cache; default ~/.cache/aqa/knowledge
+    replay: bool = True              # try recorded patches before invoking the agent
+    push: bool = True                # upload new lessons/patches back to the repo
+
+
 class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -232,6 +259,7 @@ class AgentConfig(BaseModel):
     agent_timeout: int = 1200  # per-attempt agent wall-clock budget (seconds)
     context: str | None = None  # inline text or "@file" (resolved by loader)
     patch: PatchConfig = Field(default_factory=PatchConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
 
 
 class SshAuth(BaseModel):
@@ -290,6 +318,7 @@ class ExecutorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: str = "local"  # local | ssh | intel_reserve (plugin) | <your plugin>
+    num_gpus: int | None = None  # explicit device count; else derived from ssh.gpus
     image: ImageConfig = Field(default_factory=ImageConfig)
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     ssh: SshConfig | None = None

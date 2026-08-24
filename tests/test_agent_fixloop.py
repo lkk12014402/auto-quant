@@ -4,10 +4,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from aqa.agent.drift import classify_error, extract_progress, logs_similarity
-from aqa.agent.fix_loop import FixLoop, FixLoopConfig, PhaseResult
+from aqa.agent.drift import (
+    classify_error,
+    exception_type,
+    extract_progress,
+    logs_similarity,
+)
+from aqa.agent.fix_loop import (
+    AgentOutcome,
+    FixLoop,
+    FixLoopConfig,
+    PhaseResult,
+    _coerce_outcome,
+)
 from aqa.agent.lessons import LessonStore, extract_signature
-from aqa.agent.prompt import build_fix_prompt
+from aqa.agent.prompt import build_fix_prompt, load_fix_playbook
 from aqa.agent.tiers import resolve_tier, resolve_tiers
 from aqa.agent.verdict import AgentAnalysis, Verdict, extract_field, parse_verdict
 
@@ -60,6 +71,38 @@ def test_classify_error():
     assert classify_error("something totally unknown here") == "unknown"
 
 
+def test_classify_error_granular():
+    # Specific patterns win over the generic RuntimeError bucket.
+    assert classify_error("RuntimeError: CUDA error: no kernel image is available") \
+        == "cuda_arch_mismatch"
+    assert classify_error("OSError: [Errno 28] No space left on device") == "disk_space"
+    assert classify_error("requests.ConnectionError: Max retries exceeded") == "network_transient"
+    assert classify_error("huggingface_hub GatedRepoError: 403 Client Error") == "auth_error"
+    assert classify_error("Entry Not Found for url") == "download_missing"
+    assert classify_error("ModuleNotFoundError: No module named 'auto_round'") == "import_error"
+
+
+def test_exception_type_extracts_deepest_class():
+    assert exception_type("RuntimeError: size mismatch") == "RuntimeError"
+    assert exception_type("modeling_qwen.QwenError: bad rope") == "QwenError"
+    # deepest (last) exception in a traceback wins
+    text = "ValueError: outer\n  ...\nKeyError: 'inner'\n"
+    assert exception_type(text) == "KeyError"
+    assert exception_type("no exception here") == ""
+
+
+def test_exception_type_unwraps_dynamo_wrapper():
+    # torch-dynamo wraps the true error; the outer colon-form is a generic
+    # RuntimeError. We should recover the inner AssertionError, not RuntimeError.
+    text = (
+        "RuntimeError: Worker failed with error 'Observed exception\n"
+        "  Developer debug context: raised exception AssertionError("
+        "[ConstantVariable(str: 'mm_mxfp8 requires N >= 128, got N=32.')])\n"
+        "RuntimeError: Engine core initialization failed. See root cause above.\n"
+    )
+    assert exception_type(text) == "AssertionError"
+
+
 def test_extract_progress():
     assert extract_progress("quantizing model.layers.3 ... model.layers.17 done") == 17
     assert extract_progress("no layers here") == -1
@@ -104,12 +147,62 @@ def test_build_fix_prompt_sections():
     assert "did X" in p
 
 
+def test_build_fix_prompt_prior_state_and_diff():
+    p = build_fix_prompt(
+        "evaluate", "boom traceback", attempt=2,
+        prior_state="- agent self-report: FIXABLE\n- ACTUAL re-run ...: STILL FAILING",
+        prior_diff="--- a/x\n+++ b/x\n@@\n-old\n+new",
+    )
+    assert "Previous fix attempt" in p
+    assert "STILL FAILING" in p
+    assert "```diff" in p
+    assert "+new" in p
+
+
+def test_load_fix_playbook_ships():
+    text = load_fix_playbook()
+    assert "ignore" in text.lower() and "MXFP8" in text
+
+
+def test_build_fix_prompt_embeds_skill_playbook():
+    p = build_fix_prompt("quantize", "boom", attempt=1,
+                         skill_playbook="RULE: keep in_proj_a FP16")
+    assert "Domain playbook" in p
+    assert "keep in_proj_a FP16" in p
+
+
+def test_build_fix_prompt_omits_skill_playbook_when_absent():
+    p = build_fix_prompt("quantize", "boom", attempt=1)
+    assert "Domain playbook" not in p
+
+
+def test_build_fix_prompt_omits_prior_state_when_absent():
+    p = build_fix_prompt("evaluate", "boom", attempt=1)
+    assert "Previous fix attempt" not in p
+
+
 # ── lessons ──────────────────────────────────────────────────────────────────
 
 
 def test_extract_signature_prefers_exception():
     text = "some log\n15:51:56 [ERROR] wrapper\nRuntimeError: size mismatch for x\n"
     assert extract_signature(text) == "RuntimeError: size mismatch for x"
+
+
+def test_extract_signature_unwraps_dynamo_over_generic_wrapper():
+    # The generic "lm_eval failed for … (rc=1)" wrapper + a dynamo-wrapped
+    # AssertionError: the signature must reflect the real kernel assertion, not
+    # the task list or the outer RuntimeError, so knowledge keys on the true cause.
+    text = (
+        "lm_eval failed for piqa+hellaswag+mmlu (rc=1); see /workspace/x.log\n"
+        "(EngineCore) ERROR   Developer debug context: raised exception "
+        "AssertionError([ConstantVariable(str: 'mm_mxfp8 requires N >= 128, "
+        "got N=32. out_features is too small for mm_mxfp8.')])\n"
+        "RuntimeError: Engine core initialization failed. See root cause above.\n"
+    )
+    sig = extract_signature(text)
+    assert sig.startswith("AssertionError: mm_mxfp8 requires N >= 128")
+    assert "piqa" not in sig
 
 
 def test_lesson_store_roundtrip_and_dedup(tmp_path: Path):
@@ -159,6 +252,34 @@ def test_fix_loop_fixes_after_one_attempt(tmp_path: Path):
     fr = loop.run()
     assert fr.ok and fr.attempts == 1
     assert runner.calls == ["openclaw"]  # never escalated
+
+
+def test_fix_loop_accrues_agent_tokens(tmp_path: Path):
+    # Agent output carries a token-usage JSON blob -> FixResult.tokens accrues it.
+    results = [PhaseResult(ok=False, log_text="RuntimeError: boom"), PhaseResult(ok=True)]
+    usage = ('VERDICT: FIXABLE\nFIX_PLAN: patch\n'
+             '{"token_usage": {"input_tokens": 120, "output_tokens": 40, '
+             '"cached_input_tokens": 10}}')
+    runner = _agent_runner([usage])
+    loop = FixLoop(
+        "quantize", lambda: results.pop(0),
+        config=FixLoopConfig(tiers=["openclaw", "opus"]),
+        out_dir=tmp_path, run_agent=runner,
+    )
+    fr = loop.run()
+    assert fr.ok and fr.attempts == 1
+    assert fr.tokens is not None and not fr.tokens.is_empty()
+    assert fr.tokens.n_input_tokens == 120
+    assert fr.tokens.n_output_tokens == 40
+    assert fr.tokens.n_cache_tokens == 10
+
+
+def test_fix_loop_no_tokens_when_agent_silent(tmp_path: Path):
+    # First-try success -> no agent invoked -> tokens empty/None.
+    loop = FixLoop("quantize", lambda: PhaseResult(ok=True), out_dir=tmp_path)
+    fr = loop.run()
+    assert fr.ok and fr.attempts == 0
+    assert fr.tokens is None or fr.tokens.is_empty()
 
 
 def test_fix_loop_unfixable_escalates_then_aborts(tmp_path: Path):
@@ -225,3 +346,90 @@ def test_fix_loop_progress_resets_drift(tmp_path: Path):
     fr = loop.run()
     assert fr.ok
     assert runner.calls == ["openclaw", "openclaw", "openclaw"]  # never escalated
+
+
+# ── prior-state block + timeout signal ───────────────────────────────────────
+
+
+def _recording_runner(outputs):
+    """AgentRunner that records the prompts it received; supports str or AgentOutcome."""
+    calls: list[str] = []
+    prompts: list[str] = []
+
+    def runner(tier, prompt, log_path, session_id):
+        calls.append(tier.name)
+        prompts.append(prompt)
+        out = outputs.pop(0) if outputs else "VERDICT: FIXABLE"
+        text = out.text if isinstance(out, AgentOutcome) else out
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(log_path).write_text(text)
+        return out
+
+    runner.calls = calls          # type: ignore[attr-defined]
+    runner.prompts = prompts      # type: ignore[attr-defined]
+    return runner
+
+
+def test_coerce_outcome_accepts_str_and_outcome():
+    assert _coerce_outcome("hello").text == "hello"
+    assert not _coerce_outcome("hello").timed_out
+    oc = AgentOutcome(text="x", rc=124, timed_out=True)
+    assert _coerce_outcome(oc) is oc
+
+
+def test_prior_state_injected_into_next_attempt(tmp_path: Path):
+    # Attempt 1 claims FIXED but the re-run still fails; attempt 2 sees the honest
+    # 'STILL FAILING' prior-state and then succeeds.
+    results = [
+        PhaseResult(ok=False, log_text="RuntimeError: size mismatch for x"),
+        PhaseResult(ok=False, log_text="RuntimeError: size mismatch for x"),  # attempt-1 re-run
+        PhaseResult(ok=True),                                                 # attempt-2 re-run
+    ]
+    runner = _recording_runner([
+        "ERROR_CLASS: shape_mismatch\nVERDICT: FIXABLE\nFIX_PLAN: reshape it",
+        "ERROR_CLASS: shape_mismatch\nVERDICT: FIXABLE\nFIX_PLAN: really reshape it",
+    ])
+    loop = FixLoop(
+        "quantize", lambda: results.pop(0),
+        config=FixLoopConfig(tiers=["openclaw", "opus"], drift_threshold=5,
+                             tier_attempt_budget=5),
+        out_dir=tmp_path, run_agent=runner,
+    )
+    fr = loop.run()
+    assert fr.ok and fr.attempts == 2
+    p2 = runner.prompts[1]
+    assert "Previous fix attempt" in p2
+    assert "agent self-report: FIXABLE" in p2
+    assert "STILL FAILING" in p2
+    assert "error_class=shape_mismatch" in p2
+    # And it points the next attempt at the prior attempt's on-disk artifacts.
+    assert "attempt_1.log" in p2
+    assert "prompt_1.txt" in p2
+    # First attempt has no prior-state.
+    assert "Previous fix attempt" not in runner.prompts[0]
+
+
+def test_timeout_surfaced_as_truncated_in_prior_state(tmp_path: Path):
+    # Attempt 1 is wall-clock-killed (timed_out) -> next attempt's prompt warns the
+    # edits may be half-applied, rather than treating it as a clean finish.
+    results = [
+        PhaseResult(ok=False, log_text="RuntimeError: boom"),
+        PhaseResult(ok=False, log_text="RuntimeError: boom"),
+        PhaseResult(ok=True),
+    ]
+    runner = _recording_runner([
+        AgentOutcome(text="ERROR_CLASS: boom_err\n(no verdict -- killed)",
+                     rc=124, timed_out=True),
+        "VERDICT: FIXABLE\nFIX_PLAN: finish it",
+    ])
+    loop = FixLoop(
+        "quantize", lambda: results.pop(0),
+        config=FixLoopConfig(tiers=["openclaw", "opus"], drift_threshold=5,
+                             tier_attempt_budget=5),
+        out_dir=tmp_path, run_agent=runner,
+    )
+    fr = loop.run()
+    assert fr.ok and fr.attempts == 2
+    p2 = runner.prompts[1]
+    assert "timed out / truncated: YES" in p2
+    assert "half" in p2.lower()  # "edits may be HALF-APPLIED"

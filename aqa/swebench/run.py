@@ -21,11 +21,12 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..agent_eval.react import ToolUseSolver, run_tool_use_eval
+from ..agent_eval.react import run_tool_use_eval
+from ..agent_eval.scaffold import ScaffoldContext, resolve_scaffold
 from ..agent_eval.solver import Task
 from ..logging_util import get_logger
 from ..sandbox import create_sandbox
-from .environment import SWEBenchEnvironment
+from .environment import SWEBenchEnvironment, SWEBenchVerifier
 from .report import (
     InstanceResult,
     SWEBenchRunReport,
@@ -80,6 +81,7 @@ async def run_swebench_async(
     spec_provider: Callable[[SWEBenchInstance], TestSpec | None] | None = None,
     concurrency: int = 4,
     max_turns: int = 40,
+    scaffold: str = "aqa-react",
     exec_timeout: float = 900.0,
     test_timeout: float = 1800.0,
     out_dir: str | Path | None = None,
@@ -102,13 +104,17 @@ async def run_swebench_async(
         Task(id=i.instance_id, prompt=build_instruction(i), metadata={"swebench": True})
         for i in instances
     ]
-    agent = ToolUseSolver(
+    agent = resolve_scaffold(scaffold, ScaffoldContext(
         client=client, env_factory=env_factory,
-        system_prompt=SWE_SYSTEM_PROMPT, max_turns=max_turns,
-    )
+        verifier=SWEBenchVerifier(), system_prompt=SWE_SYSTEM_PROMPT,
+        max_turns=max_turns, command_timeout=exec_timeout,
+    ))
+    _log.info("swebench: scaffold=%s over %d instance(s)", scaffold, len(instances))
     agent_result = await run_tool_use_eval(name, tasks, agent, concurrency=concurrency)
 
     errors = {o.task_id: o.error for o in agent_result.outcomes if o.error}
+    stats_by_id = {o.task_id: o.stats for o in agent_result.outcomes}
+    turns_by_id = {o.task_id: o.turns for o in agent_result.outcomes}
     results: list[InstanceResult] = []
     for inst in instances:
         env = envs.get(inst.instance_id)
@@ -119,6 +125,8 @@ async def run_swebench_async(
             model_patch=env.model_patch if env is not None else "",
             report=report,
             error=errors.get(inst.instance_id),
+            stats=stats_by_id.get(inst.instance_id),
+            turns=turns_by_id.get(inst.instance_id, 0),
         ))
 
     run_report = SWEBenchRunReport(model_name=model_name, results=results)

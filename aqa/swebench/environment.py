@@ -25,8 +25,15 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from ..agent_eval.environment import Observation, _truncate
+from ..agent_eval.verifier import (
+    INFRA_ERROR,
+    MODEL_WRONG,
+    OK,
+    EvalVerdict,
+)
 from ..logging_util import get_logger
 from .spec import (
+    MISSING,
     apply_test_patch_cmd,
     capture_patch_cmd,
     compute_resolution,
@@ -37,6 +44,8 @@ from .spec import (
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable
 
+    from ..agent_eval.react import Trajectory
+    from ..agent_eval.solver import Task
     from ..sandbox.base import Sandbox
     from .dataset import SWEBenchInstance
     from .spec import ResolutionReport, TestSpec
@@ -121,3 +130,58 @@ class SWEBenchEnvironment:
 
     async def close(self) -> None:
         await asyncio.to_thread(self.sandbox.close)
+
+
+class SWEBenchVerifier:
+    """Structured verifier for SWE-bench: reward + per-test sub-metrics + category.
+
+    Grades via the environment's official FAIL_TO_PASS / PASS_TO_PASS rule, then
+    exposes *why*: how many target tests passed, whether the agent produced a
+    patch at all, and -- crucially -- whether the tests actually ran.  A run where
+    every graded test is ``MISSING`` (the test command never produced statuses)
+    is classified ``infra_error`` so a harness/container failure is excluded from
+    the scored denominator instead of counting as the model being wrong.
+    """
+
+    async def verify(self, task: Task, trajectory: Trajectory,
+                     env: SWEBenchEnvironment) -> EvalVerdict:
+        solved = bool(await env.is_solved())
+        report = env.report
+        metrics = _report_metrics(report)
+        metrics["patch_applied"] = 1.0 if env.model_patch.strip() else 0.0
+
+        # No test produced a real status => the grader/container failed, not the
+        # model. Keep it out of the accuracy denominator.
+        graded = metrics["f2p_total"] + metrics["p2p_total"]
+        ran = metrics["f2p_passed"] + metrics["f2p_failed"] \
+            + metrics["p2p_passed"] + metrics["p2p_failed"]
+        if graded > 0 and ran == 0:
+            return EvalVerdict(
+                reward=0.0, solved=False, category=INFRA_ERROR,
+                exc_type="SWEBenchNoTestsRan",
+                detail="graded tests all MISSING (test command produced no statuses)",
+                metrics=metrics,
+            )
+        return EvalVerdict(
+            reward=1.0 if solved else 0.0, solved=solved,
+            category=OK if solved else MODEL_WRONG,
+            metrics=metrics,
+        )
+
+
+def _report_metrics(report: ResolutionReport | None) -> dict[str, float]:
+    """Per-test pass/fail counts extracted from a resolution report."""
+    if report is None:
+        return {"f2p_passed": 0.0, "f2p_total": 0.0, "f2p_failed": 0.0,
+                "p2p_passed": 0.0, "p2p_total": 0.0, "p2p_failed": 0.0}
+
+    def _counts(status_map: dict[str, str]) -> tuple[float, float, float]:
+        total = float(len(status_map))
+        passed = float(sum(1 for s in status_map.values() if s == "PASSED"))
+        failed = float(sum(1 for s in status_map.values() if s not in ("PASSED", MISSING)))
+        return passed, total, failed
+
+    f2p_p, f2p_t, f2p_f = _counts(report.fail_to_pass)
+    p2p_p, p2p_t, p2p_f = _counts(report.pass_to_pass)
+    return {"f2p_passed": f2p_p, "f2p_total": f2p_t, "f2p_failed": f2p_f,
+            "p2p_passed": p2p_p, "p2p_total": p2p_t, "p2p_failed": p2p_f}

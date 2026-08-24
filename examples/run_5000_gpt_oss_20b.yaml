@@ -1,0 +1,101 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Port of local_dispatch/run_5000.sh  ->  a single declarative run.yaml.
+#
+# Original command:
+#   python3 reserve_and_login.py \
+#       --model Qwen/Qwen3.5-9B --scheme MXFP8 --method MODEL_FREE \
+#       --user kaokao --server 5000pro_7cards --gpus 6 \
+#       --export-format llm_compressor \
+#       --agent-optimize --agent-context @xpu_context.txt \
+#       --eval-tasks "piqa,hellaswag,mmlu,gsm8k" --eval-baseline \
+#       --gpu-dockerfile local
+#
+# Target machine: RTX 5000 Pro (7 cards) @ direct CUDA host, NO jump host.
+# Every secret below is read ONLY from an environment variable -- nothing private
+# is ever stored in this file (safe to commit / open-source).  Provide them via
+# a git-ignored `env.sh` you `source` before `aqa run` (see run_5000.md).
+# ─────────────────────────────────────────────────────────────────────────────
+
+model: openai/gpt-oss-20b
+
+quant:
+  scheme: MXFP8                # --scheme MXFP8
+  method: model_free           # --method MODEL_FREE
+  export_format: llm_compressor  # --export-format llm_compressor
+
+# Push the quantized checkpoint to a HF *model* repo after a successful eval.
+# (Top-level `quant:` above is folded into this quantize provider by the loader.)
+provider:
+  type: quantize
+  upload:
+    repo: LeaderboardModel1          # HF org/owner to create the model repo under
+    repo_name: gpt-oss-20b-AutoRound-MXFP8   # repo id under `repo` (default: artifact name)
+    token_env: INC4AI_HF_TOKEN       # model-upload token (export before `aqa run`)
+    private: false
+    model_card: true                 # auto-generate a README model card
+    # disable_xet: true              # uncomment if a valid write token hits a Xet 403
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]  # --eval-tasks
+  #benchmarks: [piqa]
+  backend: vllm
+  batch_size: auto
+  baseline: true               # --eval-baseline (also eval the bf16 original)
+  harness: lm_eval             # default harness (lm_eval | evalscope | native)
+  lm_eval:
+    # Extra `--model_args` appended to the vllm backend defaults (user overrides
+    # win). Qwen3 reasoning models: disable thinking + set the reasoning parser.
+    model_args:
+      enable_thinking: false
+    group: true                # piqa+hellaswag+mmlu run in ONE lm_eval call;
+                               # gsm8k runs separately because its recipe
+                               # (recipes/benchmarks/gsm8k.yaml) sets
+                               # apply_chat_template + fewshot_as_multiturn +
+                               # num_fewshot:5 + batch_size:"64".
+    seed: 42
+
+gate:
+  max_accuracy_drop: 0.05      # NO-GO if MXFP8 drops > 2 pts vs the bf16 baseline
+
+agent:
+  optimize: true               # --agent-optimize (analyse model -> quant recipe)
+  fix_loop: true               # root-cause + fix + retry failing phases
+  context: "@gpu_context.txt"  # --agent-context (CUDA / NGC environment notes)
+  tiers: [opus]                # escalation ladder; run_5000.sh sets AGENT_TIERS="opus"
+  patch:
+    capture: true              # save any auto-round fix as a patch with the run
+  knowledge:
+    # Shared, persistent fix-knowledge: lessons + replayable patches keyed by
+    # error signature, reused across runs AND different models. Pointed at the
+    # SAME results dataset -> its `knowledge/` subtree (default `path_in_repo`)
+    # is synced down at run start and pushed back after a fix, so a new model run
+    # replays a recorded auto_round/vllm fix before ever spending an agent tier.
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN   # write token for push (public read needs none)
+    replay: true                        # try recorded patches before the agent
+    push: true                          # upload new lessons/patches back to the repo
+
+executor:
+  type: ssh                    # --server 5000pro_7cards (direct CUDA machine)
+  image:
+    gpu: nvcr.io/nvidia/pytorch:26.01-py3  # NGC base image
+    dockerfile: local          # --gpu-dockerfile local (independent Dockerfile)
+  proxy:
+    http_proxy: ${LOCAL_HTTP_PROXY:-}
+    https_proxy: ${LOCAL_HTTPS_PROXY:-}
+  ssh:
+    host: ${GPU_HOST:-kaokao@5000pro-7cards}
+    gpus: "4"                  # --gpus 5
+    auth:
+      method: password
+      password_env: GPU_SSH_PASS   # export GPU_SSH_PASS='...' before running
+    # direct machine -> no `jump:` hops
+
+output:
+  dir: ./results/gpt-oss-20b-mxfp8
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+      request_filename: true   # embed the source request filename in each record

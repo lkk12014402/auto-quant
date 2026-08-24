@@ -16,6 +16,7 @@ import difflib
 import importlib.util
 import os
 import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -171,3 +172,86 @@ class PatchCapture:
             combined.write_text("".join(combined_parts))
             written["combined"] = combined
         return written
+
+    # -- deterministic replay (apply a *recorded* patch, revert on failure) ----
+    def _area_by_label(self, label: str) -> PatchArea | None:
+        for area in self.areas:
+            if area.label == label:
+                return area
+        return None
+
+    def apply_recorded(self, patch_by_label: dict[str, Path]) -> bool:
+        """Apply recorded per-area ``.patch`` files onto the live tree.
+
+        Each label must map to a currently-tracked area; the diff was written with
+        ``a/<label>/<rel>`` headers, so ``patch -p2`` (strip ``a/`` + ``<label>/``)
+        applies it relative to the area dir. We dry-run *every* patch first and only
+        commit if all apply cleanly -- an all-or-nothing atomic replay. A patch that
+        doesn't apply (different package version, model family, ...) is a normal miss,
+        not an error: we return ``False`` and the caller escalates to the agent.
+        """
+        if shutil.which("patch") is None:
+            _log.info("replay: `patch` tool unavailable; skipping deterministic replay")
+            return False
+        targets: list[tuple[PatchArea, Path]] = []
+        for label, patch_file in patch_by_label.items():
+            if label == "combined":
+                continue
+            area = self._area_by_label(label)
+            pf = Path(patch_file)
+            if area is None or not area.path.is_dir() or not pf.is_file() or pf.stat().st_size == 0:
+                return False
+            targets.append((area, pf))
+        if not targets:
+            return False
+        # Phase 1: dry-run everything.
+        for area, pf in targets:
+            if not self._patch(area.path, pf, dry_run=True):
+                return False
+        # Phase 2: commit (revert-all if any step unexpectedly fails).
+        applied: list[PatchArea] = []
+        for area, pf in targets:
+            if self._patch(area.path, pf, dry_run=False):
+                applied.append(area)
+            else:
+                self.restore()
+                return False
+        _log.info("replay: applied recorded patch to %d area(s): %s",
+                  len(applied), ", ".join(a.label for a in applied))
+        return True
+
+    @staticmethod
+    def _patch(area_path: Path, patch_file: Path, *, dry_run: bool) -> bool:
+        cmd = ["patch", "-p2", "--forward", "--no-backup-if-mismatch",
+               "-d", str(area_path), "-i", str(patch_file)]
+        if dry_run:
+            cmd.append("--dry-run")
+        try:
+            rc = subprocess.run(cmd, capture_output=True, text=True,
+                                timeout=120, check=False).returncode
+        except (OSError, subprocess.SubprocessError) as exc:
+            _log.warning("replay: patch invocation failed: %s", exc)
+            return False
+        return rc == 0
+
+    def restore(self) -> int:
+        """Revert every tracked area to its pristine snapshot (undo agent/replay edits).
+
+        Used after a failed replay (or a fix that must be rolled back) so the next
+        attempt starts from a clean tree. Only snapshotted areas are restored.
+        """
+        restored = 0
+        for area in self.areas:
+            snap = self.snapshot_root / area.label
+            if not snap.is_dir():
+                continue
+            try:
+                if area.path.exists():
+                    shutil.rmtree(area.path, ignore_errors=True)
+                shutil.copytree(snap, area.path, ignore=_ignore, dirs_exist_ok=True)
+                restored += 1
+            except (OSError, shutil.Error) as exc:
+                _log.warning("restore of %s failed: %s", area.label, exc)
+        if restored:
+            _log.info("replay: restored %d area(s) to pristine snapshot", restored)
+        return restored
