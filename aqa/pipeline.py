@@ -155,7 +155,7 @@ def _dispatch_sinks(run_cfg: RunConfig, run_dir: Path, meta: RunMeta) -> None:
 
 def _optimized_command(run_cfg: RunConfig, quant_dir: Path, out_dir: Path) -> str | None:
     """Try agent-optimize; return a validated auto-round command or None (fall back)."""
-    from .agent.optimize import run_agent_optimize
+    from .agent.optimize import build_quant_constraints, run_agent_optimize
     from .agent.tiers import resolve_tiers
 
     tiers = resolve_tiers(list(run_cfg.agent.tiers))
@@ -170,6 +170,7 @@ def _optimized_command(run_cfg: RunConfig, quant_dir: Path, out_dir: Path) -> st
             tier=tiers[-1],  # optimize with the strongest available tier
             run_agent=runner,
             user_context=run_cfg.agent.context or "",
+            constraints=build_quant_constraints(run_cfg.quant),
             log_dir=out_dir / "logs" / "agent_optimize",
         )
     except Exception as exc:  # noqa: BLE001 - optimize can only help, never block
@@ -416,8 +417,10 @@ def _finalize_knowledge(knowledge) -> None:
         return
     try:
         s = knowledge.stats()
-        _log.info("knowledge: replay stats -> hits=%d agent=%d unresolved=%d hit_rate=%.2f",
-                  s["replay_hit"], s["agent_fixed"], s["unresolved"], s["hit_rate"])
+        _log.info("knowledge: replay stats -> replay_hit=%d reference_used=%d agent=%d "
+                  "unresolved=%d hit_rate=%.2f",
+                  s["replay_hit"], s["reference_used"], s["agent_fixed"],
+                  s["unresolved"], s["hit_rate"])
         knowledge.push_up()
     except Exception as exc:  # noqa: BLE001 - finalization is best-effort
         _log.warning("knowledge: finalize failed: %s", exc)

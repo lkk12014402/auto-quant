@@ -339,7 +339,7 @@ class KnowledgeStore:
         )
 
     # -- replay statistics (埋点) -----------------------------------------
-    _STAT_OUTCOMES = ("replay_hit", "agent_fixed", "unresolved")
+    _STAT_OUTCOMES = ("replay_hit", "reference_used", "agent_fixed", "unresolved")
 
     def record_trajectory(self, summary: TrajectorySummary) -> dict | None:
         """Persist one distilled fix-trajectory summary (best-effort).
@@ -362,8 +362,12 @@ class KnowledgeStore:
         """Append one replay/heal outcome event (best-effort telemetry).
 
         ``outcome`` is one of :data:`_STAT_OUTCOMES`: ``replay_hit`` (a recorded
-        patch resolved the failure with no agent call), ``agent_fixed`` (an agent
-        tier resolved it), or ``unresolved`` (gave up). Drives the hit-rate metric.
+        patch resolved the failure with no agent call -- legacy, auto-apply is
+        disabled under reference-only replay so this stays 0), ``reference_used``
+        (an agent tier resolved it *while* a matching recorded fix was injected as
+        reference, i.e. knowledge demonstrably contributed), ``agent_fixed`` (an
+        agent tier resolved it with no matching recorded fix available), or
+        ``unresolved`` (gave up). Drives the hit-rate metric.
         """
         path = self._stats_path()
         try:
@@ -379,10 +383,14 @@ class KnowledgeStore:
             _log.warning("knowledge: could not log stat event: %s", exc)
 
     def stats(self) -> dict:
-        """Aggregate replay telemetry: counts per outcome + replay hit-rate.
+        """Aggregate replay telemetry: counts per outcome + knowledge hit-rate.
 
-        ``hit_rate`` = replay_hit / (replay_hit + agent_fixed + unresolved), i.e.
-        the fraction of *fixable* failures resolved deterministically with no agent.
+        ``hit_rate`` = (replay_hit + reference_used) / (all outcomes), i.e. the
+        fraction of *fixable* failures where recorded knowledge demonstrably
+        contributed -- either auto-applied (``replay_hit``, legacy/0 under
+        reference-only replay) or consulted-and-adopted by the agent
+        (``reference_used``). ``agent_fixed`` counts fixes the agent found with no
+        matching recorded knowledge available.
         """
         counts = dict.fromkeys(self._STAT_OUTCOMES, 0)
         path = self._stats_path()
@@ -399,7 +407,8 @@ class KnowledgeStore:
                     counts[outcome] += 1
         total = sum(counts.values())
         counts["total"] = total
-        counts["hit_rate"] = round(counts["replay_hit"] / total, 4) if total else 0.0
+        knowledge_hits = counts["replay_hit"] + counts["reference_used"]
+        counts["hit_rate"] = round(knowledge_hits / total, 4) if total else 0.0
         counts["trajectories"] = self._count_trajectories()
         return counts
 

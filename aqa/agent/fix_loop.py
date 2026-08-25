@@ -589,7 +589,11 @@ class FixLoop:
                 self._record_patch(err_text)
                 self._record_trajectory(err_text, analysis, rejected_trail,
                                         tier=tier.name, steps=attempt)
-                self._log_stat("agent_fixed", error_class=self._effective_class(analysis, err_text),
+                # Under reference-only replay a matching recorded fix is never
+                # auto-applied, so a success while `known_fixes` was injected means
+                # the agent consulted+adopted recorded knowledge -> credit it.
+                fix_outcome = "reference_used" if known_fixes else "agent_fixed"
+                self._log_stat(fix_outcome, error_class=self._effective_class(analysis, err_text),
                                tier=tier.name)
                 _log.info("phase %s fixed on attempt %d (tier %s)",
                           self.phase_name, attempt, tier.name)

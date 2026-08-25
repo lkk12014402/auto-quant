@@ -166,3 +166,110 @@ def test_run_agent_optimize_saves_recipe_doc(monkeypatch, tmp_path):
     assert cmd == _GOOD_CMD
     saved = (tmp_path / "quantization_recipe.md").read_text()
     assert "# org/dense Recipe" in saved
+
+
+# ── operator-fixed quant config precedence ────────────────────────────────────
+def _quant(**kw):
+    from aqa.config import QuantConfig
+    return QuantConfig(**kw)
+
+
+def test_build_quant_constraints_only_explicit_fields():
+    from aqa.agent.optimize import build_quant_constraints
+
+    # Defaults are NOT constrained; only fields the user actually set are.
+    cons = build_quant_constraints(_quant(scheme="MXFP8", method="autoround", iters=0))
+    flags = {c.flag for c in cons}
+    assert "--scheme" in flags and "--iters" in flags
+    assert "--model_free" in flags          # method explicitly set -> absent-constraint
+    # nsamples / ignore_layers / layer_config were never set -> absent from constraints
+    assert "--nsamples" not in flags and "--ignore_layers" not in flags
+
+
+def test_build_quant_constraints_model_free_present_vs_absent():
+    from aqa.agent.optimize import build_quant_constraints
+
+    mf = build_quant_constraints(_quant(method="model_free"))
+    al = build_quant_constraints(_quant(method="autoround"))
+    assert any(c.flag == "--model_free" and c.kind == "present" for c in mf)
+    assert any(c.flag == "--model_free" and c.kind == "absent" for c in al)
+
+
+def test_validate_rejects_model_free_when_operator_forbids_it():
+    # method=autoround => command must NOT pass --model_free (the gpt-oss trap).
+    from aqa.agent.optimize import build_quant_constraints
+
+    cons = build_quant_constraints(_quant(scheme="MXFP8", method="autoround"))
+    bad = "auto-round --model_name org/dense --scheme MXFP8 --model_free --output_dir /out"
+    ok, reason = validate_command(bad, _dense(), "/out", cons)
+    assert not ok and "operator-fixed" in reason and "model_free" in reason.lower()
+
+    good = "auto-round --model_name org/dense --scheme MXFP8 --iters 0 --output_dir /out"
+    ok, reason = validate_command(good, _dense(), "/out", cons)
+    assert ok, reason
+
+
+def test_validate_rejects_scheme_and_iters_mismatch():
+    from aqa.agent.optimize import build_quant_constraints
+
+    cons = build_quant_constraints(_quant(scheme="MXFP8", method="autoround", iters=200))
+    wrong_iters = "auto-round --model_name org/dense --scheme MXFP8 --iters 0 --output_dir /out"
+    ok, reason = validate_command(wrong_iters, _dense(), "/out", cons)
+    assert not ok and "--iters" in reason
+
+    wrong_scheme = "auto-round --model_name org/dense --scheme MXFP4 --iters 200 --output_dir /out"
+    ok, reason = validate_command(wrong_scheme, _dense(), "/out", cons)
+    assert not ok and "scheme" in reason
+
+
+def test_validate_ignore_layers_subset_and_layer_config_keys():
+    from aqa.agent.optimize import build_quant_constraints
+
+    cons = build_quant_constraints(_quant(
+        method="autoround",
+        ignore_layers="lm_head,embed_tokens,mlp.router",
+        layer_config={"mlp.experts": {"bits": 4}},
+    ))
+    # Command missing one required ignore token AND the layer_config key -> reject.
+    missing = ("auto-round --model_name org/dense --ignore_layers lm_head,embed_tokens "
+               "--output_dir /out")
+    ok, reason = validate_command(missing, _dense(), "/out", cons)
+    assert not ok
+
+    full = ('auto-round --model_name org/dense '
+            '--ignore_layers lm_head,embed_tokens,mlp.router '
+            '--layer_config {"mlp.experts":{"bits":4}} --output_dir /out')
+    ok, reason = validate_command(full, _dense(), "/out", cons)
+    assert ok, reason
+
+
+def test_build_optimize_prompt_renders_hard_constraints():
+    from aqa.agent.optimize import build_optimize_prompt, build_quant_constraints
+
+    cons = build_quant_constraints(_quant(scheme="MXFP8", method="autoround", iters=0))
+    prompt = build_optimize_prompt(
+        _dense(), scheme="MXFP8", method="autoround", export_format="auto_round",
+        output_dir="/out", constraints=cons,
+    )
+    assert "HARD CONSTRAINTS" in prompt
+    assert "do NOT pass `--model_free`" in prompt
+    assert "advisory only" in prompt
+
+
+def test_run_agent_optimize_rejects_constraint_violating_command(monkeypatch, tmp_path):
+    from aqa.agent.optimize import build_quant_constraints
+
+    _patch_analysis(monkeypatch)
+    # Agent ignores the operator and emits --model_free anyway -> rejected -> None
+    # (caller falls back to the deterministic builder, which honors the config).
+    bad = ("auto-round --model_name org/dense --scheme W4A16 --model_free "
+           "--format auto_round --output_dir /out")
+    cmd = run_agent_optimize(
+        "org/dense", scheme="W4A16", method="autoround", export_format="auto_round",
+        output_dir="/out", tier="low",
+        run_agent=lambda *a, **k: f"```bash\n{bad}\n```",
+        constraints=build_quant_constraints(_quant(method="autoround")),
+        recipe_knowledge="", log_dir=tmp_path,
+    )
+    assert cmd is None
+

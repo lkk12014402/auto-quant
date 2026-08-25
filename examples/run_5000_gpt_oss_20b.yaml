@@ -19,9 +19,27 @@
 model: openai/gpt-oss-20b
 
 quant:
-  scheme: MXFP8                # --scheme MXFP8
-  method: model_free           # --method MODEL_FREE
+  scheme: MXFP8                # --scheme MXFP8 base (attention + non-expert linears)
+  # IMPORTANT: do NOT use `model_free` for gpt-oss. Its MoE experts ship *already*
+  # MXFP4-packed (`_blocks`/`_scales`); model_free cannot dequantize that native
+  # layout -- it mis-treats the packed `_scales` as quantizable Linear weights
+  # (in_features=90 % group_size=32 != 0 -> "cannot pack, keeping original weight"),
+  # dumps them into `ignore`, and leaves `_blocks` untouched -> an incoherent
+  # "mxfp8" checkpoint vLLM can't load (KeyError experts.*.w2_bias). Use the normal
+  # model-load path: auto_round's gpt_oss/fused_moe handler dequantizes+requantizes
+  # the experts into a proper compressed-tensors checkpoint.
+  method: autoround            # model-load path (NOT --model_free)
+  # `iters` picks the algorithm on the model-load path:
+  #   iters: 0    -> RTN (calibration-free re-round; cheapest, what we use here)
+  #   iters: 200  -> auto-round tuning (SignRound; needs calibration data, slower,
+  #                  usually best accuracy). For tuning you may also set
+  #                  `nsamples: 128` (calibration samples) and, for the strongest
+  #                  MXFP4 tuning, `enable_alg_ext: true` (auto-round v2).
+  iters: 0
   export_format: llm_compressor  # --export-format llm_compressor
+  # agent.optimize (below) re-derives the recipe (ignore layers, experts->MXFP4
+  # layer_config, etc.) from the model structure; the fields above are the
+  # deterministic fallback used only if agent-optimize is off or yields nothing.
 
 # Push the quantized checkpoint to a HF *model* repo after a successful eval.
 # (Top-level `quant:` above is folded into this quantize provider by the loader.)
@@ -58,7 +76,11 @@ gate:
   max_accuracy_drop: 0.05      # NO-GO if MXFP8 drops > 2 pts vs the bf16 baseline
 
 agent:
-  optimize: true               # --agent-optimize (analyse model -> quant recipe)
+  optimize: true               # --agent-optimize: analyse model -> quant recipe.
+                               # method=autoround (above) steers it to the
+                               # model-load path; the recipe knowledge base also
+                               # forbids model_free for natively-MXFP4-packed MoE
+                               # (gpt-oss), so it won't re-derive `--model_free`.
   fix_loop: true               # root-cause + fix + retry failing phases
   context: "@gpu_context.txt"  # --agent-context (CUDA / NGC environment notes)
   tiers: [opus]                # escalation ladder; run_5000.sh sets AGENT_TIERS="opus"

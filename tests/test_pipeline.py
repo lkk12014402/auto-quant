@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from aqa.config import GateConfig, QuantConfig
@@ -80,7 +81,29 @@ def test_build_autoround_command_opt_rtn():
     assert "--disable_opt_rtn" in off and "--enable_opt_rtn" not in off
 
 
-def test_build_autoround_command_device_map_multi_gpu():
+def test_build_autoround_command_layer_config_emitted_as_json():
+    # Per-layer mixed-precision overrides must reach the CLI as compact JSON,
+    # not be silently dropped (regression: field existed but was never emitted).
+    cfg = QuantConfig(
+        scheme="MXFP8", method="autoround", iters=0,
+        ignore_layers="lm_head,embed_tokens,mlp.router",
+        layer_config={"mlp.experts": {"bits": 4, "group_size": 32, "data_type": "mx_fp"}},
+    )
+    cmd = build_autoround_command("org/m", cfg, Path("/tmp/out"))
+    assert "--model_free" not in cmd            # model-load RTN path
+    assert _adjacent(cmd, "--iters") == "0"
+    lc = _adjacent(cmd, "--layer_config")
+    assert json.loads(lc) == {"mlp.experts": {"bits": 4, "group_size": 32, "data_type": "mx_fp"}}
+    assert " " not in lc                        # compact (no spaces)
+
+
+def test_build_autoround_command_no_layer_config_flag_when_absent():
+    cfg = QuantConfig(scheme="MXFP8", method="autoround", iters=0)
+    cmd = build_autoround_command("org/m", cfg, Path("/tmp/out"))
+    assert "--layer_config" not in cmd
+
+
+
     cfg = QuantConfig(scheme="MXFP8", method="model_free")
     single = build_autoround_command("org/m", cfg, Path("/tmp/o"), num_gpus=1)
     multi = build_autoround_command("org/m", cfg, Path("/tmp/o"), num_gpus=4)

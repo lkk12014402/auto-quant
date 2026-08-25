@@ -171,6 +171,63 @@ def test_fixloop_no_reference_when_replay_disabled(tmp_path: Path):
     assert "REFERENCE ONLY" not in prompts[0]
 
 
+def test_fixloop_stat_reference_used_when_recorded_match(tmp_path: Path):
+    # A recorded fix matches the signature and is injected as reference; the agent
+    # resolves it -> credited as `reference_used`, and hit_rate reflects it.
+    ctx = _make_patch(tmp_path)
+    area, src = ctx["area"], ctx["src"]
+    kn = KnowledgeStore(local_dir=tmp_path / "kn")
+    err = "RuntimeError: size mismatch for layer 3"
+    kn.record("quantize", err, ctx["written"])
+    cap = PatchCapture(tmp_path / "snap2", areas=[area])
+
+    results = [PhaseResult(ok=False, log_text=err), PhaseResult(ok=True)]
+
+    def agent(_t, _prompt, log_path, _s):
+        (src / "mod.py").write_text("def f():\n    return 2\n")
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(log_path).write_text("VERDICT: FIXABLE")
+        return "VERDICT: FIXABLE"
+
+    loop = FixLoop(
+        "quantize", lambda: results.pop(0), config=FixLoopConfig(tiers=["openclaw"]),
+        out_dir=tmp_path / "out", run_agent=agent, knowledge=kn, patch_capture=cap,
+    )
+    assert loop.run().ok is True
+    s = kn.stats()
+    assert s["reference_used"] == 1
+    assert s["agent_fixed"] == 0
+    assert s["replay_hit"] == 0
+    assert s["hit_rate"] == 1.0
+
+
+def test_fixloop_stat_agent_fixed_when_no_recorded_match(tmp_path: Path):
+    # No recorded fix for this signature -> nothing injected as reference; a
+    # successful agent fix is credited as plain `agent_fixed`, hit_rate stays 0.
+    ctx = _make_patch(tmp_path)
+    src = ctx["src"]
+    kn = KnowledgeStore(local_dir=tmp_path / "kn")  # empty store
+    err = "RuntimeError: size mismatch for layer 3"
+
+    results = [PhaseResult(ok=False, log_text=err), PhaseResult(ok=True)]
+
+    def agent(_t, _prompt, log_path, _s):
+        (src / "mod.py").write_text("def f():\n    return 2\n")
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(log_path).write_text("VERDICT: FIXABLE")
+        return "VERDICT: FIXABLE"
+
+    loop = FixLoop(
+        "quantize", lambda: results.pop(0), config=FixLoopConfig(tiers=["openclaw"]),
+        out_dir=tmp_path / "out", run_agent=agent, knowledge=kn,
+    )
+    assert loop.run().ok is True
+    s = kn.stats()
+    assert s["reference_used"] == 0
+    assert s["agent_fixed"] == 1
+    assert s["hit_rate"] == 0.0
+
+
 def test_fixloop_reference_summarises_large_diff(tmp_path: Path):
     # A big recorded patch is NOT inlined verbatim: the prompt gets a summary +
     # on-disk pointer instead (so a multi-file source patch can't bloat the prompt).

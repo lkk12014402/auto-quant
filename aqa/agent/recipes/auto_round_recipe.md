@@ -69,6 +69,7 @@ layer_config = {
 - auto-round 的 `special_model_handler` 会**自动把 router/gate（以 `.gate` 结尾的模块）加入预定义 ignore 列表**；DeepSeek 系还自动忽略 `moe.gate`、`eh_proj/shared_head`（MTP）等。
 - 同一 transformer block 内所有 expert 的 gate/up/down 自动共享同一 scheme，无需手动配置。
 - vLLM 在线 `quantization="mxfp4"` 对 MoE 有 bug——**MoE MXFP4 应离线预量化并以 llm_compressor 格式加载**。
+- **⚠️ 原生 MXFP4 打包的 MoE 禁用 `--model_free`**：若模型的 experts **出厂即以 MX block 形式存储**（权重名形如 `mlp.experts.*_blocks` + `*_scales`（+`*_bias`），典型如 **gpt-oss**），**绝不能用 `--model_free`**。model_free 只会 dequant `fp8` 源，不认原生 MX 打包层：它把打包态 `_scales` 当成普通 Linear 权重去 MXFP-pack（`in_features` 常不被 `group_size=32` 整除 → “cannot pack, keeping original weight”），再把它们塞进 ignore，`_blocks` 原封不动 → 导出一个 experts 仍是残缺原生 MXFP4、内部不自洽的“mxfp8” checkpoint，vLLM 加载直接 `KeyError experts.*.w2_bias`。**正确做法**：走普通 model-load 路径（**不加 `--model_free`**）+ `--iters 0`（RTN，免校准），让 auto_round 的 `gpt_oss`/`fused_moe` handler 先 dequant 再 requant，产出合规 compressed-tensors。`--model_free`（Example C）仅适用于 **fp8 源**或**未预量化的超大模型**，不适用于已 MX 打包的 experts。
 
 ## 2. HuggingFace 上 MXFP4 + AutoRound 模型盘点（25+ 个）
 

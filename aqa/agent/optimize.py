@@ -21,9 +21,13 @@ import struct
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..logging_util import get_logger
 from .tiers import Tier
+
+if TYPE_CHECKING:
+    from ..config import QuantConfig
 
 _log = get_logger("agent.optimize")
 
@@ -61,6 +65,9 @@ RECIPE_DOC_TEMPLATE = """# <model> AutoRound Quantization Recipe
   self_attn (MLA or FP4 case), shared_experts, vision_tower/mm_projector, linear_attn
 - layer_config mixed precision (e.g. experts->MXFP4, sensitive layers->MXFP8)
 - Quantization target confirmed: routed experts MUST be quantized (bulk of params)
+- Operator-fixed config review: for EACH hard constraint, confirm the command
+  honors it and state whether you agree; if you'd recommend a different value,
+  say so here as advice (the command still obeys the operator).
 
 ## 6. Recommended command (auto_round CLI mode)
 ```autoround-cmd
@@ -73,6 +80,8 @@ auto-round --model_name <model> --scheme ... --output_dir <REQUIRED> --format ..
 ## 8. Optional variants & caveats
 - More aggressive / more conservative options; known pitfalls (ignore-name vs actual
   weight-name mismatch causing load errors, etc.)
+- If any operator-fixed value looks suboptimal for this model, record your
+  recommended alternative here (advisory only — the command above still obeys it).
 """
 
 # Concrete auto_round CLI exemplars (tuning / model_free / mixed-precision).  Always
@@ -92,7 +101,11 @@ auto-round --model_name <MODEL> --scheme MXFP4_RCEIL --iters 0 \\
   --format llm_compressor --output_dir <OUT> --device_map auto
 ```
 
-### Example C -- model_free (no model load, cheapest; huge/pre-quantized weights)
+### Example C -- model_free (no model load, cheapest; fp8 source or NON-pre-packed huge weights)
+# NOTE: model_free only dequantizes fp8 sources. NEVER use --model_free when the
+# MoE experts are already MXFP4-packed (weights named `*_blocks`/`*_scales`, e.g.
+# gpt-oss): it cannot dequant that native layout and emits a broken checkpoint.
+# For such models use the model-load path (no --model_free) + --iters 0 (RTN).
 ```bash
 auto-round --model_name <MODEL> --model_free \\
   --scheme W4A16 --ignore_layers lm_head,embed_tokens,mlp.gate \\
@@ -246,7 +259,8 @@ def load_recipe_knowledge() -> str:
 def build_optimize_prompt(a: ModelAnalysis, *, scheme: str, method: str,
                           export_format: str, output_dir: str,
                           skill_recipe: str = "", user_context: str = "",
-                          recipe_knowledge: str = "") -> str:
+                          recipe_knowledge: str = "",
+                          constraints: list[QuantConstraint] | None = None) -> str:
     """Ask the agent for a structured quantization recipe + one optimal command."""
     facts = [
         f"model: {a.model_id}",
@@ -266,6 +280,18 @@ def build_optimize_prompt(a: ModelAnalysis, *, scheme: str, method: str,
         "## Model structure (download-free analysis)\n" + "\n".join(facts),
         "## Sample module names (normalized)\n" + "\n".join(a.sample_modules[:40]),
     ]
+    if constraints:
+        directives = "\n".join(f"- {c.label}" for c in constraints)
+        parts.append(
+            "## Operator-fixed configuration (HARD CONSTRAINTS — obey verbatim)\n"
+            "These come from the user's run config and OVERRIDE your own analysis, the "
+            "recipe knowledge, and the CLI examples. Your final command MUST satisfy "
+            "every one of them:\n" + directives + "\n\n"
+            "If you judge any fixed value suboptimal or risky, STILL honor it in the "
+            "command, but record your understanding + recommended alternative in "
+            "sections 5 and 8 of the recipe document (advisory only — do not change "
+            "the command to disagree)."
+        )
     if recipe_knowledge:
         parts.append("## auto_round recipe knowledge (MUST consult)\n" + recipe_knowledge)
     if skill_recipe:
@@ -370,8 +396,110 @@ def _protects_experts(tok: str) -> bool:
     return "expert" in t.lower()
 
 
-def validate_command(cmd: str, a: ModelAnalysis, output_dir: str) -> tuple[bool, str]:
-    """Return ``(ok, reason)``; reject unsafe expert-protecting MoE commands."""
+@dataclass(frozen=True)
+class QuantConstraint:
+    """One operator-fixed recipe constraint the agent's command MUST satisfy.
+
+    Derived from the fields the user *explicitly set* in ``quant:`` (pydantic
+    ``model_fields_set``) so agent-optimize augments rather than overrides the
+    operator's intent. ``kind`` drives both the prompt directive and validation:
+
+    * ``value``   -- ``--flag`` must equal ``value`` (case-insensitive).
+    * ``present`` -- boolean ``--flag`` must be present.
+    * ``absent``  -- ``--flag`` must NOT appear (e.g. forbid ``--model_free``).
+    * ``subset``  -- every comma token in ``value`` must appear in the flag's list.
+    * ``haskeys`` -- the flag's value must contain each comma-listed key.
+    """
+
+    label: str          # human directive rendered into the prompt
+    flag: str           # auto-round flag it maps to
+    kind: str           # value | present | absent | subset | haskeys
+    value: str = ""     # expected value / comma tokens / keys (per ``kind``)
+
+    def satisfied_by(self, toks: list[str]) -> bool:
+        present = self.flag in toks or any(t.startswith(self.flag + "=") for t in toks)
+        if self.kind == "present":
+            return present
+        if self.kind == "absent":
+            return not present
+        got = _opt(toks, self.flag)
+        if self.kind == "value":
+            return got is not None and got.strip().lower() == self.value.strip().lower()
+        if self.kind == "subset":
+            if got is None:
+                return False
+            have = {x.strip() for x in got.split(",") if x.strip()}
+            want = {x.strip() for x in self.value.split(",") if x.strip()}
+            return want.issubset(have)
+        if self.kind == "haskeys":
+            return got is not None and all(k in got for k in self.value.split(",") if k)
+        return True
+
+
+def build_quant_constraints(quant_cfg: QuantConfig) -> list[QuantConstraint]:
+    """Translate the user's *explicitly set* quant fields into hard constraints.
+
+    Only fields present in ``model_fields_set`` are enforced, so schema defaults
+    never override the agent's structural analysis -- but anything the operator
+    actually typed takes precedence over the agent's own recommendation.
+    """
+    setf = getattr(quant_cfg, "model_fields_set", set())
+    cons: list[QuantConstraint] = []
+
+    if "scheme" in setf:
+        cons.append(QuantConstraint(
+            f"scheme MUST be `{quant_cfg.scheme}`", "--scheme", "value", quant_cfg.scheme))
+    if "method" in setf:
+        if quant_cfg.method == "model_free":
+            cons.append(QuantConstraint(
+                "MUST use the calibration-free model_free path (pass `--model_free`)",
+                "--model_free", "present"))
+        else:
+            cons.append(QuantConstraint(
+                "MUST use the model-load path -- do NOT pass `--model_free`",
+                "--model_free", "absent"))
+    if "export_format" in setf:
+        cons.append(QuantConstraint(
+            f"export/--format MUST be `{quant_cfg.export_format}`",
+            "--format", "value", quant_cfg.export_format))
+    if "iters" in setf and quant_cfg.iters is not None:
+        cons.append(QuantConstraint(
+            f"MUST pass `--iters {quant_cfg.iters}`", "--iters", "value", str(quant_cfg.iters)))
+    if "nsamples" in setf and quant_cfg.nsamples is not None:
+        cons.append(QuantConstraint(
+            f"MUST pass `--nsamples {quant_cfg.nsamples}`",
+            "--nsamples", "value", str(quant_cfg.nsamples)))
+    if "ignore_layers" in setf and quant_cfg.ignore_layers:
+        cons.append(QuantConstraint(
+            f"`--ignore_layers` MUST include: {quant_cfg.ignore_layers}",
+            "--ignore_layers", "subset", quant_cfg.ignore_layers))
+    if "layer_config" in setf and quant_cfg.layer_config:
+        keys = ",".join(str(k) for k in quant_cfg.layer_config)
+        cons.append(QuantConstraint(
+            f"`--layer_config` MUST cover keys: {keys}", "--layer_config", "haskeys", keys))
+    if "algorithm" in setf and quant_cfg.algorithm:
+        cons.append(QuantConstraint(
+            f"`--algorithm` MUST be `{quant_cfg.algorithm}`",
+            "--algorithm", "value", quant_cfg.algorithm))
+    if "enable_alg_ext" in setf and quant_cfg.enable_alg_ext:
+        cons.append(QuantConstraint(
+            "MUST pass `--enable_alg_ext`", "--enable_alg_ext", "present"))
+    if "hadamard_type" in setf and quant_cfg.hadamard_type:
+        cons.append(QuantConstraint(
+            f"`--rotation-hadamard-type` MUST be `{quant_cfg.hadamard_type}`",
+            "--rotation-hadamard-type", "value", quant_cfg.hadamard_type))
+    if "opt_rtn" in setf and quant_cfg.opt_rtn is not None:
+        flag = "--enable_opt_rtn" if quant_cfg.opt_rtn else "--disable_opt_rtn"
+        cons.append(QuantConstraint(f"MUST pass `{flag}`", flag, "present"))
+    if "quant_lm_head" in setf and quant_cfg.quant_lm_head:
+        cons.append(QuantConstraint(
+            "MUST pass `--quant_lm_head`", "--quant_lm_head", "present"))
+    return cons
+
+
+def validate_command(cmd: str, a: ModelAnalysis, output_dir: str,
+                     constraints: list[QuantConstraint] | None = None) -> tuple[bool, str]:
+    """Return ``(ok, reason)``; enforce operator-fixed config + expert-safety."""
     try:
         toks = shlex.split(cmd)
     except ValueError as exc:
@@ -383,6 +511,12 @@ def validate_command(cmd: str, a: ModelAnalysis, output_dir: str) -> tuple[bool,
     if not (_opt(toks, "--model_name") or _opt(toks, "--model")
             or (len(toks) >= 2 and not toks[1].startswith("-"))):
         return False, "missing model (positional path or --model_name)"
+
+    # Operator-fixed config wins: reject any command that violates an explicit
+    # user quant setting (so agent-optimize augments, never overrides, intent).
+    for con in constraints or ():
+        if not con.satisfied_by(toks):
+            return False, f"violates operator-fixed config: {con.label}"
 
     layer_cfg = _opt(toks, "--layer_config") or ""
     experts_reenabled = "expert" in layer_cfg.lower()
@@ -439,6 +573,7 @@ def run_agent_optimize(
     skill_recipe: str = "",
     user_context: str = "",
     recipe_knowledge: str | None = None,
+    constraints: list[QuantConstraint] | None = None,
     log_dir: Path | None = None,
 ) -> str | None:
     """Analyse the model, ask the agent for a command, validate it; None on any miss."""
@@ -451,7 +586,7 @@ def run_agent_optimize(
     prompt = build_optimize_prompt(
         a, scheme=scheme, method=method, export_format=export_format,
         output_dir=output_dir, skill_recipe=skill_recipe, user_context=user_context,
-        recipe_knowledge=recipe_knowledge,
+        recipe_knowledge=recipe_knowledge, constraints=constraints,
     )
     log_dir = Path(log_dir or Path.cwd())
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -474,17 +609,7 @@ def run_agent_optimize(
         _log.warning("agent-optimize: no auto-round command produced")
         return None
     cmd = ensure_model_name(cmd, model)
-    ok, reason = validate_command(cmd, a, output_dir)
-    if not ok:
-        _log.warning("agent-optimize: rejected command (%s)", reason)
-        return None
-    _log.info("agent-optimize: validated command")
-    return cmd
-    if not cmd:
-        _log.warning("agent-optimize: no auto-round command produced")
-        return None
-    cmd = ensure_model_name(cmd, model)
-    ok, reason = validate_command(cmd, a, output_dir)
+    ok, reason = validate_command(cmd, a, output_dir, constraints)
     if not ok:
         _log.warning("agent-optimize: rejected command (%s)", reason)
         return None

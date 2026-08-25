@@ -8,6 +8,7 @@ is used.
 
 from __future__ import annotations
 
+import json
 import shlex
 import shutil
 from pathlib import Path
@@ -47,6 +48,11 @@ def build_autoround_command(
         cmd.append("--quant_lm_head")
     if cfg.ignore_layers:
         cmd += ["--ignore_layers", cfg.ignore_layers]
+    if cfg.layer_config:
+        # Per-layer mixed-precision overrides (e.g. MoE experts -> MXFP4 while the
+        # rest stays MXFP8). auto-round's CLI parser prefers strict JSON, so emit
+        # compact JSON rather than the unquoted `{k:{...}}` shorthand.
+        cmd += ["--layer_config", json.dumps(cfg.layer_config, separators=(",", ":"))]
     device_map = resolve_device_map(cfg, num_gpus)
     if device_map and "--device_map" not in cfg.extra_args:
         cmd += ["--device_map", device_map]
