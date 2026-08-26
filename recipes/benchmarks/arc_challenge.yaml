@@ -1,5 +1,5 @@
 name: arc_challenge
 harness: lm_eval
 type: loglikelihood
-scoring: { metric: "acc_norm,none", prefer: ["acc_norm,none", "acc,none"] }
+scoring: { metric: "acc,none", prefer: ["acc,none", "acc_norm,none"] }
 description: AI2 Reasoning Challenge (hard split).

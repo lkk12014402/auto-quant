@@ -2,5 +2,5 @@ name: openbookqa
 harness: lm_eval
 lm_eval_task: openbookqa
 type: loglikelihood
-scoring: { metric: "acc_norm,none", prefer: ["acc_norm,none", "acc,none"] }
+scoring: { metric: "acc,none", prefer: ["acc,none", "acc_norm,none"] }
 description: Elementary-science open-book QA (loglikelihood).

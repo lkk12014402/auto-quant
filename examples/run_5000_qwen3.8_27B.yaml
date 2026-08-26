@@ -19,9 +19,12 @@
 model: Qwen/Qwen3.8-27B
 
 quant:
-  scheme: W4A16                # --scheme MXFP8
-  method: model_free           # --method MODEL_FREE
+  scheme: W4A16                # --scheme W4A16 (int4 weight-only)
+  method: model_free           # --method MODEL_FREE (calibration-free RTN)
   export_format: llm_compressor  # --export-format llm_compressor
+  # Qwen3.8-27B is a VL model: keep the vision tower + head/embeddings in full
+  # precision. Substring match, so `visual` covers all `visual.*` submodules.
+  ignore_layers: "lm_head,embed_tokens,visual"
 
 # Push the quantized checkpoint to a HF *model* repo after a successful eval.
 # (Top-level `quant:` above is folded into this quantize provider by the loader.)

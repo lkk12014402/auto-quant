@@ -187,10 +187,12 @@ def _extract_metric(task_data: dict, recipe: BenchmarkRecipe) -> tuple[float, st
     prefer = list(recipe.scoring.prefer)
     if recipe.scoring.metric:
         prefer = [recipe.scoring.metric] + prefer
-    # exact_match variants first (generative), then acc_norm, then acc.
+    # exact_match variants first (generative), then acc, then acc_norm.
+    # `acc` precedes `acc_norm` to match the low_bit leaderboard convention
+    # (src/display/utils.py records every multiple-choice task as `acc,none`).
     default_order = [
         "exact_match,strict-match", "exact_match,flexible-extract", "exact_match",
-        "acc_norm,none", "acc_norm", "acc,none", "acc",
+        "acc,none", "acc", "acc_norm,none", "acc_norm",
     ]
     for key in prefer + default_order:
         if key in task_data and isinstance(task_data[key], (int, float)):
