@@ -1,0 +1,31 @@
+# DeepSeek-OCR-2：不是 diffusion 模型——DeepEncoder V2 + 3B LM 的 VLM，
+# 走 aqa 标准 LLM 量化路径（auto-round 只量化文本塔，视觉塔默认不动）。
+# 本示例 = 量化 + 加载 smoke（piqa limit 16）。
+# 真正的 OCR 评估（OmniDocBench）尚未接入 aqa，属后续工作（参考
+# /home/kaokaolv/auto_agent/diffusion_eval 的推理脚本）。
+model: deepseek-ai/DeepSeek-OCR-2
+quant:
+  scheme: W4A16
+  method: autoround
+  export_format: auto_round
+  iters: 0                  # 3B 文本塔，RTN 起步；追求精度改 iters: 200
+  extra_args: []
+eval:
+  benchmarks: [piqa]        # 仅作加载/生成 smoke，不代表 OCR 能力
+  backend: hf
+  harness: lm_eval
+  baseline: false
+  limit: 16
+  lm_eval:
+    model_args:
+      trust_remote_code: "True"   # DeepSeek 自定义模型代码
+gate: {}                    # smoke 不设门禁
+agent:
+  fix_loop: true
+  optimize: false
+executor:
+  type: local
+output:
+  dir: ./results/deepseek-ocr2-w4a16
+  sinks:
+    - type: local_fs

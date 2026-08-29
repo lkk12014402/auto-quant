@@ -143,6 +143,47 @@ def test_load_recipe_knowledge_ships():
     assert "MXFP4" in text and "MoE" in text
 
 
+def test_load_recipe_knowledge_with_diffusion():
+    from aqa.agent.optimize import load_recipe_knowledge
+
+    base = load_recipe_knowledge()
+    full = load_recipe_knowledge(include_diffusion=True)
+    assert len(full) > len(base)
+    assert "block_name_to_quantize" in full and "coco2014" in full
+    assert "block_name_to_quantize" not in base
+
+
+def test_analyze_model_diffusion_branch(monkeypatch):
+    """Diffusion repos have no root config.json: analyze_model must detect
+    model_index.json and fall back to the transformer/ subfolder."""
+    import aqa.agent.optimize as opt
+
+    def fake_config(model_id, revision, token, filename="config.json"):
+        if filename == "config.json":
+            raise RuntimeError("not found")
+        assert filename == "transformer/config.json"
+        return {"model_type": "flux", "num_layers": 19}
+
+    monkeypatch.setattr(opt, "_hf_config", fake_config)
+    monkeypatch.setattr(opt, "_has_model_index", lambda *a, **k: True)
+    monkeypatch.setattr(opt, "_tensor_names", lambda *a, **k: [])
+    res = opt.analyze_model("org/flux-like")
+    assert res.ok and res.is_diffusion
+    assert res.model_type == "flux" and res.num_layers == 19
+
+
+def test_analyze_model_plain_failure_without_model_index(monkeypatch):
+    import aqa.agent.optimize as opt
+
+    def fake_config(model_id, revision, token, filename="config.json"):
+        raise RuntimeError("not found")
+
+    monkeypatch.setattr(opt, "_hf_config", fake_config)
+    monkeypatch.setattr(opt, "_has_model_index", lambda *a, **k: False)
+    res = opt.analyze_model("org/broken")
+    assert not res.ok and not res.is_diffusion
+
+
 def test_build_optimize_prompt_embeds_recipe_knowledge_and_structure():
     from aqa.agent.optimize import build_optimize_prompt
 
@@ -273,3 +314,48 @@ def test_run_agent_optimize_rejects_constraint_violating_command(monkeypatch, tm
     )
     assert cmd is None
 
+
+
+# ── diffusion (DiT) optimize branch ─────────────────────────────────────────
+def test_build_optimize_prompt_diffusion_branch():
+    from aqa.agent.optimize import build_optimize_prompt
+
+    dit = ModelAnalysis(model_id="org/flux", is_diffusion=True)
+    prompt = build_optimize_prompt(
+        dit, scheme="W4A16", method="autoround", export_format="auto_round",
+        output_dir="/out",
+    )
+    assert "diffusion (DiT) pipeline" in prompt
+    assert "coco2014" in prompt          # DiT CLI examples
+    assert "Example A -- MoE" not in prompt  # LLM examples not used
+    assert "PR #5544" in prompt          # DiT hard requirements
+    assert "is_diffusion: True" in prompt
+
+    dense = ModelAnalysis(model_id="org/dense")
+    prompt_llm = build_optimize_prompt(
+        dense, scheme="W4A16", method="autoround", export_format="auto_round",
+        output_dir="/out",
+    )
+    assert "Example A -- MoE" in prompt_llm
+    assert "PR #5544" not in prompt_llm
+
+
+def test_run_agent_optimize_loads_diffusion_knowledge_for_dit(monkeypatch, tmp_path):
+    import aqa.agent.optimize as opt
+
+    monkeypatch.setattr(opt, "analyze_model",
+                        lambda *a, **k: ModelAnalysis(model_id="org/flux", is_diffusion=True))
+    seen = {}
+
+    def fake_load(*, include_diffusion=False):
+        seen["include_diffusion"] = include_diffusion
+        return ""
+
+    monkeypatch.setattr(opt, "load_recipe_knowledge", fake_load)
+    cmd = run_agent_optimize(
+        "org/flux", scheme="W4A16", method="autoround", export_format="auto_round",
+        output_dir="/out", tier="low", run_agent=lambda *a, **k: _AGENT_LOG,
+        log_dir=tmp_path,
+    )
+    assert seen["include_diffusion"] is True
+    assert cmd == _GOOD_CMD

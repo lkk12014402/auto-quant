@@ -1,0 +1,21 @@
+name: geneval
+harness: diffusion
+type: generative
+# Vendored official prompts (djghosh13/geneval, MIT -- see NOTICE): 553 rows
+# over 6 tasks (single_object / two_object / counting / colors / position /
+# color_attr). Resolved relative to the repo root when missing from the cwd.
+dataset: recipes/data/geneval/evaluation_metadata.jsonl
+prompt_field: prompt
+images_per_prompt: 4   # official: 4 samples per prompt
+scoring:
+  scorer: geneval
+  metric: geneval
+  geneval:
+    # Official stack via transformers (Mask2Former swin COCO instance
+    # segmentation + CLIP ViT-L/14 openai for zero-shot color checks).
+    detector_model: facebook/mask2former-swin-small-coco-instance
+    clip_model: openai/clip-vit-large-patch14
+description: >
+  GenEval (DjGhosh et al. 2023): object-focused T2I alignment, scored by
+  Mask2Former detection + CLIP color classification; overall = mean of the six
+  per-task means (0..1, higher is better).

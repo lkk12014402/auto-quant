@@ -1,0 +1,43 @@
+# Full quantize -> evaluate -> gate run for a diffusion text-to-image model (M1).
+# 注意：auto-round 的 diffusion 常规加载只认本地目录——先 `hf download
+# black-forest-labs/FLUX.1-dev --local-dir <path>`，再把 model 改为该路径。
+model: black-forest-labs/FLUX.1-dev
+quant:
+  scheme: W4A16
+  method: autoround
+  export_format: auto_round # vllm-omni detects auto-round DiT checkpoints via quant_method="auto-round"
+  iters: 0                  # diffusion calibration costs nsamples x num_inference_steps denoising steps; start with RTN
+  extra_args:               # passed through to the auto-round CLI verbatim
+    - --disable_opt_rtn
+    - --disable_model_free  # 必加：iters=0+disable_opt_rtn 会被自动路由到 model_free，diffusion 下会空量化（0 层）
+    - --dataset
+    - coco2014              # auto-round's diffusion calibration set
+    - --num_inference_steps
+    - "28"
+    - --guidance_scale
+    - "3.5"
+eval:
+  benchmarks: [drawbench_clip]
+  backend: vllm_omni        # hf | vllm | vllm_xpu | vllm_omni
+  harness: diffusion
+  baseline: true            # also evaluate the bf16 original for comparison
+  diffusion:
+    num_inference_steps: 28
+    guidance_scale: 3.5
+    height: 1024
+    width: 1024
+    seed: 42
+    scorer_model: openai/clip-vit-base-patch32
+gate:
+  max_accuracy_drop: 2.0    # CLIP score is on a x100 scale (~30 for FLUX bf16); NO-GO if drop > 2 points
+  # 注意：limit 很小的冒烟跑（<20 条）样本噪声大，可能误判 NO-GO；正式判定用完整
+  # 200 条，或开 significance: true（小样本会判 INCONCLUSIVE 而非 NO-GO）
+agent:
+  fix_loop: true
+  optimize: false           # M1: deterministic builder; the optimize prompt is LLM-only
+executor:
+  type: local               # local | ssh | intel_reserve (plugin)
+output:
+  dir: ./results/flux1-dev-w4a16
+  sinks:
+    - type: local_fs

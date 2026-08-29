@@ -1,0 +1,48 @@
+# Z-Image-Turbo 的 GenEval 量化验证：与 run_diffusion_zimage.yaml 同一量化配置
+# （W4A16 RTN），评估换 GenEval 官方协议——6 类任务 × 553 prompts × 4 图/prompt，
+# Mask2Former 检测 + CLIP ViT-L/14 判分。
+#
+# 实证锚点（2026-08-26，同参数跑过）：
+#   bf16 baseline GenEval = 0.7579（8 步 / guidance 0.0 / 1024x1024 / seed 42），
+#   官方 Turbo 报告值 0.82（官方生成侧协议未公开，差距已归因，详见
+#   docs/diffusion_support_plan.md §6 的修复轨迹 0.19→0.62→0.75→0.7579）。
+# 判分模型需下载（Mask2Former ~100MB + CLIP ViT-L/14 ~1.7GB），首次跑有下载开销。
+model: /home/kaokaolv/models/Z-Image-Turbo   # auto-round diffusion 常规加载只认本地目录
+quant:
+  scheme: W4A16
+  method: autoround
+  export_format: auto_round # vllm-omni 按 quant_method="auto-round" 检测 DiT checkpoint
+  iters: 0                  # 纯 RTN 跳过校准
+  extra_args:
+    - --disable_opt_rtn
+    - --disable_model_free  # 必加：iters=0+disable_opt_rtn 会被路由到 model_free，diffusion 下空量化
+    - --ignore_layers
+    - adaLN_modulation      # vllm-omni 设计上全精度保留 adaLN/t_embedder
+    - --dataset
+    - coco2014
+    - --num_inference_steps
+    - "8"
+    - --guidance_scale
+    - "0.0"
+eval:
+  benchmarks: [geneval]
+  backend: vllm_omni
+  harness: diffusion
+  baseline: true
+  diffusion:
+    num_inference_steps: 8
+    guidance_scale: 0.0
+    height: 1024
+    width: 1024
+    seed: 42
+gate:
+  max_accuracy_drop: 0.02   # GenEval 0..1 标尺；baseline 锚点 0.7579，掉超 2 个点 NO-GO
+agent:
+  fix_loop: true
+  optimize: false
+executor:
+  type: local
+output:
+  dir: ./results/zimage-turbo-w4a16-geneval
+  sinks:
+    - type: local_fs

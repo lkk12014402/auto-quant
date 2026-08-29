@@ -1,0 +1,44 @@
+# FLUX.2-klein-4B（BFL 蒸馏紧凑版）：MXFP8 示例——vllm-omni 自 PR #3782 支持
+# auto_round 格式的 MXFP8 DiT checkpoint（IncMxfp8OfflineLinearMethod）。
+# 注意：auto-round 对 FLUX.2 走通用 diffusion 路径；RTN（iters 0）不跑校准，
+# 不依赖 Flux2 双输出 block 注册（Flux2TransformerBlock 未注册，iters>0 需先补）。
+# 注意：auto-round 的 diffusion 常规加载只认本地目录——先 `hf download
+# black-forest-labs/FLUX.2-klein-4B --local-dir <path>`，再把 model 改为该路径。
+model: black-forest-labs/FLUX.2-klein-4B
+quant:
+  scheme: MXFP8
+  method: autoround
+  export_format: auto_round
+  iters: 0
+  extra_args:
+    - --disable_opt_rtn
+    - --disable_model_free  # 必加：iters=0+disable_opt_rtn 会被自动路由到 model_free，diffusion 下会空量化（0 层）
+    - --dataset
+    - coco2014
+    - --num_inference_steps
+    - "8"                   # klein 是蒸馏版：4~9 步、通常不做 CFG
+    - --guidance_scale
+    - "0.0"
+eval:
+  benchmarks: [drawbench_clip]
+  backend: vllm_omni
+  harness: diffusion
+  baseline: true
+  diffusion:
+    num_inference_steps: 8
+    guidance_scale: 0.0
+    height: 1024
+    width: 1024
+    seed: 42
+    scorer_model: openai/clip-vit-base-patch32
+gate:
+  max_accuracy_drop: 2.0
+agent:
+  fix_loop: true
+  optimize: false
+executor:
+  type: local
+output:
+  dir: ./results/flux2-klein-4b-mxfp8
+  sinks:
+    - type: local_fs

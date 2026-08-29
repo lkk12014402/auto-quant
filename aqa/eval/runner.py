@@ -36,6 +36,8 @@ def _make_harness(name: str, cfg: EvalConfig, num_gpus: int):
         )
     if name == "native":
         return HARNESSES.create(name, limit=cfg.limit)
+    if name == "diffusion":
+        return HARNESSES.create(name, limit=cfg.limit, **cfg.diffusion.model_dump())
     if name == "evalscope":
         return HARNESSES.create(name, **cfg.evalscope)
     return HARNESSES.create(name)
@@ -77,15 +79,15 @@ def run_evaluation(
         return h
 
     # Partition into (harness, group_key) buckets; lm_eval with group=True merges
-    # tasks that share generation params into one invocation.
+    # tasks that share generation params into one invocation, and diffusion
+    # recipes sharing generation params share one Omni model load.
     buckets: list[tuple[str, tuple, list[BenchmarkRecipe]]] = []
     index: dict[tuple, int] = {}
     for _name, recipe in recipes:
         harness = _harness(recipe.harness)
-        can_group = (
-            recipe.harness == "lm_eval"
-            and getattr(cfg.lm_eval, "group", True)
-            and hasattr(harness, "group_key")
+        can_group = hasattr(harness, "group_key") and (
+            (recipe.harness == "lm_eval" and getattr(cfg.lm_eval, "group", True))
+            or recipe.harness == "diffusion"
         )
         key = (recipe.harness, harness.group_key(recipe)) if can_group else (recipe.harness, id(recipe))
         if key in index:
@@ -109,7 +111,10 @@ def run_evaluation(
         else:
             recipe = group[0]
             bench_result = harness.run(recipe, model, backend, out_dir / recipe.name)
-            result.add(bench_result)
-            _log.info("  %s => %.4f (%s)", recipe.name, bench_result.score, bench_result.metric)
+            # A harness may emit several results for one recipe (e.g. the
+            # diffusion image_metrics scorer emits one per requested metric).
+            for bench_result in (bench_result if isinstance(bench_result, list) else [bench_result]):
+                result.add(bench_result)
+                _log.info("  %s => %.4f (%s)", bench_result.name, bench_result.score, bench_result.metric)
 
     return result

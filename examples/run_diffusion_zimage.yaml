@@ -1,0 +1,44 @@
+# Z-Image-Turbo (Tongyi-MAI, 6B S3-DiT): auto-round 官方支持矩阵内的 diffusion 模型。
+# 蒸馏模型推理惯例：8 步、不做 CFG（guidance 0.0）。RTN（iters 0）起步。
+# 注意：auto-round 的 diffusion 常规加载只认本地目录（open <path>/model_index.json），
+# 先 `hf download Tongyi-MAI/Z-Image-Turbo --local-dir <path>`，再把 model 改为该路径。
+model: Tongyi-MAI/Z-Image-Turbo
+quant:
+  scheme: W4A16
+  method: autoround
+  export_format: auto_round # vllm-omni 按 quant_method="auto-round" 检测 DiT checkpoint
+  iters: 0                  # 纯 RTN 跳过校准（auto-round need_calib=False 走 zero-shot 路径）
+  extra_args:
+    - --disable_opt_rtn
+    - --disable_model_free  # 必加：iters=0+disable_opt_rtn 会被自动路由到 model_free，diffusion 下会空量化（0 层）
+    - --ignore_layers
+    - adaLN_modulation      # vllm-omni 设计上全精度保留 adaLN/t_embedder（quant_config=None），量化它们会导致加载失败
+    - --dataset
+    - coco2014
+    - --num_inference_steps
+    - "8"                   # Z-Image-Turbo 推理惯例（蒸馏 8-NFE）
+    - --guidance_scale
+    - "0.0"                 # 蒸馏模型不做 CFG
+eval:
+  benchmarks: [drawbench_metrics]  # 三指标（clip / clip_iqa / imagereward），一次生成三项打分
+  backend: vllm_omni
+  harness: diffusion
+  baseline: true
+  diffusion:
+    num_inference_steps: 8
+    guidance_scale: 0.0
+    height: 1024
+    width: 1024
+    seed: 42
+    scorer_model: openai/clip-vit-base-patch32
+gate:
+  max_accuracy_drop: 2.0    # 作用于 drawbench_metrics.clip（CLIP x100 标尺，bf16 约 31）；另两指标仅报告不设卡
+agent:
+  fix_loop: true
+  optimize: false           # 确定性 builder；optimize 的 DiT 分支已可用，需要时再开
+executor:
+  type: local
+output:
+  dir: ./results/zimage-turbo-w4a16
+  sinks:
+    - type: local_fs

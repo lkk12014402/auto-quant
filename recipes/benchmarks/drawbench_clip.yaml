@@ -1,0 +1,9 @@
+name: drawbench_clip
+harness: diffusion
+type: generative
+dataset: sayakpaul/drawbench   # HF datasets; 200 prompts in the `Prompts` column
+prompt_field: Prompts
+scoring:
+  metric: clip_score
+  prefer: [clip_score]
+description: DrawBench prompts -> vllm-omni text-to-image -> CLIP score (x100, higher is better).

@@ -1,0 +1,42 @@
+# FLUX.2-klein-9B：W4A16 示例。蒸馏版：4~9 步、不做 CFG。
+# 实跑顺序建议：先 klein-4B 把链路打通，再跑 9B。
+# 注意：auto-round 的 diffusion 常规加载只认本地目录——先 `hf download
+# black-forest-labs/FLUX.2-klein-9B --local-dir <path>`，再把 model 改为该路径。
+model: black-forest-labs/FLUX.2-klein-9B
+quant:
+  scheme: W4A16
+  method: autoround
+  export_format: auto_round
+  iters: 0                  # RTN：绕开校准，规避 Flux2 block 注册缺口
+  extra_args:
+    - --disable_opt_rtn
+    - --disable_model_free  # 必加：iters=0+disable_opt_rtn 会被自动路由到 model_free，diffusion 下会空量化（0 层）
+    - --dataset
+    - coco2014
+    - --num_inference_steps
+    - "8"
+    - --guidance_scale
+    - "0.0"
+eval:
+  benchmarks: [drawbench_clip]
+  backend: vllm_omni
+  harness: diffusion
+  baseline: true
+  diffusion:
+    num_inference_steps: 8
+    guidance_scale: 0.0
+    height: 1024
+    width: 1024
+    seed: 42
+    scorer_model: openai/clip-vit-base-patch32
+gate:
+  max_accuracy_drop: 2.0
+agent:
+  fix_loop: true
+  optimize: false
+executor:
+  type: local
+output:
+  dir: ./results/flux2-klein-9b-w4a16
+  sinks:
+    - type: local_fs

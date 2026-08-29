@@ -2,6 +2,7 @@
 
 * ``native``  -- our in-repo kernel (migrated from NeMo Evaluator, Apache-2.0).
 * ``lm_eval`` -- EleutherAI lm-evaluation-harness (optional dep).
+* ``diffusion`` -- vllm-omni text-to-image generation + CLIP score.
 * ``evalscope`` -- optional subprocess plugin package ``aqa-harness-evalscope``.
 """
 

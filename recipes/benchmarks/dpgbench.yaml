@@ -1,0 +1,21 @@
+name: dpgbench
+harness: diffusion
+type: generative
+# Vendored DPG-Bench prompts (TencentQQGYLab/ELLA, Apache-2.0 -- see NOTICE;
+# 1065 dense prompts). Resolved relative to the repo root when missing from cwd.
+dataset: recipes/data/dpgbench/prompts.jsonl
+prompt_field: prompt
+images_per_prompt: 1   # official: pic_num 1 (one image per prompt)
+scoring:
+  scorer: dpgbench
+  metric: dpgbench
+  dpgbench:
+    # Official judge: mPLUG VQA via modelscope; resolution = generation size
+    # (with pic_num=1 the top-left resolution-sized crop is judged).
+    vqa_model: damo/mplug_visual-question-answering_coco_large_en
+    resolution: 1024
+    device: auto
+description: >
+  DPG-Bench (ELLA, 2024): dense-prompt-following scored by mPLUG VQA per
+  proposition with dependency zeroing; score = mean over images of per-image
+  question accuracy (0..1, higher is better; Z-Image's published anchor 88.14).

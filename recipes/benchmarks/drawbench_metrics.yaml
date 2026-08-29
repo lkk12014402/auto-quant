@@ -1,0 +1,17 @@
+name: drawbench_metrics
+harness: diffusion
+type: generative
+dataset: sayakpaul/drawbench   # HF datasets; 200 prompts in the `Prompts` column
+prompt_field: Prompts
+scoring:
+  scorer: image_metrics
+  image_metrics:
+    metrics: [clip, clip_iqa, imagereward]
+    clip_model: openai/clip-vit-base-patch32
+    imagereward_model: ImageReward-v1.0
+description: >
+  DrawBench prompts -> vllm-omni text-to-image -> three metrics per run:
+  CLIP score (image-text cosine x100), CLIP-IQA (antonym-pair quality x100),
+  ImageReward (human-preference reward). One recipe emits one result per
+  metric (drawbench_metrics.clip / .clip_iqa / .imagereward). ImageReward runs
+  in an isolated transformers-v4 env (see aqa/eval/image_metrics.py).

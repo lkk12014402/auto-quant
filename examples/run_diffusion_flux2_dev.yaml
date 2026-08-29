@@ -1,0 +1,46 @@
+# FLUX.2-dev（BFL 32B DiT，text encoder 为 24B Mistral-VLM）。
+# 资源警告：整套 bf16 权重 ~110GB+；RTN 量化也要加载完整 pipeline。
+# 显存不足时在 eval.diffusion.omni_kwargs 里开引擎侧 offload（键名以
+# vllm-omni 当前版本文档为准，如 enable_cpu_offload）。
+# 注意：auto-round 的 diffusion 常规加载只认本地目录——先 `hf download
+# black-forest-labs/FLUX.2-dev --local-dir <path>`，再把 model 改为该路径。
+model: black-forest-labs/FLUX.2-dev
+quant:
+  scheme: W4A16
+  method: autoround
+  export_format: auto_round
+  iters: 0                  # dev 版校准代价过大（nsamples x steps 次完整去噪），RTN 起步
+  extra_args:
+    - --disable_opt_rtn
+    - --disable_model_free  # 必加：iters=0+disable_opt_rtn 会被自动路由到 model_free，diffusion 下会空量化（0 层）
+    - --dataset
+    - coco2014
+    - --num_inference_steps
+    - "28"
+    - --guidance_scale
+    - "3.5"                 # FLUX dev 系推理惯例（embedded guidance）
+eval:
+  benchmarks: [drawbench_clip]
+  backend: vllm_omni
+  harness: diffusion
+  baseline: true
+  diffusion:
+    num_inference_steps: 28
+    guidance_scale: 3.5
+    height: 1024
+    width: 1024
+    seed: 42
+    scorer_model: openai/clip-vit-base-patch32
+    # omni_kwargs:          # 透传给 Omni(...) 的引擎旋钮，按需打开
+    #   enable_cpu_offload: true
+gate:
+  max_accuracy_drop: 2.0
+agent:
+  fix_loop: true
+  optimize: false
+executor:
+  type: local
+output:
+  dir: ./results/flux2-dev-w4a16
+  sinks:
+    - type: local_fs
