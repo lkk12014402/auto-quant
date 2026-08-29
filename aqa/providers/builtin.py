@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..logging_util import AqaError, get_logger
+from ..quantize import resolve_export_dir
 from .base import ProviderContext, ResolvedModel
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -39,7 +40,8 @@ class QuantizeProvider:
         quant = run_cfg.provider.quant
         _log.info("== quantize (%s / %s) ==", quant.scheme, quant.method)
         ctx.quantize_fn(quant_dir)
-        return ResolvedModel(model=str(quant_dir), kind="path",
+        model_dir = resolve_export_dir(quant_dir)
+        return ResolvedModel(model=str(model_dir), kind="path",
                              metadata={"scheme": quant.scheme, "method": quant.method})
 
 

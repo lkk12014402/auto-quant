@@ -1,0 +1,77 @@
+diff --git a/auto_round/compressors/layer_config/resolver.py b/auto_round/compressors/layer_config/resolver.py
+index 60f347d2..ca06f84f 100644
+--- a/auto_round/compressors/layer_config/resolver.py
++++ b/auto_round/compressors/layer_config/resolver.py
+@@ -482,7 +482,19 @@ def has_quantized_layer_outside_blocks(layer_config: LayerConfig) -> bool:
+ def apply_plan_to_model(model, plan: ResolvedQuantizationConfig) -> None:
+     """Apply a resolved plan at the single explicit module-attribute write boundary."""
+     scheme_keys = tuple(field.name for field in fields(QuantizationScheme)) + ("scale_dtype",)
++    plan_module_names = set(plan.layer_config.keys())
+     for module_name, module in model.named_modules():
++        # Only strip scheme attributes from modules that can actually carry a
++        # quant plan (supported layer types or explicit plan entries).
++        # Unconditional deletion corrupts non-quant modules whose own structural
++        # attributes collide with scheme field names -- e.g. Qwen4-Exp's
++        # hyper-connection norm (Qwen4ExpTextRMSNorm) has a real `group_size`
++        # attribute (grouped RMSNorm) that its forward() requires.
++        if module_name not in plan_module_names and not (
++            isinstance(module, tuple(SUPPORTED_LAYER_TYPES))
++            or type(module).__name__ in INNER_SUPPORTED_LAYER_TYPES
++        ):
++            continue
+         for key in scheme_keys:
+             if module_name == "" and key == "rotation_config":
+                 continue
+diff --git a/auto_round/utils/device.py b/auto_round/utils/device.py
+index dcf2bf6d..1bfb9ac3 100644
+--- a/auto_round/utils/device.py
++++ b/auto_round/utils/device.py
+@@ -1027,15 +1027,41 @@ def set_auto_device_map_for_block_with_tuning(
+     logger.debug(f"Auto device map for block: {device_map}")
+     set_non_auto_device_map(block, device_map, names)
+ 
+-    # Ensure all remaining modules with parameters/buffers are moved to expected device, by default device_0
++    # Ensure all remaining modules with parameters/buffers are assigned a device.
++    # Historically everything left over was dumped onto device_0 -- but a model
++    # with a huge non-quantized embedding table (e.g. Qwen4-Exp's PLE n-gram
++    # embedding, a single ~102GB nn.Embedding after checkpoint shards are
++    # concatenated at load) OOMs device_0 that way. nn.Embedding leaves are
++    # safe to relocate: they are always invoked as module calls, so the
++    # caller's AlignDevicesHook (attached to any leaf with `tuning_device`)
++    # moves their inputs/outputs across devices transparently. Send each such
++    # embedding to the device with the largest remaining estimated budget.
++    # Other leftover leaves are NOT relocated: their weights may be consumed
++    # functionally by the parent (e.g. causal_conv1d_fn(self.conv1d.weight)),
++    # which bypasses module hooks entirely; they keep the old output_device
++    # behavior. Non-leaf leftovers likewise keep the plain move.
+     output_device = device_0 if output_device is None else output_device
+     for name, module in block.named_modules():
+-        if name not in names:  # This module wasn't assigned a device
+-            # Check if module has any parameters or buffers
+-            has_params = any(True for _ in module.parameters(recurse=False))
+-            has_buffers = any(True for _ in module.buffers(recurse=False))
+-            if has_params or has_buffers:
+-                module = module.to(output_device)
++        if name in names:  # This module was already assigned a device
++            continue
++        # Check if module has any parameters or buffers
++        has_params = any(True for _ in module.parameters(recurse=False))
++        has_buffers = any(True for _ in module.buffers(recurse=False))
++        if not (has_params or has_buffers):
++            continue
++        is_leaf = len(list(module.children())) == 0
++        if not is_leaf or not isinstance(module, torch.nn.Embedding):
++            module = module.to(output_device)
++            continue
++        size_gb = (
++            sum(p.numel() * p.element_size() for p in module.parameters(recurse=False))
++            + sum(b.numel() * b.element_size() for b in module.buffers(recurse=False))
++        ) / 1e9
++        target_key = max(gpu_devices, key=lambda d: device_memory.get(d, 0.0))
++        device_memory[target_key] = device_memory.get(target_key, 0.0) - size_gb
++        target = get_major_device(target_key)
++        module.tuning_device = target
++        module = module.to(target)
+ 
+     return card_0_in_high_risk, loss_device
+ 

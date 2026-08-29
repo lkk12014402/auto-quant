@@ -1,0 +1,28 @@
+{
+  "model": "Qwen/Qwen3.8-Flash-Next",
+  "architecture": "qwen4_exp",
+  "validated_on": "2026-08-28",
+  "environment": {
+    "inference_image": "vllm/vllm-openai:qwen38-flash-next",
+    "transformers_for_tuning": "transformers==5.16.1 (镜像自带 5.15.1 不认 qwen4_exp；RTN/model_free 不需要)",
+    "autoround": "0.15.0 (bd9a13ce) + patches/autoround_qwen4exp_fixes.patch (resolver group_size 剥离范围 + device.py 被忽略 Embedding 散布；见 patches/README.md)",
+    "notes": "官方定制镜像内含 qwen4_exp 的 vllm 构建；PyPI vllm 0.26.0 不支持；packages 里不要装 vllm（会覆盖镜像定制版）"
+  },
+  "schemes": {
+    "W4A16": {
+      "model_free_rtn": {
+        "command": "auto-round --model_name <model> --scheme W4A16 --model_free --ignore_layers lm_head,embed_tokens,visual,linear_attn,self_attn,hyper_connection,mlp.gate,shared_expert,in_proj_a,in_proj_b,ple,mtp,indexer --device_map auto --format auto_round --output_dir <out>",
+        "result": "mean 0.8819 vs bf16 0.8825 (掉点 0.0007, gate GO)",
+        "yaml": "examples/run_qwen38_flash_next_docker.yaml"
+      },
+      "tuning_iters200": {
+        "command": "auto-round --model_name <model> --scheme W4A16 --iters 200 --ignore_layers lm_head,embed_tokens,visual,linear_attn,self_attn,hyper_connection,mlp.gate,shared_expert,in_proj_a,in_proj_b,ple,mtp,indexer --device_map auto --format auto_round --disable_torch_compile --output_dir <out>",
+        "result": "mean 0.8800 (gate GO)；比 RTN 无收益（mmlu -0.95pp）——RTN 已近无损时不必付 10 小时调优",
+        "yaml": "examples/run_qwen38_flash_next_tuning.yaml",
+        "caveats": "torch<2.13.1 需 --disable_torch_compile（pytorch#185372）；导出后需 config 结构恢复 + PLE 分片检查（aqa 已自动做前者）"
+      }
+    }
+  },
+  "ignore_layers_rationale": "MoE 保护：shared_expert 必保（每 token 都过）；linear_attn/self_attn/indexer/hyper_connection/ple/mtp 为引擎侧融合或结构性模块，量化后 vllm 不加载；in_proj_a/b 是 group_size 不整除的小投影",
+  "evidence": "docs/day0_quantization_recipe.md 附录 A；aqa_results/qwen38_flash_next_w4a16_{docker,tuning,tuning_eval}/"
+}
