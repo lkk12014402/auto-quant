@@ -1,7 +1,7 @@
 """``aqa`` command-line interface.
 
 Verbs mirror NeMo Evaluator's ``nel``: run / eval / quant / validate / list /
-compare / gate / report -- a clear, declarative surface over the pipeline.
+compare / gate / report / traces -- a clear, declarative surface over the pipeline.
 """
 
 from __future__ import annotations
@@ -98,6 +98,64 @@ def swebench(
     resolved = sum(1 for r in report.results if r.resolved)
     click.echo(f"SWE-bench: resolved {resolved}/{len(report.results)} "
                f"({100 * report.resolved_rate:.1f}%) -> {out}")
+
+
+@main.group()
+def traces() -> None:
+    """Trajectory datafication: export agent trajectories as SFT datasets."""
+
+
+@traces.command("export")
+@click.option("--path", "paths", multiple=True, required=True,
+              type=click.Path(exists=True),
+              help="Run dir with trajectories.jsonl, a trajectories.jsonl file, "
+                   "or a fix-loop knowledge root (repeatable).")
+@click.option("--source", type=click.Choice(["agent_eval", "fixloop", "auto"]),
+              default="auto", help="Trajectory source; auto-detects per path.")
+@click.option("--filter", "success_filter",
+              type=click.Choice(["success", "all"]), default="success",
+              help="success keeps solved/reward>0 trajectories only.")
+@click.option("--sharegpt", is_flag=True, help="Add a ShareGPT `conversations` column.")
+@click.option("--out", "out_jsonl", type=click.Path(), default=None,
+              help="Write rows as JSONL (default: ./traces.jsonl when no other target).")
+@click.option("--parquet", "parquet_path", type=click.Path(), default=None,
+              help="Also write rows as parquet (needs `datasets`).")
+@click.option("--push", is_flag=True, help="Push the dataset to the HF hub.")
+@click.option("--repo", default=None, help="Target HF dataset repo for --push (org/name).")
+def traces_export(paths, source, success_filter, sharegpt, out_jsonl, parquet_path,
+                  push, repo) -> None:
+    """Export trajectories (ATIF / fix-loop knowledge) as an SFT dataset."""
+    from .agent import traces_export as te
+
+    success_only = success_filter == "success"
+    rows: list[dict] = []
+    for raw in paths:
+        src = source
+        if src == "auto":
+            src = te.detect_source(raw)
+            if src is None:
+                _log.warning("skipping %s: no trajectories.jsonl / knowledge store found", raw)
+                continue
+        if src == "agent_eval":
+            rows += te.export_agent_eval([raw], success_only=success_only)
+        else:
+            rows += te.export_fixloop(raw, success_only=success_only)
+    if not rows:
+        click.echo("no trajectory rows found")
+        return
+    if sharegpt:
+        te.add_sharegpt(rows)
+    targets: list[str] = []
+    if out_jsonl or not (parquet_path or push):
+        targets.append(str(te.write_jsonl(rows, out_jsonl or "traces.jsonl")))
+    if parquet_path:
+        targets.append(str(te.write_parquet(rows, parquet_path)))
+    if push:
+        if not repo:
+            raise click.ClickException("--push needs --repo org/name")
+        te.push_to_hub(rows, repo)
+        targets.append(f"hf.co/datasets/{repo}")
+    click.echo(f"exported {len(rows)} row(s) -> {', '.join(targets)}")
 
 
 @main.command(name="list")

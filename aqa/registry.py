@@ -35,10 +35,12 @@ _BUILTINS: dict[str, dict[str, str]] = {
     "aqa.harnesses": {
         "native": "aqa.eval.harness.native:NativeHarness",
         "lm_eval": "aqa.eval.harness.lm_eval:LmEvalHarness",
+        "diffusion": "aqa.eval.harness.diffusion:DiffusionHarness",
     },
     "aqa.backends": {
         "hf": "aqa.backends.hf:HfBackend",
         "vllm": "aqa.backends.vllm:VllmBackend",
+        "vllm_omni": "aqa.backends.vllm_omni:VllmOmniBackend",
     },
     "aqa.sinks": {
         "local_fs": "aqa.report.sinks:LocalFsSink",
@@ -59,6 +61,10 @@ _BUILTINS: dict[str, dict[str, str]] = {
         "multichoice_regex": "aqa.eval.scoring:multichoice_regex",
         "fuzzy_match": "aqa.eval.scoring:fuzzy_match",
         "answer_line": "aqa.eval.scoring:answer_line",
+    },
+    "aqa.hooks": {
+        "quant_sanity": "aqa.hooks.sanity:QuantSanityHook",
+        "eval_sanity": "aqa.hooks.sanity:EvalSanityHook",
     },
 }
 
@@ -119,6 +125,7 @@ SANDBOXES = Registry("aqa.sandboxes")
 RECIPE_STORES = Registry("aqa.recipe_stores")
 SCORERS = Registry("aqa.scorers")
 PROVIDERS = Registry("aqa.providers")
+HOOKS = Registry("aqa.hooks")
 
 _ALL = {
     "providers": PROVIDERS,
@@ -129,6 +136,7 @@ _ALL = {
     "sandboxes": SANDBOXES,
     "recipe_stores": RECIPE_STORES,
     "scorers": SCORERS,
+    "hooks": HOOKS,
 }
 
 

@@ -50,6 +50,10 @@ class TaskOutcome:
 class AgentEvalResult:
     name: str
     outcomes: list[TaskOutcome] = field(default_factory=list)
+    # Full ReAct trajectories of the tool-use path, kept for ATIF/SFT export
+    # (``aqa.agent_eval.atif``).  Typed Any to avoid a loop<->react import
+    # cycle; excluded from to_dict (too large for the score report).
+    trajectories: list[Any] = field(default_factory=list)
 
     @property
     def num_tasks(self) -> int:

@@ -88,23 +88,31 @@ def repo_root() -> Path:
     return here.parents[2]
 
 
-def build_inner_config(run_cfg: RunConfig, run_id: str) -> str:
+def build_inner_config(
+    run_cfg: RunConfig,
+    run_id: str,
+    *,
+    num_gpus: int | None = None,
+    output_dir: str | None = None,
+) -> str:
     """Serialize a derived run config for the in-container ``local`` run.
 
     Strips the ssh/proxy executor wiring (that is the *host's* job) and repoints
     output at the mounted results dir.  Secrets are never embedded -- they arrive
-    via the docker ``--env-file``.
+    via the docker ``--env-file``.  Local venv/docker env dispatch passes an
+    explicit ``num_gpus`` / ``output_dir`` (there is no ssh block to derive from).
     """
     data = run_cfg.model_dump(mode="json", exclude_none=True)
     # The container is launched with `--gpus device=<ids>`; the in-container run
     # sees executor.type=local (no ssh block), so it would otherwise default to a
     # single GPU. Carry the host's device count through so the remote pipeline uses
     # the right vllm tensor_parallel_size and quantize --device_map.
-    ssh_gpus = run_cfg.executor.ssh.gpus if run_cfg.executor.ssh else ""
-    num_gpus = max(1, len([g for g in str(ssh_gpus).split(",") if g.strip()]))
+    if num_gpus is None:
+        ssh_gpus = run_cfg.executor.ssh.gpus if run_cfg.executor.ssh else ""
+        num_gpus = max(1, len([g for g in str(ssh_gpus).split(",") if g.strip()]))
     data["executor"] = {"type": "local", "num_gpus": num_gpus}
     data.setdefault("output", {})
-    data["output"]["dir"] = f"{CONTAINER_RESULTS}/{run_id}"
+    data["output"]["dir"] = output_dir or f"{CONTAINER_RESULTS}/{run_id}"
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
 
 
@@ -264,7 +272,13 @@ def container_packages(run_cfg: RunConfig) -> list[str]:
     ``executor.image.pip_install`` are appended (and can pin versions).
     """
     pkgs: list[str] = []
-    if run_cfg.eval.backend in ("vllm", "vllm_xpu") and _accelerator(run_cfg) != "xpu":
+    if run_cfg.eval.backend == "vllm_omni":
+        # Diffusion text-to-image stack: engine + pipeline utils + CLIP scorer deps.
+        pkgs += [
+            "vllm-omni", "diffusers", "datasets", "transformers",
+            "sentencepiece", "accelerate", "pillow",
+        ]
+    elif run_cfg.eval.backend in ("vllm", "vllm_xpu") and _accelerator(run_cfg) != "xpu":
         pkgs.append("vllm")
     pkgs += ["auto-round", "lm-eval"]
     for extra in run_cfg.executor.image.pip_install:
@@ -342,7 +356,12 @@ def build_container_bootstrap(run_cfg: RunConfig) -> str:
     Copilot) backends are installed and provisioned so the fix-loop can run on the
     remote host.
     """
-    pkgs = " ".join(shlex.quote(p) for p in container_packages(run_cfg))
+    env_pkgs = run_cfg.executor.env.packages
+    # An explicit executor.env.packages list overrides the derived set — required
+    # when the base image already ships a custom stack (e.g. a vendor vllm build
+    # that must NOT be clobbered by the PyPI `vllm` the derivation would add).
+    pkg_list = container_packages(run_cfg) if env_pkgs == "auto" else list(env_pkgs)
+    pkgs = " ".join(shlex.quote(p) for p in pkg_list)
     agent_step = _agent_provision_snippet(run_cfg)
     return f"""#!/usr/bin/env bash
 set -uo pipefail

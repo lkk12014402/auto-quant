@@ -200,11 +200,38 @@ class LmEvalOptions(BaseModel):
     group: bool = True  # merge compatible tasks into one lm_eval invocation
 
 
+class DiffusionEvalOptions(BaseModel):
+    """Harness-specific knobs for the ``diffusion`` (vllm-omni text-to-image) harness.
+
+    The generation parameters double as the recipe-grouping key: benchmarks that
+    share them are served by a single ``Omni`` model load (see
+    :meth:`DiffusionHarness.run_group`).  ``scorer_model`` is the CLIP checkpoint
+    used for the image-text score; ``prompt_field``/``dataset_split`` tell the
+    harness where to find prompts in the recipe's ``dataset``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    num_inference_steps: int = 28
+    guidance_scale: float = 3.5
+    height: int = 1024
+    width: int = 1024
+    seed: int = 42
+    scorer_model: str = "openai/clip-vit-base-patch32"
+    scorer_device: str = "auto"  # "auto" => cuda when available, else cpu
+    prompt_field: str = "Prompts"  # default prompt column; recipe.prompt_field wins
+    dataset_split: str = "train"
+    # Extra kwargs forwarded verbatim to ``Omni(model=..., mode="text-to-image", ...)``
+    # — per-model engine knobs such as enforce_eager / enable_cpu_offload /
+    # cache_backend. Empty for the common case.
+    omni_kwargs: dict[str, Any] = Field(default_factory=dict)
+
+
 class EvalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     benchmarks: list[str] = Field(default_factory=lambda: ["piqa", "mmlu", "hellaswag"])
-    backend: str = "hf"  # hf | vllm | vllm_xpu
+    backend: str = "hf"  # hf | vllm | vllm_xpu | vllm_omni
     harness: str = "lm_eval"  # default harness for bare tasks: lm_eval | evalscope | native
     batch_size: str = "auto"
     baseline: bool = False  # also evaluate the un-quantized bf16 model
@@ -214,6 +241,7 @@ class EvalConfig(BaseModel):
 
     # Per-harness option blocks (differentiate the eval methods under `eval`).
     lm_eval: LmEvalOptions = Field(default_factory=LmEvalOptions)
+    diffusion: DiffusionEvalOptions = Field(default_factory=DiffusionEvalOptions)
     evalscope: dict[str, Any] = Field(default_factory=dict)  # passthrough for the plugin
 
 
@@ -314,6 +342,41 @@ class ProxyConfig(BaseModel):
     no_proxy: str | None = None
 
 
+class EnvConfig(BaseModel):
+    """Which local environment ``executor.type: local`` runs the pipeline in.
+
+    ``current`` (default) is the historical in-process behavior.  ``venv``
+    stages an inner ``aqa run`` inside a (possibly provisioned) virtualenv at
+    ``path``; ``docker`` builds/runs a local container (image config stays in
+    ``executor.image``).  Both mirror the ssh executor's staged-run flow: the
+    inner config forces a plain ``type: local`` executor (env block dropped),
+    so there is no dispatch recursion.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["current", "venv", "docker"] = "current"
+    path: str | None = None  # venv: the venv directory (provisioned when missing + create)
+    packages: str | list[str] = "auto"  # "auto" => derive from run config; or explicit list
+    create: bool = True  # venv: provision <path> (python3 -m venv + pip install) when missing
+    mounts: list[str] = Field(default_factory=list)  # docker: extra `-v host:cont` bind mounts
+    # docker: `--network` mode. Host networking is the sane default for local GPU
+    # runs (the bridge has no internet on typical hosts, and pip installs/HF
+    # downloads inside the container need it; serving ports also stay reachable).
+    network: str | None = "host"
+
+    @model_validator(mode="after")
+    def _check(self) -> EnvConfig:
+        if self.type == "venv" and not self.path:
+            raise ConfigError("executor.env.type=venv requires `env.path` (the venv directory)")
+        if isinstance(self.packages, str) and self.packages != "auto":
+            raise ConfigError(
+                "executor.env.packages must be \"auto\" or a list of packages, "
+                f"got {self.packages!r}"
+            )
+        return self
+
+
 class ExecutorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -322,6 +385,10 @@ class ExecutorConfig(BaseModel):
     image: ImageConfig = Field(default_factory=ImageConfig)
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     ssh: SshConfig | None = None
+    env: EnvConfig = Field(default_factory=EnvConfig)  # local executor: run environment
+    # Fast-fail preflight for the local executor (every env mode): each named
+    # environment variable must be set before any work starts (empty => no check).
+    required_env: list[str] = Field(default_factory=list)
     machines_file: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)  # forwarded to plugin executors
 
@@ -337,6 +404,11 @@ class OutputConfig(BaseModel):
 
     dir: str = "./results"
     sinks: list[SinkConfig] = Field(default_factory=lambda: [SinkConfig(type="local_fs")])
+    # When true, each run lands in a fresh `dir/<YYYYMMDD-HHMMSS>` subdir (with a
+    # `latest` symlink repointed), so run series never mix artifacts (tonight:
+    # run10/run11 shared a dir and the checkpoint provenance got ambiguous).
+    # Default false: an unchanged dir keeps the resume semantics.
+    unique_dir: bool = False
 
 
 # ── Top-level ────────────────────────────────────────────────────────────────
@@ -353,6 +425,9 @@ class RunConfig(BaseModel):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
+    # Phase-hook chain (capability components; see aqa/hooks/).  None => the
+    # built-in default set; an explicit list => exactly those; [] => all off.
+    hooks: list[str] | None = None
 
     @property
     def quant(self) -> QuantConfig | None:
@@ -373,6 +448,14 @@ class RunConfig(BaseModel):
             )
         if self.provider.type == "quantize" and self.provider.quant is None:
             self.provider.quant = QuantConfig()
+        if self.hooks is not None:
+            from .registry import HOOKS
+
+            unknown = [h for h in self.hooks if h not in HOOKS.names()]
+            if unknown:
+                raise ConfigError(
+                    f"unknown hook(s) {unknown}; registered: {', '.join(HOOKS.names())}"
+                )
         return self
 
 
@@ -475,9 +558,20 @@ def load_run_config(path: str | Path) -> RunConfig:
     if isinstance(raw.get("agent"), dict):
         _resolve_context(raw["agent"], p.resolve().parent)
     try:
-        return RunConfig.model_validate(raw)
+        cfg = RunConfig.model_validate(raw)
     except Exception as exc:  # pydantic ValidationError -> ConfigError
         raise ConfigError(f"invalid run config {p}: {exc}") from exc
+    if cfg.output.unique_dir:
+        cfg = cfg.model_copy(update={"output": cfg.output.model_copy(
+            update={"dir": _timestamped_dir(cfg.output.dir)})})
+    return cfg
+
+
+def _timestamped_dir(base: str) -> str:
+    """Append a run-start timestamp subdir (``base/YYYYMMDD-HHMMSS``)."""
+    import time
+
+    return str(Path(base) / time.strftime("%Y%m%d-%H%M%S"))
 
 
 def parse_run_config(data: dict) -> RunConfig:

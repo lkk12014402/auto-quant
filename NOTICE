@@ -11,4 +11,19 @@ This product includes software adapted from the following Apache-2.0 projects:
 - EleutherAI/lm-evaluation-harness (https://github.com/EleutherAI/lm-evaluation-harness)
   Used as an optional evaluation harness via the `lm_eval` adapter.
 
+- TencentQQGYLab/ELLA (https://github.com/TencentQQGYLab/ELLA)
+  DPG-Bench: the benchmark metadata (recipes/data/dpgbench/dpg_bench.csv) is
+  vendored verbatim, and aqa/eval/dpgbench.py ports
+  dpg_bench/compute_dpg_bench.py (VQA-judged per-proposition scoring with
+  dependency zeroing and category aggregation).
+
+This product also includes software adapted from the following MIT projects:
+
+- djghosh13/geneval (https://github.com/djghosh13/geneval)
+  Copyright (c) 2023 Dhruba Ghosh. The GenEval prompt set + COCO class list
+  (recipes/data/geneval/) are vendored verbatim, and the detection-based
+  scoring logic in aqa/eval/geneval.py is a port of
+  evaluation/evaluate_images.py + summary_scores.py (with the detector swapped
+  from mmdet's Mask2Former to transformers' Mask2FormerForUniversalSegmentation).
+
 Each adapted file retains an attribution header pointing to its upstream source.

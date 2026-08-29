@@ -99,6 +99,19 @@ def _stream_pty(
     import pty
 
     master, slave = pty.openpty()
+    try:
+        # A fresh pty has a 0x0 winsize; tqdm (and any curses-style UI) renders
+        # an empty/collapsed bar against it. Inherit the parent's terminal size
+        # (COLUMNS/LINES aware, 80x24 fallback) so progress bars actually render.
+        import fcntl
+        import shutil
+        import struct
+        import termios
+
+        size = shutil.get_terminal_size()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", size.lines, size.columns, 0, 0))
+    except OSError:  # pragma: no cover - exotic platform; bar cosmetic only
+        pass
     proc = subprocess.Popen(
         list(cmd),
         stdin=subprocess.DEVNULL,

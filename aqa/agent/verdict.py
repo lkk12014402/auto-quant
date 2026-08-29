@@ -89,6 +89,8 @@ class AgentAnalysis:
     fix_tier: str = ""
     fix_plan: str = ""
     smoke_test: str = ""
+    evidence_cmd: str = ""
+    evidence_result: str = ""
     raw: str = field(default="", repr=False)
 
     @classmethod
@@ -102,6 +104,8 @@ class AgentAnalysis:
             fix_tier=extract_field(text, "FIX_TIER", 40),
             fix_plan=extract_field(text, "FIX_PLAN", 400),
             smoke_test=extract_field(text, "SMOKE_TEST", 400),
+            evidence_cmd=extract_field(text, "EVIDENCE_CMD", 300),
+            evidence_result=extract_field(text, "EVIDENCE_RESULT", 500),
             raw=text or "",
         )
 
@@ -115,5 +119,7 @@ class AgentAnalysis:
             "fix_tier": self.fix_tier,
             "fix_plan": self.fix_plan,
             "smoke_test": self.smoke_test,
+            "evidence_cmd": self.evidence_cmd,
+            "evidence_result": self.evidence_result,
         }
         return {k: v for k, v in d.items() if v}

@@ -341,3 +341,23 @@ def test_pipeline_records_self_heal_in_manifest(tmp_path, monkeypatch):
     assert sh["per_phase"]["quantize"]["agent_attempts"] == 2
     assert sh["per_phase"]["evaluate"]["deterministic_heals"] == 1
     assert sh["tokens"]["n_input_tokens"] == 100
+
+
+def test_write_terminal_state_refreshes_aqa_run_json(tmp_path):
+    """The sink upload happens inside run_pipeline; the executor's final
+    aqa_run.json rewrite only happens after. The pipeline must refresh the
+    state itself before dispatching, or the uploaded run claims "running"."""
+    from aqa.executors import ProcessState
+    from aqa.pipeline import _write_terminal_state
+
+    meta = tmp_path / "aqa_run.json"
+    meta.write_text(json.dumps({"model": "org/m", "state": "running"}))
+    _write_terminal_state(tmp_path, ProcessState.DONE, "org/m")
+    assert json.loads(meta.read_text())["state"] == "done"
+
+    _write_terminal_state(tmp_path, ProcessState.FAILED, "org/m")
+    assert json.loads(meta.read_text())["state"] == "failed"
+
+    # Missing meta file is a no-op (never creates one).
+    _write_terminal_state(tmp_path / "absent", ProcessState.DONE, "org/m")
+    assert not (tmp_path / "absent" / "aqa_run.json").exists()

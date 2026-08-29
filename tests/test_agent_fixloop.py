@@ -433,3 +433,272 @@ def test_timeout_surfaced_as_truncated_in_prior_state(tmp_path: Path):
     p2 = runner.prompts[1]
     assert "timed out / truncated: YES" in p2
     assert "half" in p2.lower()  # "edits may be HALF-APPLIED"
+
+
+# ── inter-attempt information flow (history / evidence / evolution) ─────────
+
+
+def test_agent_analysis_parses_evidence_fields():
+    text = (
+        "COMPONENT: vllm\n"
+        "ERROR_CLASS: import_error\n"
+        "EVIDENCE_CMD: python -c 'import vllm'\n"
+        "EVIDENCE_RESULT: ModuleNotFoundError: No module named 'vllm'\n"
+        "VERDICT: FIXABLE\n"
+    )
+    a = AgentAnalysis.parse(text)
+    assert a.evidence_cmd == "python -c 'import vllm'"
+    assert "ModuleNotFoundError" in a.evidence_result
+    assert a.to_dict()["evidence_cmd"] == "python -c 'import vllm'"
+    # absent evidence -> empty fields, absent from to_dict
+    b = AgentAnalysis.parse("VERDICT: FIXABLE\n")
+    assert b.evidence_cmd == "" and "evidence_cmd" not in b.to_dict()
+
+
+def test_build_fix_prompt_history_block_placement():
+    p = build_fix_prompt("quantize", "boom", attempt=2,
+                         history="TABLE", prior_state="PRIOR")
+    assert "Attempt history THIS run" in p and "TABLE" in p
+    assert p.index("Attempt history THIS run") < p.index("Previous fix attempt")
+    # omitted by default (attempt-1 prompts unchanged)
+    assert "## Attempt history" not in build_fix_prompt("quantize", "boom")
+    # the protocol tells the agent to consult the history block
+    assert "consult it FIRST" in build_fix_prompt("quantize", "boom")
+
+
+def test_prior_state_carries_probe_evidence(tmp_path: Path):
+    results = [
+        PhaseResult(ok=False, log_text="ModuleNotFoundError: No module named 'vllm'"),
+        PhaseResult(ok=False, log_text="ModuleNotFoundError: No module named 'vllm'"),
+        PhaseResult(ok=True),
+    ]
+    runner = _recording_runner([
+        ("ERROR_CLASS: import_error\nROOT_CAUSE_HYPOTHESIS: vllm missing\n"
+         "EVIDENCE_CMD: python -c 'import vllm'\n"
+         "EVIDENCE_RESULT: ModuleNotFoundError: No module named 'vllm'\n"
+         "VERDICT: FIXABLE\nFIX_PLAN: install vllm"),
+        "VERDICT: FIXABLE\nFIX_PLAN: done",
+    ])
+    loop = FixLoop(
+        "quantize", lambda: results.pop(0),
+        config=FixLoopConfig(tiers=["openclaw", "opus"], drift_threshold=5,
+                             tier_attempt_budget=5),
+        out_dir=tmp_path, run_agent=runner,
+    )
+    fr = loop.run()
+    assert fr.ok
+    p2 = runner.prompts[1]
+    assert "what the probe showed" in p2
+    assert "$ python -c 'import vllm'" in p2
+    assert "ModuleNotFoundError: No module named 'vllm'" in p2
+    # attempt 1 had no probe to show
+    assert "what the probe showed" not in runner.prompts[0]
+
+
+def test_prior_state_evidence_truncated(tmp_path: Path):
+    results = [PhaseResult(ok=False, log_text="RuntimeError: boom")] * 2 + [
+        PhaseResult(ok=True)]
+    runner = _recording_runner([
+        "EVIDENCE_CMD: cat log\nEVIDENCE_RESULT: " + "x" * 800 + "\nVERDICT: FIXABLE",
+        "VERDICT: FIXABLE\nFIX_PLAN: done",
+    ])
+    loop = FixLoop(
+        "quantize", lambda: results.pop(0),
+        config=FixLoopConfig(tiers=["openclaw", "opus"], drift_threshold=5,
+                             tier_attempt_budget=5),
+        out_dir=tmp_path, run_agent=runner,
+    )
+    assert loop.run().ok
+    p2 = runner.prompts[1]
+    probe = p2.split("what the probe showed", 1)[1]
+    assert "x" * 400 in probe  # kept a substantial prefix
+    assert "x" * 600 not in probe  # capped (~500 chars total)
+
+
+def test_history_absent_on_first_attempt(tmp_path: Path):
+    results = [PhaseResult(ok=False, log_text="RuntimeError: boom"), PhaseResult(ok=True)]
+    runner = _recording_runner(["VERDICT: FIXABLE\nFIX_PLAN: patch"])
+    loop = FixLoop(
+        "quantize", lambda: results.pop(0),
+        config=FixLoopConfig(tiers=["openclaw", "opus"]),
+        out_dir=tmp_path, run_agent=runner,
+    )
+    assert loop.run().ok
+    assert "## Attempt history THIS run" not in runner.prompts[0]
+
+
+def test_history_table_dead_ends_and_evolution(tmp_path: Path):
+    results = [
+        PhaseResult(ok=False, log_text="ModuleNotFoundError: No module named 'vllm'"),
+        PhaseResult(ok=False, log_text="torch.cuda.OutOfMemoryError: CUDA out of memory"),
+        PhaseResult(ok=False, log_text="RuntimeError: size mismatch for x"),
+        PhaseResult(ok=True),
+    ]
+    runner = _recording_runner([
+        ("ERROR_CLASS: import_error\nROOT_CAUSE_HYPOTHESIS: vllm missing\n"
+         "VERDICT: FIXABLE\nFIX_PLAN: install vllm"),
+        ("ERROR_CLASS: oom\nROOT_CAUSE_HYPOTHESIS: kv cache too big\n"
+         "VERDICT: FIXABLE\nFIX_PLAN: lower mem util"),
+        "VERDICT: FIXABLE\nFIX_PLAN: final fix",
+    ])
+    loop = FixLoop(
+        "quantize", lambda: results.pop(0),
+        config=FixLoopConfig(tiers=["openclaw", "opus"], drift_threshold=5,
+                             tier_attempt_budget=5),
+        out_dir=tmp_path, run_agent=runner,
+    )
+    fr = loop.run()
+    assert fr.ok and fr.attempts == 3
+    p3 = runner.prompts[2]
+    # the table lists both prior attempts with tier / class-before / verdict / summary
+    assert "| 1 | openclaw | import_error | -1 | FIXABLE | vllm missing |" in p3
+    assert "| 2 | openclaw | oom | -1 | FIXABLE | kv cache too big |" in p3
+    # error evolution: class sequence across attempts + the current failure
+    assert "error evolution: import_error → oom → shape_mismatch" in p3
+    # dead ends from the rejected trail are shown (not just persisted on success)
+    assert "hypotheses already ruled out this run" in p3
+    assert "- import_error: vllm missing" in p3
+    assert "- oom: kv cache too big" in p3
+    # no progress segment for a non-quantize log family (no layers.N markers)
+    assert "progress depth" not in p3
+
+
+def test_history_progress_advancement_line(tmp_path: Path):
+    logs = [
+        PhaseResult(ok=False, log_text="quant err layers.1\nRuntimeError: size mismatch"),
+        PhaseResult(ok=False, log_text="quant err layers.3\nRuntimeError: size mismatch"),
+        PhaseResult(ok=False, log_text="quant err layers.5\nRuntimeError: size mismatch"),
+        PhaseResult(ok=True),
+    ]
+    same = "ERROR_CLASS: shape_mismatch\nVERDICT: FIXABLE\nFIX_PLAN: tweak"
+    runner = _recording_runner([same, same, same])
+    loop = FixLoop(
+        "quantize", lambda: logs.pop(0),
+        config=FixLoopConfig(tiers=["openclaw", "opus"], drift_threshold=9,
+                             tier_attempt_budget=9),
+        out_dir=tmp_path, run_agent=runner,
+    )
+    assert loop.run().ok
+    p3 = runner.prompts[2]
+    assert "quantize progress depth 1 → 3 (advanced)" in p3
+
+
+def test_history_capped_and_summaries_truncated(tmp_path: Path):
+    long_cause = "hypothesis " + "r" * 200
+    outputs = [f"ROOT_CAUSE_HYPOTHESIS: {long_cause}\nVERDICT: FIXABLE"] * 8
+    runner = _recording_runner(outputs)
+    loop = FixLoop(
+        "quantize", lambda: PhaseResult(ok=False, log_text="opaque failure"),
+        config=FixLoopConfig(tiers=["openclaw"], tier_attempt_budget=8,
+                             drift_threshold=99, max_attempts=8),
+        out_dir=tmp_path, run_agent=runner,
+    )
+    fr = loop.run()
+    assert not fr.ok and fr.attempts == 8
+    p8 = runner.prompts[7]
+    # only the last ~6 attempts are tabulated
+    assert "| 1 |" not in p8 and "| 7 |" in p8
+    # history-table summaries are capped at 120 chars (the prior_state block has
+    # its own, larger cap -- restrict the check to the table region)
+    table = p8.split("## Attempt history THIS run", 1)[1].split("error evolution", 1)[0]
+    assert "r" * 121 not in table
+    assert "hypothesis " + "r" * 100 in table
+
+
+# ── upgraded deterministic classification prior ──────────────────────────────
+
+from aqa.agent.drift import classify_error_detail
+from aqa.agent.prompt import playbook_section_for
+
+
+def test_classify_error_real_run_regressions():
+    """Tonight's seven real GPU-run failures, pinned to their expected classes."""
+    cases = [
+        ("auto-round is not installed; `pip install auto-round`", "missing_tool"),
+        ("Error: Access denied. This repository requires approval.", "auth_error"),
+        (("RuntimeError: model parallel state must be empty before initialization; "
+          "found dp, cfg, sp"), "engine_reinit"),
+        ("KeyError: 'layers.29.adaLN_modulation.0.qweight'", "quant_artifact"),
+        (("ValueError: There is no module or parameter named "
+          "'text_encoder.embed_tokens' in ZImagePipeline..."), "quant_artifact"),
+        (("ValueError: Sequence length must be less than max_position_embeddings "
+          "(got 127 and 77)"), "context_length"),
+        ("PermissionError: [Errno 13] Permission denied: '/root/x'", "permission_error"),
+    ]
+    for text, expected in cases:
+        assert classify_error(text) == expected, text
+
+
+def test_classify_error_rule_ordering_guards():
+    # missing_tool fires before import_error even inside an ImportError message
+    assert classify_error("ImportError: auto-round is not installed") == "missing_tool"
+    # quant_artifact fires before the coarse exception buckets
+    assert classify_error("KeyError: 'model.layers.0.qweight'") == "quant_artifact"
+    # engine_reinit fires before vllm_engine_error / runtime_error buckets
+    assert classify_error("RuntimeError: model parallel state must be empty") \
+        == "engine_reinit"
+    # context_length fires before the value_error bucket
+    assert classify_error("ValueError: Sequence length must be less than "
+                          "max_position_embeddings") == "context_length"
+    # checkpoint_key_mismatch keeps its own patterns even when a packed-weight
+    # name appears in the same line
+    assert classify_error("RuntimeError: Missing key(s) in state_dict: 'layers.0.qweight'") \
+        == "checkpoint_key_mismatch"
+
+
+def test_classify_error_wrapper_compatibility():
+    # the wrapper stays a thin alias returning exactly the detail's class name
+    for text in ("torch.cuda.OutOfMemoryError: CUDA out of memory",
+                 "ModuleNotFoundError: No module named 'auto_round'",
+                 "something totally unknown here"):
+        assert classify_error(text) == classify_error_detail(text).class_name
+
+
+def test_classify_error_detail_fields():
+    d = classify_error_detail("line one\ntorch.cuda.OutOfMemoryError: CUDA out of memory")
+    assert d.class_name == "oom"
+    assert d.rule_id.startswith("oom#")
+    assert d.evidence == "torch.cuda.OutOfMemoryError: CUDA out of memory"
+    assert len(d.evidence) <= 200
+    long_line = "CUDA out of memory " + "y" * 500
+    assert len(classify_error_detail(long_line).evidence) <= 200
+    unknown = classify_error_detail("totally opaque")
+    assert unknown.class_name == "unknown"
+    assert unknown.rule_id == "" and unknown.evidence == ""
+
+
+def test_classification_prompt_block_with_evidence():
+    p = build_fix_prompt("quantize", "boom", prior_class="oom",
+                         prior_evidence="torch.cuda.OutOfMemoryError: CUDA out of memory")
+    assert "error_class guess: oom (matched: torch.cuda.OutOfMemoryError" in p
+    # no evidence -> the block keeps its exact previous format
+    p2 = build_fix_prompt("quantize", "boom", prior_class="oom")
+    assert "error_class guess: oom\n" in p2
+
+
+def test_playbook_section_pointer():
+    assert playbook_section_for("oom") == "OOM / memory"
+    assert playbook_section_for("quant_artifact") == "Diffusion (vllm-omni text-to-image)"
+    assert playbook_section_for("engine_reinit") == "Diffusion (vllm-omni text-to-image)"
+    assert playbook_section_for("unmapped_class") == ""
+    p = build_fix_prompt("quantize", "boom", skill_playbook="BODY",
+                         playbook_pointer="OOM / memory")
+    assert "The section most relevant to this class: OOM / memory" in p
+    assert p.index("most relevant to this class") < p.index("BODY")  # pointer before content
+    p2 = build_fix_prompt("quantize", "boom", skill_playbook="BODY")
+    assert "most relevant to this class" not in p2
+
+
+def test_fix_loop_prompt_shows_evidence_and_pointer(tmp_path: Path):
+    results = [PhaseResult(ok=False, log_text="torch.cuda.OutOfMemoryError: CUDA OOM"),
+               PhaseResult(ok=True)]
+    runner = _recording_runner(["VERDICT: FIXABLE\nFIX_PLAN: lower mem"])
+    loop = FixLoop(
+        "quantize", lambda: results.pop(0),
+        config=FixLoopConfig(tiers=["openclaw", "opus"]),
+        out_dir=tmp_path, run_agent=runner,
+    )
+    assert loop.run().ok
+    p1 = runner.prompts[0]
+    assert "error_class guess: oom (matched: torch.cuda.OutOfMemoryError" in p1
+    assert "The section most relevant to this class: OOM / memory" in p1

@@ -59,3 +59,41 @@ acting; the deterministic classifier and your own EVIDENCE_CMD always win over t
   quantization_config JSON, read a safetensors HEADER (not a full load), or call just the
   failing kernel once on a dummy tensor of the offending shape. Do not re-quantize or boot
   the whole engine as smoke.
+
+## Diffusion (vllm-omni text-to-image)
+- vllm-omni loads an auto_round DiT checkpoint only when the transformer's `config.json`
+  carries `quantization_config` with `quant_method="auto-round"` AND `block_name_to_quantize`
+  (e.g. "transformer_blocks,single_transformer_blocks"); if auto-round's diffusion export
+  did not write it, post-process the JSON to add it (verify by re-reading the JSON).
+- MXFP4 DiT checkpoints load on vllm-omni upstream main (PR #5544 merged 2026-08-25);
+  older local checkouts predating the merge still reject them -> use W4A16/MXFP8 there
+  instead of patching the loader.
+- auto-round forces `batch_size=1` for diffusion calibration; do not try to raise it.
+- Generation failing at engine boot: confirm vllm-omni is actually installed and that the
+  model's `model_index.json` names a pipeline class vllm-omni supports.
+- **RTN auto-routes to model_free**: `--iters 0 --disable_opt_rtn` triggers auto-round's
+  model-free path ("Auto-routing to model-free quantization"). For diffusion models that
+  path can SILENTLY QUANTIZE 0 LAYERS (transformer config lacks `model_type` for layer
+  detection; shard prefetch 404s at repo root) while still stamping a quantization_config
+  — the exported checkpoint is then unquantized weights + a quantizer config (vllm-omni
+  will fail to load it). ALWAYS pass `--disable_model_free` for diffusion RTN, and verify
+  `Quantized layers (N)` with N>0 in the log before trusting the checkpoint.
+- **`FileNotFoundError: '<model-id>/model_index.json'`** on diffusion quantize: the
+  regular diffusion loader only accepts a LOCAL directory (`utils/model.py` opens
+  `<path>/model_index.json` directly, no hub resolution). Download first
+  (`hf download <id> --local-dir ...`) and pass the local path as `model`.
+- **vllm-omni `no module or parameter named 'text_encoder.embed_tokens'`**: auto-round
+  re-saves non-quantized components itself and can mangle them — Z-Image's Qwen3 text
+  encoder loses the inner `model.` prefix on every weight (source `model.layers.N.*`
+  → exported `layers.N.*`). aqa's post-export repair (`repair_diffusion_export`)
+  auto-restores mismatched components from the source model and writes
+  `aqa_export_repair.json`; if you see this error outside aqa, copy the pristine
+  `text_encoder/` (and any mismatched component) from the source model into the export.
+- **vllm-omni `KeyError: '<block>.N.adaLN_modulation.0.qweight'`（或类似小层键名）**:
+  vllm-omni 刻意把某些小型 DiT 层保持全精度（模型文件里 `quant_config=None`，如
+  Z-Image 的 `adaLN_modulation` 与 `t_embedder.mlp`，注释 "precision-sensitive"）。
+  auto-round 会把它们连同所在 block 一起量化 → checkpoint 是打包的 qweight，引擎端
+  却要明文 weight（或反向）。量化时排除：`--ignore_layers adaLN_modulation`（去
+  vllm-omni 对应模型文件里搜 `quant_config=None`，忽略清单与它们对齐）。
+- Full source-verified reference (quantization architecture, per-model verdicts,
+  vllm-omni scheme matrix): `docs/autoround_diffusion_reference.md` in this repo.

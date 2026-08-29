@@ -18,9 +18,10 @@ from .agent.fix_loop import (
     run_fix_loop,
 )
 from .config import RunConfig
-from .eval.registry import EvalResult
+from .eval.registry import BenchmarkRegistry, EvalResult
 from .eval.runner import run_evaluation
 from .executors import ProcessState
+from .hooks import resolve_hooks, run_hooks
 from .logging_util import AqaError, get_logger
 from .quantize import (
     build_autoround_command,
@@ -232,21 +233,25 @@ def _run_quantize(run_cfg: RunConfig, quant_dir: Path, out_dir: Path,
                                         num_gpus=num_gpus)
         record_quant_command(out_dir, shlex.join(built), source="builder")
 
+    hook_chain = resolve_hooks(run_cfg)
+
     def _phase() -> PhaseResult:
         try:
             if optimized:
-                run_quant_command(optimized, quant_dir)
+                run_quant_command(optimized, quant_dir, hooks=hook_chain)
             else:
-                run_quantization(run_cfg.model, quant_cfg, quant_dir, num_gpus=num_gpus)
+                run_quantization(run_cfg.model, quant_cfg, quant_dir, num_gpus=num_gpus,
+                                 hooks=hook_chain)
             return PhaseResult(ok=True)
         except AqaError as exc:
             return PhaseResult(ok=False, log_text=_tail(log_path) or str(exc))
 
     if not run_cfg.agent.fix_loop:
         if optimized:
-            run_quant_command(optimized, quant_dir)
+            run_quant_command(optimized, quant_dir, hooks=hook_chain)
         else:
-            run_quantization(run_cfg.model, quant_cfg, quant_dir, num_gpus=num_gpus)
+            run_quantization(run_cfg.model, quant_cfg, quant_dir, num_gpus=num_gpus,
+                             hooks=hook_chain)
         return
 
     fr = run_fix_loop(
@@ -283,6 +288,15 @@ def _run_evaluate(run_cfg: RunConfig, model: str, eval_dir: Path,
         holder["result"] = res
         if not res.benchmarks:
             return PhaseResult(ok=False, log_text="evaluation produced no benchmark results")
+        # after_benchmark validator hooks (e.g. eval_sanity): an AqaError verdict
+        # fails the phase and feeds the fix-loop's error signature.
+        registry = BenchmarkRegistry()
+        try:
+            for bench in res.benchmarks.values():
+                run_hooks("after_benchmark", run_cfg, recipe=registry.get(bench.name),
+                          result_or_exception=bench, out_dir=eval_dir)
+        except AqaError as exc:
+            return PhaseResult(ok=False, log_text=str(exc))
         if all(b.score == 0 for b in res.benchmarks.values()):
             return PhaseResult(ok=False, log_text="all benchmark scores are 0 (acc=0 => fail)")
         return PhaseResult(ok=True)
@@ -388,6 +402,7 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path) -> ProcessState:
             gate_verdict=gate_verdict, out_dir=out_dir, self_heal=heal.block())
         write_manifest(manifest, out_dir)
 
+        _write_terminal_state(out_dir, ProcessState.DONE, run_cfg.model)
         _dispatch_sinks(run_cfg, eval_dir, RunMeta(
             model=run_cfg.model,
             scheme=run_cfg.quant.scheme if run_cfg.quant else None,
@@ -440,6 +455,7 @@ def _writeback_on_failure(run_cfg: RunConfig, out_dir: Path, eval_dir: Path,
     status = "Quant Failed" if reason.startswith("quantize failed") else "Eval Failed"
     run_dir = eval_dir if eval_dir.exists() else out_dir
     _log.warning("run failed (%s); writing back partial results + status=%s", reason, status)
+    _write_terminal_state(out_dir, ProcessState.FAILED, run_cfg.model)
     # A failed run still gets a manifest (empty results) so the attempt is auditable.
     try:
         empty = EvalResult(model=run_cfg.model, backend=run_cfg.eval.backend)
@@ -472,6 +488,23 @@ def _writeback_on_failure(run_cfg: RunConfig, out_dir: Path, eval_dir: Path,
             _maybe_upload_model(run_cfg, resolved, empty, out_dir)
         except Exception as up_exc:  # noqa: BLE001 - best-effort
             _log.warning("failure-path model upload error: %s", up_exc)
+
+
+def _write_terminal_state(out_dir: Path, state: "ProcessState", model: str) -> None:
+    """Refresh ``aqa_run.json`` with the terminal state *before* sinks upload.
+
+    The executor writes ``{"state": "running"}`` at start and only rewrites the
+    final state after ``run_pipeline`` returns — but sink dispatch (the HF
+    dataset write-back) happens inside the pipeline, so without this the
+    uploaded artifact would permanently claim "running".
+    """
+    meta = out_dir / "aqa_run.json"
+    if not meta.exists():
+        return
+    try:
+        meta.write_text(__import__("json").dumps({"model": model, "state": state.value}))
+    except OSError:  # pragma: no cover - cosmetic write, never block the run
+        pass
 
 
 def _derive_status(results: dict[str, float], gate_verdict: str | None) -> str:

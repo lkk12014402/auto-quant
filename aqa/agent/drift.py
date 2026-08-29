@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import difflib
 import re
+from dataclasses import dataclass
 
 # Ordered (category, pattern) rules -- first match wins.  Kept small and stable so the
 # same underlying error classifies identically across attempts (drift stability).
@@ -57,21 +58,38 @@ _RULES: list[tuple[str, re.Pattern[str]]] = [
     ("checkpoint_key_mismatch", re.compile(r"Missing key|Unexpected key|"
                                            r"Error\(s\) in loading state_dict|"
                                            r"size of tensor .* must match", re.IGNORECASE)),
+    # context-length overflow (specific; before the broad tokenizer word below)
+    ("context_length", re.compile(r"max_position_embeddings|"
+                                  r"sequence length must be less than|"
+                                  r"maximum sequence length|context length",
+                                  re.IGNORECASE)),
     ("tokenizer_error", re.compile(r"tokenizer|SentencePiece|added_tokens|"
                                    r"vocab_size|chat[_ ]template", re.IGNORECASE)),
     # -- dependency / environment ---------------------------------------------
+    # a missing CLI/tool is not an ImportError -- check BEFORE import_error
+    ("missing_tool", re.compile(r"is not installed|not found on PATH|command not found|"
+                                r"No such file or directory.*bin/", re.IGNORECASE)),
     ("import_error", re.compile(r"ModuleNotFoundError|ImportError|No module named|"
                                 r"cannot import name|undefined symbol|"
                                 r"version .* GLIBC", re.IGNORECASE)),
     ("permission_error", re.compile(r"PermissionError|Permission denied|"
                                     r"\[Errno 13\]", re.IGNORECASE)),
     # -- serving / inference engine -------------------------------------------
+    # vllm-omni double-init of the diffusion parallel groups (specific; before
+    # the generic engine + exception buckets)
+    ("engine_reinit", re.compile(r"model parallel state must be empty|"
+                                 r"already initialized.*(parallel|process group)|"
+                                 r"destroy_process_group", re.IGNORECASE)),
     ("vllm_engine_error", re.compile(r"EngineCore|AsyncLLMEngine|Engine core initialization|"
                                      r"engine .* died|RayWorker|vllm.*Error", re.IGNORECASE)),
+    # quantized-checkpoint artifact problems (missing packed weight, mangled
+    # component) -- after the engine rules, before the coarse exception buckets
+    ("quant_artifact", re.compile(r"qweight|qzeros|quantization_config|"
+                                  r"no module or parameter named", re.IGNORECASE)),
     # -- network / download (transient vs permanent split) --------------------
     ("auth_error", re.compile(r"401 Client Error|403 Client Error|"
-                              r"Repository Not Found|GatedRepo|"
-                              r"Invalid.*token|Unauthorized", re.IGNORECASE)),
+                              r"Repository Not Found|GatedRepo|requires approval|"
+                              r"Access denied|Invalid.*token|Unauthorized", re.IGNORECASE)),
     ("download_missing", re.compile(r"Entry Not Found|404 Client Error|"
                                     r"EntryNotFound|does not appear to have a file", re.IGNORECASE)),
     ("network_transient", re.compile(r"Connection .*refused|Connection reset|"
@@ -124,13 +142,34 @@ def _denoise_for_class(text: str) -> str:
     return "\n".join(lines) or text
 
 
+@dataclass
+class ClassifyDetail:
+    """Richer classification prior: the class plus *why* it was chosen."""
+
+    class_name: str
+    rule_id: str = ""   # "<category>#<rule index>" of the matching rule
+    evidence: str = ""  # first matching (denoised) log line, capped at 200 chars
+
+
+def classify_error_detail(text: str) -> ClassifyDetail:
+    """Classify ``text`` and report the matching rule + evidence line."""
+    cleaned = _denoise_for_class(text or "")
+    for idx, (category, pat) in enumerate(_RULES):
+        if not pat.search(cleaned):
+            continue
+        evidence = ""
+        for line in cleaned.splitlines():
+            if pat.search(line):
+                evidence = line.strip()[:200]
+                break
+        return ClassifyDetail(class_name=category,
+                              rule_id=f"{category}#{idx}", evidence=evidence)
+    return ClassifyDetail(class_name="unknown")
+
+
 def classify_error(text: str) -> str:
     """Return a stable snake_case error category (``unknown`` if nothing matches)."""
-    cleaned = _denoise_for_class(text or "")
-    for category, pat in _RULES:
-        if pat.search(cleaned):
-            return category
-    return "unknown"
+    return classify_error_detail(text).class_name
 
 
 def exception_type(text: str) -> str:
