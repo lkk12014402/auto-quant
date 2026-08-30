@@ -55,7 +55,12 @@ def detect_source(path: str | Path) -> str | None:
 
 # ── agent_eval: ATIF -> messages ─────────────────────────────────────────────
 def atif_to_messages(atif: dict[str, Any]) -> list[dict[str, Any]]:
-    """Map ATIF steps to OpenAI chat messages (tool calls + tool results)."""
+    """Map ATIF steps to OpenAI chat messages (tool calls + tool results).
+
+    Assistant ``reasoning_content`` (ATIF ``step.reasoning_content``) is carried
+    as a separate message field -- Nemotron-Agentic-v1 style, keeping thinking
+    out of ``content`` so trainers can mask or drop it independently.
+    """
     messages: list[dict[str, Any]] = []
     for step in atif.get("steps", []):
         source = step.get("source")
@@ -63,6 +68,8 @@ def atif_to_messages(atif: dict[str, Any]) -> list[dict[str, Any]]:
             messages.append({"role": source, "content": step.get("message", "")})
         elif source == "agent":
             msg: dict[str, Any] = {"role": "assistant", "content": step.get("message", "")}
+            if step.get("reasoning_content"):
+                msg["reasoning_content"] = step["reasoning_content"]
             calls = step.get("tool_calls") or []
             if calls:
                 msg["tool_calls"] = [
@@ -86,6 +93,88 @@ def atif_to_messages(atif: dict[str, Any]) -> list[dict[str, Any]]:
     return messages
 
 
+def _tools_of(atif: dict[str, Any]) -> list[dict[str, Any]]:
+    """OpenAI function-calling tool definitions from the ATIF agent block."""
+    tools = (atif.get("agent") or {}).get("tool_definitions") or []
+    return tools if isinstance(tools, list) else []
+
+
+def _row_uuid(atif: dict[str, Any], *, run: str = "") -> str:
+    import uuid
+
+    seed = f"{atif.get('session_id', '')}:{(atif.get('extra') or {}).get('task_id', '')}:{run}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
+def atif_to_sft_row(atif: dict[str, Any], *, run: str = "") -> dict[str, Any] | None:
+    """One Nemotron-Agentic-v1-style SFT row: {uuid, messages, tools, metadata}.
+
+    Returns None when no assistant turn carries content or tool calls (no
+    training signal).
+    """
+    messages = atif_to_messages(atif)
+    assistants = [m for m in messages if m["role"] == "assistant"]
+    if not any(m["content"].strip() or m.get("tool_calls") or m.get("reasoning_content")
+               for m in assistants):
+        return None
+    extra = atif.get("extra") or {}
+    return {
+        "uuid": _row_uuid(atif, run=run),
+        "messages": messages,
+        "tools": _tools_of(atif),
+        "metadata": {
+            "task": extra.get("task_id") or atif.get("session_id", ""),
+            "model": (atif.get("agent") or {}).get("model_name", ""),
+            "reward": extra.get("reward"),
+            "solved": extra.get("solved"),
+            "run": run,
+            "source": "agent_eval",
+        },
+    }
+
+
+def atif_to_rl_row(atif: dict[str, Any], *, run: str = "") -> dict[str, Any] | None:
+    """One NeMo-Gym-style RL row: task definition + verifier materials.
+
+    The dataset carries the *task* (initial input messages + tool definitions +
+    sampling params) -- not the answer (that is generated at rollout time).
+    The trajectory's outcome rides in ``verifier`` for offline RL / rejection
+    sampling over collected trajectories.
+    """
+    messages = atif_to_messages(atif)
+    # Everything before the first assistant message is the task prompt.
+    input_msgs: list[dict[str, Any]] = []
+    for m in messages:
+        if m["role"] == "assistant":
+            break
+        input_msgs.append(m)
+    if not input_msgs:
+        return None
+    extra = atif.get("extra") or {}
+    agent = atif.get("agent") or {}
+    verifier = {k: extra[k] for k in ("reward", "solved", "verdict_category")
+                if k in extra}
+    if extra.get("task_id"):
+        verifier["task_id"] = extra["task_id"]
+    return {
+        "id": _row_uuid(atif, run=run),
+        "responses_create_params": {
+            "input": input_msgs,
+            "tools": _tools_of(atif),
+            "parallel_tool_calls": True,
+        },
+        "environment_name": extra.get("environment") or "agent_run",
+        "agent_ref": {"type": "aqa", "name": agent.get("name", "")},
+        "verifier": verifier,
+        "metadata": {
+            "task": extra.get("task_id") or atif.get("session_id", ""),
+            "model": agent.get("model_name", ""),
+            "run": run,
+            "source": "agent_eval",
+        },
+    }
+
+
 def _atif_files(paths: Iterable[str | Path]) -> list[Path]:
     files = []
     for raw in paths:
@@ -100,14 +189,22 @@ def _atif_files(paths: Iterable[str | Path]) -> list[Path]:
 
 
 def export_agent_eval(
-    paths: Iterable[str | Path], *, success_only: bool = True
+    paths: Iterable[str | Path], *, success_only: bool = True,
+    view: str = "sft",
 ) -> list[dict[str, Any]]:
-    """Read ``trajectories.jsonl`` files into ``messages`` rows.
+    """Read ``trajectories.jsonl`` files into dataset rows.
+
+    ``view="sft"`` (default): ``{uuid, messages, tools, metadata}`` rows
+    (Nemotron-Agentic-v1 shape; backward compatible with the previous
+    ``messages``-only rows, which additionally had a ``metadata`` block).
+    ``view="rl"``: NeMo-Gym-style task rows (:func:`atif_to_rl_row`).
 
     Rows whose assistant turns are all empty carry no training signal and are
     skipped.  ``success_only`` keeps trajectories with ``solved``/``reward>0``
     (rows lacking outcome metadata are kept -- nothing to judge them by).
     """
+    if view not in ("sft", "rl"):
+        raise AqaError(f"unknown view {view!r}; choose sft|rl")
     rows: list[dict[str, Any]] = []
     for path in _atif_files(paths):
         for line in path.read_text(errors="replace").splitlines():
@@ -124,21 +221,12 @@ def export_agent_eval(
             if (success_only and ("solved" in extra or "reward" in extra)
                     and not (extra.get("solved") or (extra.get("reward") or 0) > 0)):
                 continue
-            messages = atif_to_messages(atif)
-            assistants = [m for m in messages if m["role"] == "assistant"]
-            if not any(m["content"].strip() or m.get("tool_calls") for m in assistants):
-                continue
-            rows.append({
-                "messages": messages,
-                "metadata": {
-                    "task": extra.get("task_id") or atif.get("session_id", ""),
-                    "model": (atif.get("agent") or {}).get("model_name", ""),
-                    "reward": extra.get("reward"),
-                    "solved": extra.get("solved"),
-                    "run": str(path.parent),
-                    "source": "agent_eval",
-                },
-            })
+            if view == "sft":
+                row = atif_to_sft_row(atif, run=str(path.parent))
+            else:
+                row = atif_to_rl_row(atif, run=str(path.parent))
+            if row is not None:
+                rows.append(row)
     return rows
 
 

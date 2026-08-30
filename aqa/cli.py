@@ -102,7 +102,7 @@ def swebench(
 
 @main.group()
 def traces() -> None:
-    """Trajectory datafication: export agent trajectories as SFT datasets."""
+    """Trajectory datafication: export agent trajectories as SFT/RL datasets."""
 
 
 @traces.command("export")
@@ -115,6 +115,9 @@ def traces() -> None:
 @click.option("--filter", "success_filter",
               type=click.Choice(["success", "all"]), default="success",
               help="success keeps solved/reward>0 trajectories only.")
+@click.option("--view", type=click.Choice(["sft", "rl"]), default="sft",
+              help="Dataset view: sft (OpenAI messages, Nemotron-Agentic style) or "
+                   "rl (NeMo-Gym style task rows: responses_create_params + verifier).")
 @click.option("--sharegpt", is_flag=True, help="Add a ShareGPT `conversations` column.")
 @click.option("--out", "out_jsonl", type=click.Path(), default=None,
               help="Write rows as JSONL (default: ./traces.jsonl when no other target).")
@@ -122,9 +125,9 @@ def traces() -> None:
               help="Also write rows as parquet (needs `datasets`).")
 @click.option("--push", is_flag=True, help="Push the dataset to the HF hub.")
 @click.option("--repo", default=None, help="Target HF dataset repo for --push (org/name).")
-def traces_export(paths, source, success_filter, sharegpt, out_jsonl, parquet_path,
+def traces_export(paths, source, success_filter, sharegpt, view, out_jsonl, parquet_path,
                   push, repo) -> None:
-    """Export trajectories (ATIF / fix-loop knowledge) as an SFT dataset."""
+    """Export trajectories (ATIF / fix-loop knowledge) as an SFT/RL dataset."""
     from .agent import traces_export as te
 
     success_only = success_filter == "success"
@@ -137,8 +140,10 @@ def traces_export(paths, source, success_filter, sharegpt, out_jsonl, parquet_pa
                 _log.warning("skipping %s: no trajectories.jsonl / knowledge store found", raw)
                 continue
         if src == "agent_eval":
-            rows += te.export_agent_eval([raw], success_only=success_only)
+            rows += te.export_agent_eval([raw], success_only=success_only, view=view)
         else:
+            if view == "rl":
+                _log.warning("fixloop knowledge has no RL view; exporting SFT rows for %s", raw)
             rows += te.export_fixloop(raw, success_only=success_only)
     if not rows:
         click.echo("no trajectory rows found")
@@ -156,6 +161,72 @@ def traces_export(paths, source, success_filter, sharegpt, out_jsonl, parquet_pa
         te.push_to_hub(rows, repo)
         targets.append(f"hf.co/datasets/{repo}")
     click.echo(f"exported {len(rows)} row(s) -> {', '.join(targets)}")
+
+
+@traces.command("distill")
+@click.option("--path", "paths", multiple=True, required=True,
+              type=click.Path(exists=True),
+              help="Run dir with trajectories.jsonl or the file itself (repeatable).")
+@click.option("--knowledge-root", default=None,
+              help="Knowledge store root to write entries into "
+                   "(default: the shared host store).")
+@click.option("--phase", default="trajectory", show_default=True,
+              help="Phase bucket the distilled entries are filed under.")
+def traces_distill(paths, knowledge_root, phase) -> None:
+    """Distill fix knowledge from trajectories into the knowledge store."""
+    from .agent import knowledge_extract as ke
+    from .agent.knowledge import default_local_dir
+
+    root = Path(knowledge_root) if knowledge_root else default_local_dir()
+    entries = []
+    for raw in paths:
+        entries.extend(ke.extract_from_file(raw))
+    if not entries:
+        click.echo("no knowledge entries found (no error→progress patterns)")
+        return
+    written = ke.write_back(entries, root, phase=phase)
+    click.echo(f"distilled {written} knowledge entrie(s) -> {root} (phase={phase})")
+
+
+@traces.command("publish")
+@click.option("--path", "paths", multiple=True, required=True,
+              type=click.Path(exists=True),
+              help="Run dir with trajectories.jsonl or the file itself (repeatable).")
+@click.option("--repo", default=None, help="Target HF dataset repo (org/name).")
+@click.option("--token-env", default=None,
+              help="Env var holding the HF write token (default: HF_TOKEN...).")
+@click.option("--path-in-repo", default="", show_default=True,
+              help="Subdirectory inside the dataset repo to upload under.")
+@click.option("--stage-dir", type=click.Path(), default=None,
+              help="Where to stage the archive (default: a temp dir).")
+@click.option("--stage-only", is_flag=True,
+              help="Only stage the archive locally; do not upload.")
+def traces_publish(paths, repo, token_env, path_in_repo, stage_dir, stage_only) -> None:
+    """Archive trajectories to a HF dataset repo in layered directory mode.
+
+    Layout per session: trajectories/<session_id>/{trajectory.json,
+    dataset_sft.jsonl, dataset_rl.jsonl}.
+    """
+    import tempfile
+
+    from .agent import traces_publish as tp
+
+    if not stage_only and not repo:
+        raise click.ClickException("publishing needs --repo org/name (or --stage-only)")
+
+    if stage_dir:
+        dest = Path(stage_dir)
+        manifest = tp.stage_trajectory_archive(paths, dest)
+    else:
+        dest = Path(tempfile.mkdtemp(prefix="aqa_traces_"))
+        manifest = tp.stage_trajectory_archive(paths, dest)
+    click.echo(f"staged {manifest['sessions']} session(s), "
+               f"{len(manifest['files'])} file(s) -> {dest}")
+    if stage_only:
+        return
+    url = tp.publish_archive(dest, repo, token_env=token_env,
+                             path_in_repo=path_in_repo)
+    click.echo(f"published -> {url}")
 
 
 @main.command(name="list")

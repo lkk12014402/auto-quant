@@ -219,3 +219,89 @@ def test_cli_traces_export_no_rows(tmp_path):
     result = CliRunner().invoke(main, ["traces", "export", "--path", str(tmp_path / "empty")])
     assert result.exit_code == 0
     assert "no trajectory rows found" in result.output
+
+
+# ── SFT view (Nemotron-Agentic shape) & RL view (NeMo-Gym shape) ────────────
+def _atif_with_reasoning():
+    return {
+        "schema_version": "ATIF-v1.7",
+        "session_id": "sess-1",
+        "agent": {"name": "aqa-react", "version": "0.1", "model_name": "m",
+                  "tool_definitions": [
+                      {"type": "function",
+                       "function": {"name": "bash", "description": "run shell",
+                                    "parameters": {"type": "object", "properties": {}}}},
+                  ]},
+        "steps": [
+            {"step_id": 1, "source": "user", "message": "fix the bug"},
+            {"step_id": 2, "source": "agent", "message": "reading first",
+             "reasoning_content": "need context",
+             "tool_calls": [{"tool_call_id": "c1", "function_name": "bash",
+                             "arguments": {"command": "cat app.py"}}],
+             "observation": {"results": [{"source_call_id": "c1",
+                                          "content": "def main(): pass"}]}},
+            {"step_id": 3, "source": "agent", "message": "fixed"},
+        ],
+        "extra": {"task_id": "t1", "solved": True, "reward": 1.0},
+    }
+
+
+def test_sft_row_nemotron_shape():
+    row = te.atif_to_sft_row(_atif_with_reasoning(), run="run1")
+    assert row is not None
+    assert set(row) == {"uuid", "messages", "tools", "metadata"}
+    # reasoning_content is separate from content (never folded in)
+    asst = row["messages"][1]
+    assert asst["reasoning_content"] == "need context"
+    assert asst["content"] == "reading first"
+    assert asst["tool_calls"][0]["function"]["name"] == "bash"
+    tool_msg = row["messages"][2]
+    assert tool_msg == {"role": "tool", "tool_call_id": "c1",
+                        "content": "def main(): pass"}
+    assert row["tools"][0]["function"]["name"] == "bash"
+    assert row["metadata"]["solved"] is True
+    assert row["metadata"]["reward"] == 1.0
+
+
+def test_sft_row_skips_empty_assistant():
+    atif = _atif_with_reasoning()
+    atif["steps"][1:] = []  # only the user step remains
+    assert te.atif_to_sft_row(atif) is None
+
+
+def test_rl_row_nemo_gym_shape():
+    row = te.atif_to_rl_row(_atif_with_reasoning(), run="run1")
+    assert row is not None
+    rcp = row["responses_create_params"]
+    # task input = everything before the first assistant turn (the user prompt)
+    assert [m["role"] for m in rcp["input"]] == ["user"]
+    assert rcp["input"][0]["content"] == "fix the bug"
+    assert rcp["tools"][0]["function"]["name"] == "bash"
+    assert rcp["parallel_tool_calls"] is True
+    assert row["environment_name"] == "agent_run"
+    assert row["agent_ref"] == {"type": "aqa", "name": "aqa-react"}
+    # trajectory outcome rides in verifier materials (offline RL / rejection sampling)
+    assert row["verifier"]["reward"] == 1.0
+    assert row["verifier"]["solved"] is True
+    assert row["metadata"]["model"] == "m"
+
+
+def test_rl_row_requires_prompt():
+    atif = _atif_with_reasoning()
+    atif["steps"] = [s for s in atif["steps"] if s["source"] == "agent"]
+    assert te.atif_to_rl_row(atif) is None
+
+
+def test_export_agent_eval_view_rl(tmp_path):
+    run = _write_run(tmp_path / "run1", [_traj("a", solved=True, reward=1.0)])
+    sft = te.export_agent_eval([run], view="sft")
+    rl = te.export_agent_eval([run], view="rl")
+    assert "messages" in sft[0] and "tools" in sft[0]
+    assert "responses_create_params" in rl[0] and "verifier" in rl[0]
+    assert rl[0]["verifier"]["reward"] == 1.0
+
+
+def test_export_agent_eval_unknown_view_raises(tmp_path):
+    run = _write_run(tmp_path / "run1", [_traj("a", solved=True, reward=1.0)])
+    with pytest.raises(AqaError, match="unknown view"):
+        te.export_agent_eval([run], view="banana")
