@@ -28,6 +28,44 @@ Four ideas shape the architecture:
    change as a reviewable patch. The kernel stays deterministic and unit-testable;
    only in-container command execution is shell.
 
+```mermaid
+flowchart LR
+    subgraph IN["声明式入口"]
+        Y["run.yaml<br/>(_base_ 继承 · ${VAR} 展开 · *_env secrets)"]
+    end
+
+    subgraph PIPE["流水线内核（aqa/ · 纯 Python 状态机）"]
+        P["provider<br/>pretrained │ quantize │ endpoint"]
+        Q["quantize<br/>auto-round builder"]
+        E["evaluate<br/>harness × backend"]
+        G["gate<br/>accuracy-drop / min-accuracy"]
+        S["sinks<br/>local_fs │ hf_dataset │ hf model repo"]
+        P --> Q --> E --> G --> S
+    end
+
+    subgraph AGENT["Agent 自愈（agent/）"]
+        F["fix-loop<br/>tier 升降级 · 知识回放 · patch 捕获"]
+        K["knowledge store<br/>按错误签名回放"]
+        F <--> K
+    end
+
+    subgraph TRAJ["轨迹数据化（agent/ + agent_eval/）"]
+        A["adapters<br/>openclaw │ copilot │ claude │ codex"]
+        T["ATIF 统一中间格式"]
+        D["双视图数据集<br/>SFT（Nemotron 风格）│ RL（NeMo-Gym 风格）"]
+        KN["knowledge 提取<br/>错误→修复模式"]
+        H["HF 分层归档<br/>trajectories/&lt;session_id&gt;/…"]
+        A --> T --> D --> H
+        T --> KN
+    end
+
+    Y --> PIPE
+    E -.失败.-> F
+    F -.修复后重试.-> E
+    E --> TRAJ
+    KN -.回喂.-> K
+```
+
 ```
 run.yaml ─▶ provider (pretrained│quantize│endpoint)
               │ produces / serves the model-under-eval
@@ -39,6 +77,19 @@ run.yaml ─▶ provider (pretrained│quantize│endpoint)
               ▼
            sinks (local_fs │ hf_dataset) + captured patches
 ```
+
+**Feature map**（模块 → 文档）：
+
+| 能力 | 入口 | 文档 |
+|---|---|---|
+| 量化（scheme/算法链/model_free/tuning） | `provider: quantize` | `docs/usage/quantize.md` |
+| 评估（lm_eval/native/diffusion harness，scorer 插件） | `eval:` | `docs/usage/evaluate.md` |
+| 派发（local current/venv/docker，ssh，多卡/XPU） | `executor:` | `docs/usage/dispatch.md` |
+| Diffusion 文生图量化+评估（DrawBench 三指标/GenEval/DPG） | `backend: vllm_omni` | `docs/usage/diffusion.md` |
+| Day-0 新架构量化 | — | `docs/usage/day0.md` |
+| Agent 自愈（fix-loop/知识回放/patch 捕获） | `agent.fix_loop` | `docs/usage/self_heal.md` |
+| 轨迹数据化（多后端 → ATIF → SFT/RL → 知识 → HF 归档） | `aqa traces …` | `docs/usage/trajectories.md` |
+| 设计总览与决策依据 | — | `docs/design.md` |
 
 ## Install
 
@@ -502,41 +553,60 @@ Auth is env-only: export `MINIMAX_API_KEY` (openclaw / minimax BYOK) and/or
 `COPILOT_GITHUB_TOKEN` (opus/sonnet) before `aqa run`; they are forwarded into the
 container. A tier whose CLI or token is missing is skipped and the loop escalates.
 
-### Trajectory export (ATIF) + SFT datasets
+### Trajectory datafication (ATIF → SFT/RL datasets → knowledge → HF archive)
 
-aqa turns its agent trajectories into training data — Harbor
+aqa turns agent trajectories into training assets, end to end — Harbor
 [`traces export`](https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md)
-parity:
+parity and beyond. Full design + research record: `docs/trajectory_data_plan.md`.
 
 - **ATIF dump**: agentic runs (e.g. `aqa swebench`) write `trajectories.jsonl`
   into the run's output dir — one **ATIF-v1.7** dict per task (Harbor's Agent
-  Trajectory Interchange Format: `steps` with `source: user|agent|system`,
-  bash actions as `bash` tool calls, observations correlated by
-  `tool_call_id`, trajectory totals in `final_metrics`). ATIF files can be
-  consumed directly by the Harbor toolchain (viewer, validators, its own
-  `traces export`). Scaffold agents (codex/swe-agent) only produce summary
-  trajectories; whatever exists is exported and a failed export never fails
-  the run.
-- **Dataset builder**: `aqa/agent/traces_export.py` assembles SFT rows
-  (`{"messages": [...OpenAI format...], "metadata": {...}}`) from two sources —
-  agent_eval `trajectories.jsonl` files, and the fix-loop knowledge store
-  (distilled successful-fix summaries + archived patch diffs, positive
-  exemplars by construction).
+  Trajectory Interchange Format). ATIF files can be consumed directly by the
+  Harbor toolchain (viewer, validators, its own `traces export`).
+- **Multi-backend adapters** (`aqa/agent/adapters/`): raw session logs from
+  **openclaw / copilot-cli / claude-code / codex** convert to ATIF with one
+  line — `aqa.agent.adapters.convert(path)` (auto-detects the backend,
+  validates the ATIF). kimi-code produces no ATIF (resume-only upstream) and
+  gets a clean "unsupported" error.
+- **Dual-view datasets** (`aqa/agent/traces_export.py`): `--view sft` gives
+  Nemotron-Agentic-style rows (`messages` with native `tool_calls` +
+  `role:"tool"` results, `reasoning_content` kept separate, top-level `tools`,
+  per-row `uuid`); `--view rl` gives NeMo-Gym-style task rows
+  (`responses_create_params` task definition + verifier materials carrying the
+  trajectory outcome — reward itself is never baked in, per NeMo-RL's rule).
+  ShareGPT column stays available.
+- **Knowledge distillation** (`aqa/agent/knowledge_extract.py`): rule-based
+  error→fix pattern extraction from trajectories back into the shared
+  knowledge store (an optional agent summarizer refines entries; the
+  rule-based floor never blocks), so the next fix-loop replays it.
+- **Layered HF archive** (`aqa/agent/traces_publish.py`): per-session
+  directory upload — `trajectories/<session_id>/{trajectory.json,
+  dataset_sft.jsonl, dataset_rl.jsonl}` — stage-first (reviewable), then push.
 
 ```bash
 # export an agent_eval run dir (auto-detected) to JSONL, successes only
 aqa traces export --path results/swebench --out traces.jsonl
 
-# mix sources, ShareGPT column, parquet + hub push (token from HF_TOKEN env)
-aqa traces export --path results/swebench --path ~/.cache/aqa/knowledge \
-    --filter all --sharegpt --parquet traces.parquet --push --repo org/aqa-traces
+# RL view of the same trajectories
+aqa traces export --path results/swebench --view rl --out traces_rl.jsonl
+
+# convert a copilot/claude/codex/openclaw session log to ATIF
+python -c "from aqa.agent.adapters import convert; import json; \
+           print(json.dumps(convert('~/.claude/projects/-app/<uuid>.jsonl'), indent=2))"
+
+# distill fix knowledge into the shared store
+aqa traces distill --path results/swebench
+
+# stage + publish the layered archive to a HF dataset
+aqa traces publish --path results/swebench --repo org/aqa-traces
 ```
 
 `--source agent_eval|fixloop|auto` selects the reader per path (default
 `auto`: a dir with `trajectories.jsonl` is an agent_eval run; a knowledge root
 with `trajectories/`+`patches/` is fixloop). `--filter success` keeps
 solved/`reward>0` trajectories. `--parquet`/`--push` need the optional
-`datasets` package.
+`datasets` package; `--stage-only` builds the archive locally without
+uploading.
 
 ## Agentic / terminal evaluation (endpoint-centric, E0 base)
 
