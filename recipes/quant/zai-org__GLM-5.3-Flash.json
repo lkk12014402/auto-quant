@@ -21,7 +21,7 @@
         "yaml": "examples/run_glm53_flash_w4a16_rtn.yaml"
       },
       "model_free_rtn_fp8aligned": {
-        "command": "auto-round --model_name <GLM-5.3-Flash-BF16> --scheme W4A16 --model_free --ignore_layers lm_head,embed_tokens,visual,hc_,indexer,mlp.gate.,eh_proj,enorm,hnorm,shared_head,norm,A_log,dt_bias,self_attn.b_proj,f_a_proj,f_b_proj,g_a_proj,g_b_proj,conv1d,self_attn.k_proj,self_attn.q_proj,self_attn.v_proj,self_attn.o_proj,self_attn.kv_b_proj,self_attn.kv_a_proj_with_mqa,self_attn.q_a_proj,self_attn.q_b_proj --device_map auto --format auto_round --output_dir <out>",
+        "command": "auto-round --model_name <GLM-5.3-Flash-BF16> --scheme W4A16 --model_free --ignore_layers lm_head,embed_tokens,visual,hc_,indexer,self_attn,mlp.gate.,eh_proj,enorm,hnorm,shared_head,norm,A_log,dt_bias,b_proj,f_a_proj,f_b_proj,g_a_proj,g_b_proj,conv1d --device_map auto --format auto_round --output_dir <out>",
         "quantizes": "routed experts + shared_experts。与官方 FP8 范围对齐的尝试：dense MLP 被 auto-round GLM 预置规则强制保 bf16（放开无效）；稀疏 MLA 大投影(q_a/q_b/kv_a/kv_b)量化后 vllm INC 拒载（KeyError qweight）→ 已回收 ignore。实际增量 = shared_experts",
         "result": "同口径三项与保守版持平：piqa 0.8341 / mmlu 0.8620 / gsm8k 0.9644（Δ ≤0.23pp）——shared_experts 纳入量化不掉点。注意：run 内 gate 报 NO-GO 是 hellaswag 口径从 acc_norm 切到 acc 拉低 mean 的误报，非精度问题",
         "yaml": "examples/run_glm53_flash_w4a16_rtn_fp8aligned.yaml"

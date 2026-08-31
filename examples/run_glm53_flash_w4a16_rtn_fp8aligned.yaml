@@ -1,20 +1,22 @@
 # GLM-5.3-Flash W4A16 RTN **激进版**：量化范围对齐官方 FP8（experts +
 # shared_experts + 稀疏 MLA 大投影 + dense MLP 三项）。
 # 与保守版（run_glm53_flash_w4a16_rtn.yaml）的唯一差异在 ignore_layers：
-# 放开了 shared_experts / dense MLP / 稀疏 MLA 的 q_a_proj,q_b_proj,kv_a_proj_with_mqa。
-# 清单技巧（实证）：`mlp.gate.`（带尾点）保护路由器但不误伤 dense 的 gate_proj；
-# `self_attn.b_proj`（锚定）保护 KDA 的 b_proj 但不误伤稀疏层的 q_b_proj；
-# o_proj 全局保护（KDA 层与稀疏层同名分不开，FP8 在 KDA 层也没量化它——保住不越界）。
+# 放开了 shared_experts / dense MLP / 稀疏 MLA 大投影。
+# 实证后的等价收敛：MLA 大投影被 vllm INC 拒载（坑④）回收 ignore 后，
+# `self_attn` 整段保护 + 非锚定 `b_proj` 与逐项展开完全等价（全索引模拟验证，
+# 量化集 37290 键一致）；`mlp.gate.`（带尾点）仍需保留——保护路由器且不误伤
+# dense 的 gate_proj。
 model: /home/kaokaolv/models/GLM-5.3-Flash-BF16
 
 quant:
   scheme: W4A16
   method: model_free
   export_format: auto_round
-  ignore_layers: "lm_head,embed_tokens,visual,hc_,indexer,mlp.gate.,eh_proj,enorm,hnorm,shared_head,norm,A_log,dt_bias,self_attn.b_proj,f_a_proj,f_b_proj,g_a_proj,g_b_proj,conv1d,self_attn.k_proj,self_attn.q_proj,self_attn.v_proj,self_attn.o_proj,self_attn.kv_b_proj,self_attn.kv_a_proj_with_mqa,self_attn.q_a_proj,self_attn.q_b_proj"
+  ignore_layers: "lm_head,embed_tokens,visual,hc_,indexer,self_attn,mlp.gate.,eh_proj,enorm,hnorm,shared_head,norm,A_log,dt_bias,b_proj,f_a_proj,f_b_proj,g_a_proj,g_b_proj,conv1d"
   # 范围：experts + shared_experts（+ dense MLP 被 auto-round GLM 预置规则强制保留）。
   # 实证边界：稀疏 MLA 的 q_a/q_b/kv_a 投影被 vllm INC 建成普通层（不支持其量化），
-  # 量化它们会 KeyError qweight——故回收到 ignore。
+  # 量化它们会 KeyError qweight——故回收到 ignore。回收后逐项展开与 `self_attn` 整段
+  #  ignore 等价（已对全索引模拟验证：两份清单命中集完全一致），故用短形式。
 
 eval:
   benchmarks: [piqa, hellaswag, mmlu, gsm8k]

@@ -255,7 +255,10 @@ hyper-connection；MTP；多模态；原生 FP8）。量化源 = **官方 BF16 �
 yaml：`examples/run_glm53_flash_w4a16_rtn_fp8aligned.yaml`。
 
 - 子串陷阱的两个锚定修法（实证）：`mlp.gate.`（尾点）保护路由器但不挡 dense
-  `gate_proj`；`self_attn.b_proj`（锚定）保护 KDA 的 b_proj 但不挡稀疏层 `q_b_proj`；
+  `gate_proj`；`self_attn.b_proj`（锚定）保护 KDA 的 b_proj 但不挡稀疏层 `q_b_proj`。
+  **坑④回收 MLA 大投影后，逐项展开收敛回 `self_attn` 整段 + 非锚定 `b_proj`
+  的短形式**（全索引模拟验证两份清单命中集一致，量化集 37290 键）——锚定只在
+  "要量化同前缀下的部分投影"时才必要；
 - 三方交集实测：dense MLP 被 auto-round GLM 预置规则强制保留（放开无效）；
   稀疏 MLA 大投影被 vllm INC 拒载（坑 4）→ **实际量化范围 = experts + shared_experts，
   相比保守版的唯一增量是 shared_experts**；
