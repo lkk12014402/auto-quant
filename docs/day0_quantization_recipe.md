@@ -243,6 +243,7 @@ hyper-connection；MTP；多模态；原生 FP8）。量化源 = **官方 BF16 �
 | 2 | 量化产物加载炸 `KeyError: layers.0.mlp.gate_up_proj.weight` | auto-round 导出 extra_config 用**未融合名**（gate_proj/up_proj），vllm 把 dense/shared MLP 建成**融合** `gate_up_proj`（MergedColumnParallelLinear），INC 跳过检查是精确名匹配 → 融合层被误建成量化层 | aqa 导出后自动 `repair_fused_name_gaps`（凡 `X.gate_proj`+`X.up_proj` 成对在表，补 `X.gate_up_proj` bits:16）+2 测试。**通用化沉淀，不止 GLM** |
 | 3 | 调优 compile 下 layer 3 炸 `TorchRuntimeError: invert on bf16` | `modeling_glm5_next.py` 875/959/963/1022 四处 `~mask` 漏 `.bool()`（同文件 176 行是规范写法）——eager 下 mask 是 bool 无感，**dynamo fake tensor 下是 bf16**，反转非法 | transformers 补丁 wheel（四处补 `.bool()`），`patches/transformers_glm5_next_mask_bool.patch`。**新架构建模代码 dtype 归一常不一致，`~mask` 在 compile/fake-tensor 下是照妖镜** |
 | 4 | 激进版量化后加载炸 `KeyError: layers.11.self_attn.kv_a_proj_with_mqa.qweight`（**反方向**） | 对齐官方 FP8 范围量化了稀疏 MLA 大投影（q_a/q_b/kv_a），但 vllm glm5next+INC 把它们建成普通层——**checkpoint 有量化权重，模型侧没有 qweight 槽** | 回收 ignore。**结论：可部署量化范围 = auto-round 能量化 ∩ vllm 能加载**，官方 FP8 范围超出交集的部分守不住 |
+| 5 | tuning 产物评估全随机（piqa 0.49/hellaswag 0.25/mmlu 0.24），加载无报错 | transformers `conversion_mapping` 把 q/k/v_conv1d 加载时 Concatenate 成融合 `conv1d`；auto-round ShardWriter 即时保存只做**名级**反转 → 融合张量错名写进 `q_conv1d`（24576 维），k/v 丢失；vllm 缺权重**静默随机初始化** | aqa 侧：102 个 conv 权重从源拷回（`fix_tuning_export.py`）。根修：auto-round `fix/shard-writer-converter-reverse`（7026d988，张量级反转，+单测；未提 PR）。**调优权重本身无损，不用重跑** |
 
 另复用了附录 A 的两个修复：torch `runtime_wrappers.py` 的 `_cc.run`→`_cc.copy().run`
 （pytorch#186659 移植，开 compile 必须，`patches/torch_186659_compiled_backward_context.patch`）；
@@ -268,16 +269,44 @@ yaml：`examples/run_glm53_flash_w4a16_rtn_fp8aligned.yaml`。
 - 插曲：run 内 gate 报 NO-GO 是 hellaswag 口径从 acc_norm 切 acc 拉低 mean 的误报——
   **gate 阈值是口径绑定的，改 benchmark 口径必须同步改阈值**。
 
-## B.5 产物与补丁归档
+## B.5 Tuning（iters=200，compile 开）线与五方对比
+
+- 环境：容器 torch 2.13.0 + `torch_186659` 补丁 + transformers 5.16.1 补丁 wheel
+  （坑 3）；2×H200 足够（逐 block 串行，多卡不加速），45 块 × ~6 分钟 ≈ 4.5 小时；
+- 坑⑤（见 B.3 表）修复后出分。**五方对比（口径统一：hellaswag 取 acc——历史
+  results json 同时存 acc/acc_norm，直接取无需补测）**：
+
+| benchmark（口径） | BF16 baseline | 保守 RTN | 激进 RTN(+shared) | 保守 Tuning | 激进 Tuning(+shared) |
+|---|---|---|---|---|---|
+| piqa (acc) | 0.8292 | 0.8357 | 0.8341 | 0.8319 | 0.8303 |
+| hellaswag (acc) | 0.6903 | 0.6893 | 0.6876 | 0.6893 | 0.6879 |
+| mmlu (acc) | 0.8666 | 0.8629 | 0.8620 | 0.8620 | 0.8652 |
+| gsm8k (em) | 0.9735 | 0.9621 | 0.9644 | 0.9712 | 0.9719 |
+| **mean** | **0.8399** | **0.8375** | **0.8370** | **0.8386** | **0.8388** |
+
+- 结论：全部接近无损（≤0.29pp）；**激进 Tuning 最佳**（0.8388，-0.11pp），
+  调优收益主要在 gsm8k（0.9719 逼近 baseline 0.9735）——与
+  Qwen3.8-Flash-Next「RTN 已无损则调优无空间」不同，是否调优取决于 RTN 余量，
+  day-0 先 RTN 探底的纪律不变；
+- shared_experts 纳入量化是免费的（激进 vs 保守持平甚至略好）；
+- 坑⑤根修 E2E 验证：激进 tuning 用含 ShardWriter 修复（7026d988）的 wheel，
+  导出直接正确分拆 q/k/v_conv1d（dtype 继承内存 fp32，vllm cast 无碍）。
+
+## B.6 产物与补丁归档
 
 - pinned recipe：`recipes/quant/zai-org__GLM-5.3-Flash.json`；
 - 运行 yaml：`examples/run_glm53_flash_w4a16_rtn.yaml`（保守 RTN）、
   `run_glm53_flash_w4a16_rtn_fp8aligned.yaml`（激进 RTN）、
   `run_glm53_flash_w4a16_tuning.yaml`（调优 iters=200）、
-  `eval_glm53_rtn_verify.yaml` / `eval_glm53_fp8aligned_verify.yaml`（纯评估复跑）；
+  `eval_glm53_rtn_verify.yaml` / `eval_glm53_fp8aligned_verify.yaml` /
+  `eval_glm53_tuning_fixed.yaml`（纯评估复跑）；
 - 补丁：`patches/torch_186659_compiled_backward_context.patch`、
-  `patches/transformers_glm5_next_mask_bool.patch`（应用方式见 `patches/README.md`；
-  补丁版全文件分别在 `aqa_gpu_logs/patches/runtime_wrappers.py`、
+  `patches/transformers_glm5_next_mask_bool.patch`、
+  `patches/autoround_shard_writer_converter_reverse.patch`（坑⑤根修，对应
+  auto-round 分支 `fix/shard-writer-converter-reverse`；应用方式见
+  `patches/README.md`；补丁版全文件分别在 `aqa_gpu_logs/patches/runtime_wrappers.py`、
   `aqa_gpu_logs/wheels/transformers-5.16.1-py3-none-any.whl`）；
 - aqa 改动：`repair_fused_name_gaps` 进 `aqa/quantize/__init__.py` 的导出后链（+2 测试）；
-- 产物：`aqa_results/glm53_flash_day0/`（rtn/ tuning/ logs/ RUN_JOURNAL.md）。
+- 修复脚本：`aqa_results/glm53_flash_day0/logs/fix_tuning_export.py`（conv 拷回，幂等）、
+  `logs/cmp_tun_rtn.py`（RTN/tuning 权重对比排查）；
+- 产物：`aqa_results/glm53_flash_day0/`（rtn/ rtn_fp8aligned/ tuning/ logs/ RUN_JOURNAL.md）。

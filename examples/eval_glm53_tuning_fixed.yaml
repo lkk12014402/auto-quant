@@ -1,0 +1,44 @@
+# 验证 GLM-5.3-Flash **tuning 修复版**（坑⑤：34 个 KDA 层的 q/k/v_conv1d 从源拷回后）。
+# 背景：tuning run5 量化+导出成功，但导丢失了 68 个 k/v_conv1d、q_conv1d 被错写成
+# 24576 维融合张量（transformers conversion_mapping 正反向不对称）→ vllm 随机初始化
+# → 评估全随机。已从 BF16 源把 102 个 conv 权重拷回 model_extra_conv.safetensors。
+model: /home/kaokaolv/aqa_results/glm53_flash_day0/tuning/20260830-224728/20260831-054813/quantized/GLM-5.3-Flash-BF16-w4g128
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: false
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      enable_thinking: false
+      reasoning_parser: glm45
+      max_num_seqs: 256       # KDA/Mamba 缓存块约束
+    group: true
+    seed: 42
+
+gate:
+  min_accuracy: 0.82          # hellaswag 现为 acc 口径；同口径激进 RTN mean 0.8370 作参照
+
+agent:
+  optimize: false
+  fix_loop: false
+
+executor:
+  type: local
+  num_gpus: 8
+  image:
+    gpu: vllm/vllm-openai:glm53-flash-x86_64-cu130
+  env:
+    type: docker
+    packages: [lm-eval, datasets, pillow]
+    mounts:
+      - /home/kaokaolv/models:/home/kaokaolv/models
+      - /home/kaokaolv/aqa_results:/home/kaokaolv/aqa_results
+
+output:
+  dir: /home/kaokaolv/aqa_results/glm53_flash_day0/tuning_eval_verify
+  unique_dir: true
+  sinks:
+    - type: local_fs

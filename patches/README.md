@@ -59,3 +59,17 @@ reproductions (see `docs/day0_quantization_recipe.md` appendix A, pit #2/#4).
 
 两者的实证与机制详见 `docs/day0_quantization_recipe.md` 附录坑 #3 与
 GLM-5.3-Flash 的 run journal（`aqa_results/glm53_flash_day0/RUN_JOURNAL.md`）。
+
+## 第三份（GLM-5.3-Flash day-0，拟上游 PR）
+
+`autoround_shard_writer_converter_reverse.patch` — auto-round main @ `bd9a13ce`，
+修 tuning 即时保存（ShardWriter）对 `WeightConverter` 融合权重只做**改名**不做
+**切分**：glm5_next 加载时 `conversion_mapping` 把 q/k/v_conv1d 拼成单个
+`conv1d`（Concatenate），导出时融合张量被整体写到第一个源名 `q_conv1d.weight`
+下，k/v 丢失；vllm（glm5next kda.py 期望分拆 ColumnParallelLinear）缺权重
+**静默随机初始化** → 加载正常但精度全随机。补丁按 transformers
+`revert_weight_conversion` 的单张量版实现：名字命中反向 WeightConverter 时应用
+其逆向操作（Concatenate→Chunk）逐源名写回。附单测（融合 conv1d 往返切分）。
+实证：修复前 GLM-5.3-Flash tuning 评估 piqa/hellaswag/mmlu = 0.49/0.25/0.24
+（随机），修复后 = 0.832/0.689/0.862（与 RTN 持平）。
+分支：`fix/shard-writer-converter-reverse`（commit 7026d988，待推 fork 开 PR）。

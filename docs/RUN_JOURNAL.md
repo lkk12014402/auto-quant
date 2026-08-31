@@ -188,4 +188,77 @@ FP8 范围逐项一致（37326 键）。附带确认：`mapping_proj` 不在 che
   不是量化掉点。教训：**gate 阈值是口径绑定的，改 benchmark 口径要同步改阈值**；
   后续三方对比统一用 acc 口径重测补齐。
 
-（待续：tuning run5 出分后三方对比）
+## §2.6 Tuning 线：run5 量化完成但评估全随机——坑⑤（已定位+修复，重评中）
+
+run5 量化 4.5 小时完成（45 块 × ~6 分钟，双卡 vram ~100+81GB，peak RAM 800GB），
+导出 170GB。但评估三项选择题**全部精确跌到随机水平**（piqa 0.4946 /
+hellaswag 0.2541 / mmlu 0.2426）——模型能加载、输出是垃圾。
+
+**排查链**（全部容器内实证，`logs/cmp_tun_rtn.py`）：
+1. 未量化直通层（norm/o_proj/dense MLP/embed_tokens）与源**逐位一致** → 排除导出腐蚀；
+2. 量化专家反量化重建误差 = RTN 水平（mse 4.13e-6）→ **调优权重本身是好的**；
+3. packing 结构（qweight/qzeros/scales）、lm_head 均正常；
+4. **索引对比实锤**：tuning 导出比 RTN 少 68 个权重——34 个 KDA 层的
+   `k_conv1d`/`v_conv1d`；且幸存的 `q_conv1d` 被错写成 **24576 维 fp32 融合张量**
+  （源是 8192 维 bf16 的 1/3）。
+
+**根因**：transformers 5.16.1 的 glm5_next 建模用**融合** `conv1d`（3·qkv_dim），
+加载时经 `conversion_mapping.py` 的 WeightConverter 把源的 q/k/v_conv1d
+Concatenate 进 conv1d（所以调优前向是对的）；但**导出的反向转换不对称**——
+融合张量被错名写进 `q_conv1d`，k/v 直接丢失；auto-round 的 missing_tensors
+兜底只捞回 MTP 层（889 个）漏了这 68 个。vllm 的 `glm5next/nvidia/kda.py`
+期望分拆名（q/k/v_conv1d 各是 ColumnParallelLinear），缺权重**不报错、静默随机
+初始化** → 34 个 KDA 层全废。
+
+**修复**（`logs/fix_tuning_export.py`，幂等）：从 BF16 源把 102 个
+q/k/v_conv1d 按源值拷进 `model_extra_conv.safetensors` 并重指索引（6.7MB）。
+**不需要重跑调优**（调优时前向用的是加载正确的融合权重）。
+已知瑕疵：index metadata.total_size 因两轮补拷虚高 4.5MB（loader 不校验，无害）。
+
+**教训沉淀**：
+- tuning 路径的导出保真检查必须加「**源权重完备性扫描**」：源里每个 .weight，
+  导出里要么同名直通、要么有 .qweight——都没有即缺失。这一条直接把坑⑤变成
+  自动检测项（aqa 导出后修复的第三个泛化件，前两个：config 结构恢复、融合名）；
+- transformers 的 conversion_mapping 正反不对称是 day-0 新架构的高危点；
+- vllm「缺权重静默随机初始化」意味着**加载成功 ≠ 权重正确**，冒烟要看出分不只看加载。
+
+修复版重评估：`examples/eval_glm53_tuning_fixed.yaml`（GPU 0-7，TP8），
+日志 `logs/tuning_eval_fixed2.log`。
+
+**修复版 Tuning 结果 ✅（13:05Z，gate GO）**：piqa 0.8319 / hellaswag(acc) 0.6893 /
+mmlu 0.8620 / gsm8k 0.9712。首轮在 gsm8k 阶段引擎被外部打断（shm cancelled，
+现场无 OOM，/dev/shm 有别的任务遗留段），重跑全量复现一致。
+
+## §3 收尾：五方对比（hellaswag 统一 acc 口径，历史 json 里直接取，无需补测）
+
+| benchmark（口径） | BF16 baseline | 保守 RTN | 激进 RTN(+shared) | 保守 Tuning | 激进 Tuning(+shared) |
+|---|---|---|---|---|---|
+| piqa (acc) | 0.8292 | 0.8357 | 0.8341 | 0.8319 | 0.8303 |
+| hellaswag (acc) | 0.6903 | 0.6893 | 0.6876 | 0.6893 | 0.6879 |
+| mmlu (acc) | 0.8666 | 0.8629 | 0.8620 | 0.8620 | 0.8652 |
+| gsm8k (em strict) | 0.9735 | 0.9621 | 0.9644 | 0.9712 | 0.9719 |
+| **mean** | **0.8399** | **0.8375** | **0.8370** | **0.8386** | **0.8388** |
+
+结论：
+- 三条量化线全部接近无损（掉点 ≤0.29pp）；
+- **激进 Tuning 是最佳量化方案**（0.8388，-0.11pp），gsm8k 0.9719 几乎追平
+  baseline——调优有真实收益（gsm8k 上 +0.8~1.0pp vs RTN），与
+  Qwen3.8-Flash-Next 的"调优无收益"结论相反，先 RTN 探底再决定调优的纪律不变；
+- shared_experts 纳入量化是免费的（激进 vs 保守持平甚至略好）；
+- **坑⑤根修 E2E 验证通过**：激进 tuning 用的 auto-round wheel 含
+  ShardWriter 修复（7026d988），导出直接带正确的 q/k/v_conv1d 分拆
+  （34 层 × 3，各 8192 维；dtype 继承内存 fp32，vllm 加载自动 cast，评估正常），
+  不再需要 fix_tuning_export.py 事后补拷。
+
+## §4 坑⑤的代码修复（auto-round，分支未推）
+
+责任方 = **auto-round**（transformers 的 load 转换与 `revert_weight_conversion`
+都是对的）：`compressors/shard_writer.py` 的即时保存对 WeightConverter 只做改名
+不切分。修复 = `_add_tensor` 里对命中反向 WeightConverter 的张量应用逆向操作
+（Concatenate→Chunk，单张量版 `revert_weight_conversion`），+69 行 + 单测
+（无修复时测试必挂，有则过）。分支 `fix/shard-writer-converter-reverse`
+（commit 7026d988，基于 bd9a13ce，上游未动该文件无冲突）；patch 归档
+aqa `patches/autoround_shard_writer_converter_reverse.patch`。
+**用户决定不提 PR，分支留本地。**
+
+（完）

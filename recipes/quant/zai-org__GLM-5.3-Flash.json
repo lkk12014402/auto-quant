@@ -28,9 +28,14 @@
       },
       "tuning_iters200": {
         "command": "auto-round --model_name <GLM-5.3-Flash-BF16> --scheme W4A16 --iters 200 --ignore_layers <同保守 RTN> --device_map auto --format auto_round --output_dir <out>",
-        "result": "TBD（run5 双卡跑批中，~6 分钟/块 × 45 块）",
+        "result": "mean 0.8386 vs bf16 baseline 0.8399（掉点 0.13pp，gate GO）：piqa 0.8319 / hellaswag(acc) 0.6893 / mmlu 0.8620 / gsm8k 0.9712。gsm8k 明显好于 RTN（0.9621），逼近 baseline——本模型调优有真实收益",
         "yaml": "examples/run_glm53_flash_w4a16_tuning.yaml",
         "caveats": "compile 开需两个补丁（torch #186659 移植 + transformers mask .bool() wheel）；调优逐 block 串行，2 卡够（多卡只解决装得下，不加速）；峰值 RAM ~800GB、双卡 vram ~100+81GB"
+      },
+      "tuning_iters200_fp8aligned": {
+        "command": "同 tuning_iters200，ignore_layers 去掉 shared_experts",
+        "result": "mean 0.8388（-0.11pp，最佳量化方案）：piqa 0.8303 / hellaswag(acc) 0.6879 / mmlu 0.8652 / gsm8k 0.9719。用含 ShardWriter 坑⑤根修（7026d988）的 wheel 跑——导出直接正确分拆 q/k/v_conv1d，坑⑤ E2E 验证通过",
+        "yaml": "examples/run_glm53_flash_w4a16_tuning_fp8aligned.yaml"
       }
     }
   },

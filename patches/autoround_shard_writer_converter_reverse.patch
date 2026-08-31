@@ -1,0 +1,209 @@
+From 7026d9888bb0f6b59cc1cefbd689f189e10ef88f Mon Sep 17 00:00:00 2001
+From: lkk12014402 <kaokao.lv@intel.com>
+Date: Mon, 31 Aug 2026 05:59:32 -0700
+Subject: [PATCH] fix: split fused tensors via reversed WeightConverter in
+ ShardWriter
+
+Immediate (streaming) saving reverted checkpoint conversion mappings by
+name only. For WeightConverter rules that fuse several checkpoint tensors
+into one module parameter at load time (e.g. glm5_next concatenates
+q/k/v_conv1d.weight into self_attn.conv1d.weight), the fused tensor was
+written under the first source name and the remaining source names
+disappeared from the export. Inference engines expecting the split
+layout (vllm glm5next) then silently random-initialize the missing
+tensors -- the model loads but every accuracy score collapses to
+random level.
+
+Mirroring transformers' revert_weight_conversion at single-tensor scope:
+collect reversed WeightConverter transforms from model._weight_conversions
+(falling back to the registered mapping) and, when a saved tensor's name
+matches, apply the converter's reverse operations (e.g. Concatenate ->
+Chunk) so each per-source checkpoint tensor is written with its own name
+and correct shape.
+
+Adds a unit test that round-trips a fused conv1d through ShardWriter and
+asserts the split keys and values.
+
+Signed-off-by: lkk12014402 <kaokao.lv@intel.com>
+---
+ auto_round/compressors/shard_writer.py        | 69 +++++++++++++++++++
+ test/unit/test_cpu/utils/test_shard_writer.py | 58 ++++++++++++++++
+ 2 files changed, 127 insertions(+)
+
+diff --git a/auto_round/compressors/shard_writer.py b/auto_round/compressors/shard_writer.py
+index f2bcf78b..a6955f97 100644
+--- a/auto_round/compressors/shard_writer.py
++++ b/auto_round/compressors/shard_writer.py
+@@ -16,6 +16,7 @@ import json
+ import os
+ import re
+ from collections import OrderedDict
++from copy import deepcopy
+ from typing import Optional, Union
+ 
+ import torch
+@@ -88,6 +89,7 @@ class ShardWriter:
+         self.global_weight_map = {}
+         self.shard_counter = 0
+         self.reverse_checkpoint_conversion_mapping = get_reverse_checkpoint_conversion_mapping(self.model)
++        self.reverse_weight_converters = self._build_reverse_weight_converters()
+ 
+         # Persistent set of all parameter names already flushed to a shard file.
+         # Maintained incrementally in _flush_shard to avoid O(N^2) rebuilds in _add_tensor.
+@@ -221,6 +223,65 @@ class ShardWriter:
+                 logger.warning("safetensors not installed; falling back to torch.save.")
+         return False
+ 
++    def _build_reverse_weight_converters(self) -> list:
++        """Collect tensor-level reverse converters from the checkpoint conversion mapping.
++
++        ``model._weight_conversions`` (populated by transformers at ``from_pretrained``)
++        may contain ``WeightConverter`` entries that fuse several checkpoint tensors into
++        a single module parameter at load time (e.g. glm5_next concatenates the
++        checkpoint's ``q/k/v_conv1d.weight`` into ``self_attn.conv1d.weight``).  The
++        name-only reversal of ``revert_checkpoint_conversion_mapping`` is lossy for
++        those: the fused tensor would be written under the first source name and the
++        remaining source names would disappear from the exported checkpoint.  Keep the
++        reversed transforms so ``_add_tensor`` can split such fused tensors back into
++        the per-source checkpoint tensors.
++        """
++        try:
++            from transformers.core_model_loading import WeightConverter
++        except ImportError:  # older transformers without the new conversion machinery
++            return []
++        weight_conversions = getattr(self.model, "_weight_conversions", None)
++        if not weight_conversions:
++            try:
++                from transformers.conversion_mapping import get_model_conversion_mapping
++
++                weight_conversions = get_model_conversion_mapping(self.model, add_legacy=False)
++            except Exception:  # noqa: BLE001 - best effort; name-only fallback still applies
++                weight_conversions = None
++        if not weight_conversions:
++            return []
++        converters = []
++        for conversion in reversed(weight_conversions):
++            try:
++                reversed_transform = conversion.reverse_transform()
++            except Exception:  # noqa: BLE001 - non-reversible transforms keep name-only behavior
++                continue
++            if isinstance(reversed_transform, WeightConverter):
++                converters.append(reversed_transform)
++        return converters
++
++    def _revert_weight_converter(self, name: str, tensor: torch.Tensor) -> list[tuple[str, torch.Tensor]] | None:
++        """Split a fused parameter back into checkpoint tensors via the reversed converter.
++
++        Returns a list of ``(checkpoint_key, tensor)`` pairs when ``name`` matches the
++        source pattern of a reversed ``WeightConverter``; otherwise ``None`` and the
++        caller falls back to name-only reversal.  Mirrors transformers'
++        ``revert_weight_conversion``, but scoped to a single tensor so streaming
++        (immediate) saving stays incremental.
++        """
++        if not getattr(self, "reverse_weight_converters", None):
++            return None
++        config = getattr(self.model, "config", None)
++        for converter in self.reverse_weight_converters:
++            converter = deepcopy(converter)  # fresh collected_tensors/layer_targets per use
++            renamed_key, source_pattern = converter.rename_source_key(name)
++            if source_pattern is None:
++                continue
++            converter.add_tensor(renamed_key, name, source_pattern, tensor)
++            realized = converter.convert(renamed_key, model=self.model, config=config)
++            return [(key, value[0] if isinstance(value, list) else value) for key, value in realized.items()]
++        return None
++
+     def save_module(self, m: torch.nn.Module, name: str = None) -> None:
+         """Extracts and accumulates tensors from a module."""
+         prefix = name if name is not None else getattr(m, "global_name", "model")
+@@ -291,6 +352,14 @@ class ShardWriter:
+                 return
+ 
+         # transformers will handle _checkpoint_conversion_mapping automatically if is_immediate_saving=False
++        split_tensors = self._revert_weight_converter(name, tensor)
++        if split_tensors is not None:
++            # Mark the fused (model-space) name as saved so `_offload_to_meta` and
++            # `finalize`'s sweep still recognize it; the split parts recurse below.
++            self._all_saved.add(name)
++            for split_name, split_tensor in split_tensors:
++                self._add_tensor(split_name, split_tensor)
++            return
+         name = revert_checkpoint_conversion_mapping(name, self.reverse_checkpoint_conversion_mapping)
+ 
+         t_size = tensor.nbytes
+diff --git a/test/unit/test_cpu/utils/test_shard_writer.py b/test/unit/test_cpu/utils/test_shard_writer.py
+index dfd092b2..ce78328c 100644
+--- a/test/unit/test_cpu/utils/test_shard_writer.py
++++ b/test/unit/test_cpu/utils/test_shard_writer.py
+@@ -15,6 +15,7 @@
+ import os
+ from types import SimpleNamespace
+ 
++import pytest
+ import torch
+ 
+ from auto_round.compressors.shard_writer import ShardWriter
+@@ -172,3 +173,60 @@ def test_finalize_offloads_module_with_tensor_in_parameters(tmp_path, monkeypatc
+     offloaded_weight = model.transformer_blocks[0].linear._parameters["weight"]
+     assert isinstance(offloaded_weight, torch.nn.Parameter)
+     assert offloaded_weight.device.type == "meta"
++
++
++class _Conv1dFusedModel(torch.nn.Module):
++    """Mimics glm5_next KDA layers: the checkpoint stores split q/k/v_conv1d
++    tensors, while the transformers model fuses them into a single conv1d at
++    load time via a WeightConverter (Concatenate)."""
++
++    def __init__(self):
++        super().__init__()
++        self.self_attn = torch.nn.Module()
++        self.self_attn.conv1d = torch.nn.Conv1d(12, 12, 2, groups=12, bias=False)
++        self.proj_out = torch.nn.Linear(4, 2)
++        self.config = SimpleNamespace(model_type="toy-conv1d-fused")
++
++
++def test_weight_converter_reverse_splits_fused_tensor(tmp_path, monkeypatch):
++    """Fused parameters from a WeightConverter must be split back to the
++    per-source checkpoint tensors on save.
++
++    Regression test: with name-only reversal the fused ``conv1d.weight`` was
++    written under the first source name (``q_conv1d.weight``) and
++    ``k/v_conv1d.weight`` disappeared from the export, leaving inference
++    engines that expect the split layout (e.g. vllm glm5next) to silently
++    random-initialize them.
++    """
++    core_model_loading = pytest.importorskip("transformers.core_model_loading")
++
++    model = _Conv1dFusedModel()
++    fused = torch.arange(24, dtype=torch.float32).reshape(12, 1, 2)
++    with torch.no_grad():
++        model.self_attn.conv1d.weight.copy_(fused)
++    model._weight_conversions = [
++        core_model_loading.WeightConverter(
++            source_patterns=[
++                "self_attn.q_conv1d.weight",
++                "self_attn.k_conv1d.weight",
++                "self_attn.v_conv1d.weight",
++            ],
++            target_patterns="self_attn.conv1d.weight",
++            operations=[core_model_loading.Concatenate(dim=0)],
++        )
++    ]
++    writer = _make_writer(model, str(tmp_path), monkeypatch)
++
++    writer.save_module(model.self_attn, "self_attn")
++    writer.finalize()
++
++    shard_path = os.path.join(tmp_path, "model.bin")
++    saved_tensors = torch.load(shard_path, map_location="cpu")
++
++    assert "self_attn.conv1d.weight" not in saved_tensors
++    q, k, v = fused.chunk(3, dim=0)
++    assert torch.equal(saved_tensors["self_attn.q_conv1d.weight"], q)
++    assert torch.equal(saved_tensors["self_attn.k_conv1d.weight"], k)
++    assert torch.equal(saved_tensors["self_attn.v_conv1d.weight"], v)
++    # Unrelated weights are untouched by the converter reversal
++    assert "proj_out.weight" in saved_tensors
+-- 
+2.43.0
+

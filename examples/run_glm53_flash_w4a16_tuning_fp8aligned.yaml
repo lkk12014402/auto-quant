@@ -1,0 +1,62 @@
+# GLM-5.3-Flash day-0：W4A16 Tuning **激进版**（唯一差异：放开 shared_experts）。
+# 与 run_glm53_flash_w4a16_tuning.yaml 的关系 = 激进 RTN 与保守 RTN 的关系；
+# dense MLP 三项仍显式保护（vllm 侧已知问题，且 auto-round 预置规则也锁），
+# 所以实际增量 = 42 层 × 3 个 shared_experts 投影纳入量化+调优。
+# 附带使命：本次容器内 auto-round wheel 从 fix/shard-writer-converter-reverse
+# 分支构建（7026d988）——导出的 q/k/v_conv1d 应直接正确分拆，是对坑⑤根修的
+# 320B 级端到端验证（不再需要 fix_tuning_export.py 事后补拷）。
+model: /home/kaokaolv/models/GLM-5.3-Flash-BF16
+
+quant:
+  scheme: W4A16
+  method: autoround
+  iters: 200
+  export_format: auto_round
+  # = 保守 tuning 清单去掉 shared_experts（其余逐项保留）
+  ignore_layers: "lm_head,embed_tokens,visual,hc_,indexer,self_attn,mlp.gate,eh_proj,enorm,hnorm,shared_head,norm,A_log,dt_bias,b_proj,f_a_proj,f_b_proj,g_a_proj,g_b_proj,conv1d,mlp.gate_proj,mlp.up_proj,mlp.down_proj"
+  extra_args: []
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: false            # baseline 四方对比已有（mean 0.8399，acc 口径）
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      enable_thinking: false
+      reasoning_parser: glm45
+      max_num_seqs: 256
+    group: true
+    seed: 42
+
+gate:
+  min_accuracy: 0.82         # acc 口径；参照：激进 RTN mean 0.8370 / baseline 0.8399
+
+agent:
+  optimize: false
+  fix_loop: false
+
+executor:
+  type: local
+  num_gpus: 2
+  image:
+    gpu: vllm/vllm-openai:glm53-flash-x86_64-cu130
+  env:
+    type: docker
+    packages:
+      - /opt/wheels/auto_round-0.15.0-py3-none-any.whl   # 重建于 7026d988（含 ShardWriter 坑⑤根修 + qwen4exp 两补丁）
+      - /opt/wheels/transformers-5.16.1-py3-none-any.whl   # 打补丁的 5.16.1（~mask 补 .bool()）
+      - lm-eval
+      - datasets
+      - pillow
+    mounts:
+      - /home/kaokaolv/models:/home/kaokaolv/models
+      - /home/kaokaolv/aqa_gpu_logs/wheels:/opt/wheels:ro
+      - /home/kaokaolv/aqa_gpu_logs/patches/runtime_wrappers.py:/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py:ro
+
+output:
+  dir: /home/kaokaolv/aqa_results/glm53_flash_day0/tuning_fp8aligned
+  unique_dir: true
+  sinks:
+    - type: local_fs
