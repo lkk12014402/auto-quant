@@ -1,0 +1,40 @@
+{
+  "model": "zai-org/GLM-5.3-Flash",
+  "architecture": "glm5_next",
+  "validated_on": "2026-08-31",
+  "quantization_source": "zai-org/GLM-5.3-Flash-BF16（官方 BF16 变体，~640GB/120 分片）。不要从原生 FP8 版二次压缩；FP8 版留作量化范围的对齐参照",
+  "model_facts": "320B 总参/18B 激活；45 层 = 34 KDA 线性注意力 + 11 稀疏 MLA（indexer，层号 3,7,...,43）；MLP 3 dense + 42 sparse（288 routed experts top-8 + 1 shared）；hyper-connection(hc_*)；MTP(eh_proj/enorm/hnorm/shared_head)；多模态(visual)；原生 FP8",
+  "environment": {
+    "inference_image": "vllm/vllm-openai:glm53-flash-x86_64-cu130",
+    "transformers_for_tuning": "transformers==5.16.1 + patches/transformers_glm5_next_mask_bool.patch（镜像自带 5.15.1 不认 glm5_next；RTN/model_free 不需要；补丁修 modeling_glm5_next.py 四处 ~mask 缺 .bool()，dynamo fake tensor 下必炸）",
+    "torch_for_tuning": "镜像 torch 2.13.0 + patches/torch_186659_compiled_backward_context.patch（开 compile 必须；不打就 --disable_torch_compile）",
+    "autoround": "0.15.0 通用路径，无需架构补丁。注意：GLM 预置规则强制 dense MLP 保 bf16（vllm 侧已知问题），ignore 里放开也无效",
+    "notes": "PyPI vllm 0.26.0/0.28.0 均不注册 glm5_next；PR #53906 含 CUDA kernel+scheduler 改动 → 不可 patch，必须官方定制镜像；packages 里不要装 vllm（会覆盖镜像定制版）"
+  },
+  "serve_constraints": "KDA 的 Mamba 状态缓存 512 块 < vllm 默认 max_num_seqs=1024 → 必须显式 max_num_seqs<=256，否则引擎初始化炸；Hopper 上 KV cache 用 bf16（FP8 KV 仅 Blackwell）；serve 惯例 TP4 + --reasoning-parser glm45",
+  "schemes": {
+    "W4A16": {
+      "model_free_rtn": {
+        "command": "auto-round --model_name <GLM-5.3-Flash-BF16> --scheme W4A16 --model_free --ignore_layers lm_head,embed_tokens,visual,hc_,indexer,self_attn,mlp.gate,shared_experts,eh_proj,enorm,hnorm,shared_head,norm,A_log,dt_bias,b_proj,f_a_proj,f_b_proj,g_a_proj,g_b_proj,conv1d,mlp.gate_proj,mlp.up_proj,mlp.down_proj --device_map auto --format auto_round --output_dir <out>",
+        "quantizes": "仅 routed experts（12384 个 expert × 3 投影）",
+        "result": "mean 0.8801 vs bf16 baseline 0.8827（掉点 0.26pp，gate GO）。注：hellaswag 为 acc_norm 口径",
+        "yaml": "examples/run_glm53_flash_w4a16_rtn.yaml"
+      },
+      "model_free_rtn_fp8aligned": {
+        "command": "auto-round --model_name <GLM-5.3-Flash-BF16> --scheme W4A16 --model_free --ignore_layers lm_head,embed_tokens,visual,hc_,indexer,mlp.gate.,eh_proj,enorm,hnorm,shared_head,norm,A_log,dt_bias,self_attn.b_proj,f_a_proj,f_b_proj,g_a_proj,g_b_proj,conv1d,self_attn.k_proj,self_attn.q_proj,self_attn.v_proj,self_attn.o_proj,self_attn.kv_b_proj,self_attn.kv_a_proj_with_mqa,self_attn.q_a_proj,self_attn.q_b_proj --device_map auto --format auto_round --output_dir <out>",
+        "quantizes": "routed experts + shared_experts。与官方 FP8 范围对齐的尝试：dense MLP 被 auto-round GLM 预置规则强制保 bf16（放开无效）；稀疏 MLA 大投影(q_a/q_b/kv_a/kv_b)量化后 vllm INC 拒载（KeyError qweight）→ 已回收 ignore。实际增量 = shared_experts",
+        "result": "同口径三项与保守版持平：piqa 0.8341 / mmlu 0.8620 / gsm8k 0.9644（Δ ≤0.23pp）——shared_experts 纳入量化不掉点。注意：run 内 gate 报 NO-GO 是 hellaswag 口径从 acc_norm 切到 acc 拉低 mean 的误报，非精度问题",
+        "yaml": "examples/run_glm53_flash_w4a16_rtn_fp8aligned.yaml"
+      },
+      "tuning_iters200": {
+        "command": "auto-round --model_name <GLM-5.3-Flash-BF16> --scheme W4A16 --iters 200 --ignore_layers <同保守 RTN> --device_map auto --format auto_round --output_dir <out>",
+        "result": "TBD（run5 双卡跑批中，~6 分钟/块 × 45 块）",
+        "yaml": "examples/run_glm53_flash_w4a16_tuning.yaml",
+        "caveats": "compile 开需两个补丁（torch #186659 移植 + transformers mask .bool() wheel）；调优逐 block 串行，2 卡够（多卡只解决装得下，不加速）；峰值 RAM ~800GB、双卡 vram ~100+81GB"
+      }
+    }
+  },
+  "ignore_layers_rationale": "保守版：MoE 保护（shared_experts 每 token 都过必保）+ 结构件（hc_/indexer/MTP/norm/conv1d/KDA 小投影）+ self_attn 全保。子串陷阱：mlp.gate 会误伤 mlp.gate_proj → 保守版显式列 dense 三项，激进版用尾点锚定 mlp.gate.；b_proj 会误伤稀疏层 q_b_proj → 锚定 self_attn.b_proj",
+  "deployable_scope_rule": "可部署量化范围 = auto-round 能量化 ∩ vllm 能加载。官方 FP8 范围超出交集的部分（稀疏 MLA 大投影）量化后也加载不了；dense MLP 被 auto-round 预置规则锁定。导出 config.json 的 extra_config 是未融合名，vllm 建成融合 gate_up_proj → aqa repair_fused_name_gaps 导出后自动补融合名（bits:16）",
+  "evidence": "docs/day0_quantization_recipe.md 附录 B；过程全记录 aqa_results/glm53_flash_day0/RUN_JOURNAL.md"
+}

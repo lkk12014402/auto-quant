@@ -1,0 +1,55 @@
+# GLM-5.3-Flash W4A16 RTN **激进版**：量化范围对齐官方 FP8（experts +
+# shared_experts + 稀疏 MLA 大投影 + dense MLP 三项）。
+# 与保守版（run_glm53_flash_w4a16_rtn.yaml）的唯一差异在 ignore_layers：
+# 放开了 shared_experts / dense MLP / 稀疏 MLA 的 q_a_proj,q_b_proj,kv_a_proj_with_mqa。
+# 清单技巧（实证）：`mlp.gate.`（带尾点）保护路由器但不误伤 dense 的 gate_proj；
+# `self_attn.b_proj`（锚定）保护 KDA 的 b_proj 但不误伤稀疏层的 q_b_proj；
+# o_proj 全局保护（KDA 层与稀疏层同名分不开，FP8 在 KDA 层也没量化它——保住不越界）。
+model: /home/kaokaolv/models/GLM-5.3-Flash-BF16
+
+quant:
+  scheme: W4A16
+  method: model_free
+  export_format: auto_round
+  ignore_layers: "lm_head,embed_tokens,visual,hc_,indexer,mlp.gate.,eh_proj,enorm,hnorm,shared_head,norm,A_log,dt_bias,self_attn.b_proj,f_a_proj,f_b_proj,g_a_proj,g_b_proj,conv1d,self_attn.k_proj,self_attn.q_proj,self_attn.v_proj,self_attn.o_proj,self_attn.kv_b_proj,self_attn.kv_a_proj_with_mqa,self_attn.q_a_proj,self_attn.q_b_proj"
+  # 范围：experts + shared_experts（+ dense MLP 被 auto-round GLM 预置规则强制保留）。
+  # 实证边界：稀疏 MLA 的 q_a/q_b/kv_a 投影被 vllm INC 建成普通层（不支持其量化），
+  # 量化它们会 KeyError qweight——故回收到 ignore。
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: false             # baseline 复用 RTN 保守线的（mean 0.8827）
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      enable_thinking: false
+      reasoning_parser: glm45
+      max_num_seqs: 256       # KDA/Mamba 缓存块约束（坑①）
+    group: true
+    seed: 42
+
+gate:
+  min_accuracy: 0.87          # 参照 baseline 0.8827
+
+agent:
+  optimize: false
+  fix_loop: false
+
+executor:
+  type: local
+  num_gpus: 4                 # 0-3 号卡（6/7 在跑 tuning）；W4A16 约 200GB，TP4 每卡 ~50GB
+  image:
+    gpu: vllm/vllm-openai:glm53-flash-x86_64-cu130
+  env:
+    type: docker
+    packages: [auto-round, lm-eval, datasets, pillow]
+    mounts:
+      - /home/kaokaolv/models:/home/kaokaolv/models
+
+output:
+  dir: /home/kaokaolv/aqa_results/glm53_flash_day0/rtn_fp8aligned
+  unique_dir: true
+  sinks:
+    - type: local_fs

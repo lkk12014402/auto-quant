@@ -253,6 +253,41 @@ def restore_config_structure(model: str, output_dir: Path) -> bool:
     return True
 
 
+def repair_fused_name_gaps(output_dir: Path) -> list[str]:
+    """Fill fused-name gaps in the export's ``quantization_config.extra_config``.
+
+    auto-round writes ``extra_config`` (the skip list) with the *unfused* module
+    names from the checkpoint (``mlp.gate_proj`` / ``mlp.up_proj``).  vllm builds
+    dense/shared-expert MLPs as a *fused* ``gate_up_proj`` (MergedColumnParallelLinear),
+    and its INC quant-scope check matches names exactly — so the fused module
+    misses the skip and gets built quantized while the checkpoint holds plain
+    bf16 weights (KeyError ``...gate_up_proj.weight`` at load).  For every
+    ``X.gate_proj`` entry with a sibling ``X.up_proj``, add ``X.gate_up_proj``
+    with the same config.  Returns the list of fused names added.
+    """
+    export_dir = resolve_export_dir(output_dir)
+    cfg_path = export_dir / "config.json"
+    if not cfg_path.exists():
+        return []
+    cfg = json.loads(cfg_path.read_text())
+    extra = (cfg.get("quantization_config") or {}).get("extra_config")
+    if not isinstance(extra, dict):
+        return []
+    added: list[str] = []
+    for key in list(extra.keys()):
+        if not key.endswith(".gate_proj"):
+            continue
+        base = key[: -len(".gate_proj")]
+        fused = f"{base}.gate_up_proj"
+        if f"{base}.up_proj" in extra and fused not in extra:
+            extra[fused] = dict(extra[key])
+            added.append(fused)
+    if added:
+        cfg_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+        _log.info("post-export: added %d fused gate_up_proj entries to extra_config", len(added))
+    return added
+
+
 def _post_export(model: str | None, output_dir: Path) -> None:
     if not model:
         return
@@ -266,6 +301,10 @@ def _post_export(model: str | None, output_dir: Path) -> None:
         restore_config_structure(model, output_dir)
     except Exception as exc:  # noqa: BLE001 - repair is best-effort, never blocks
         _log.warning("post-export config restore failed (ignored): %s", exc)
+    try:
+        repair_fused_name_gaps(output_dir)
+    except Exception as exc:  # noqa: BLE001 - repair is best-effort, never blocks
+        _log.warning("post-export fused-name repair failed (ignored): %s", exc)
 
 
 def _model_name_of(cmd: str | list[str]) -> str | None:

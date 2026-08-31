@@ -42,3 +42,20 @@ pip wheel . --no-deps -w /tmp/wheels   # container 无 git，源码直装会挂�
 
 Candidates for an intel/auto-round upstream PR together with the tiny-model
 reproductions (see `docs/day0_quantization_recipe.md` appendix A, pit #2/#4).
+
+## 另外两份（GLM-5.3-Flash day-0）
+
+- `torch_186659_compiled_backward_context.patch` — PyTorch 上游修复
+  [pytorch#186659](https://github.com/pytorch/pytorch/pull/186659) 的一行移植
+  （`_cc.run` → `_cc.copy().run`），修 compiled backward 的 contextvars 重入
+  （[pytorch#185372](https://github.com/pytorch/pytorch/issues/185372)）。
+  打在 torch 2.13.0 的 `torch/_functorch/_aot_autograd/runtime_wrappers.py`；
+  对容器镜像用单文件 bind-mount 盖入即可，不用重建镜像。
+- `transformers_glm5_next_mask_bool.patch` — transformers 5.16.1 的
+  `glm5_next` 建模里四处 `~mask` 反转补 `.bool()`（与文件内 176 行既有写法对齐；
+  eager 下无操作），修 dynamo fake-tensor 下 bf16 mask 反转炸
+  （`TorchRuntimeError: invert on bf16`）。打 wheel 后安装
+  （pip 会覆盖 bind-mount，所以不能走挂载）。
+
+两者的实证与机制详见 `docs/day0_quantization_recipe.md` 附录坑 #3 与
+GLM-5.3-Flash 的 run journal（`aqa_results/glm53_flash_day0/RUN_JOURNAL.md`）。

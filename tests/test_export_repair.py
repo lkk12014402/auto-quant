@@ -157,3 +157,46 @@ def test_config_restore_skips_diffusion_and_missing_quant_config(tmp_path):
     assert restore_config_structure(str(src2), out) is False  # no quantization_config
     assert json.loads((out / "config.json").read_text()) == {"drifted": True}
 
+
+
+def test_repair_fused_name_gaps(tmp_path):
+    """extra_config 里 gate_proj+up_proj 成对存在时，补融合名 gate_up_proj。"""
+    from aqa.quantize import repair_fused_name_gaps
+
+    out = tmp_path / "quantized"
+    out.mkdir()
+    cfg = {
+        "quantization_config": {
+            "quant_method": "auto-round",
+            "extra_config": {
+                "model.layers.0.mlp.gate_proj": {"bits": 16, "data_type": "float"},
+                "model.layers.0.mlp.up_proj": {"bits": 16, "data_type": "float"},
+                "model.layers.0.mlp.down_proj": {"bits": 16, "data_type": "float"},
+                "model.layers.1.mlp.shared_experts.gate_proj": {"bits": 16, "data_type": "float"},
+                "model.layers.1.mlp.shared_experts.up_proj": {"bits": 16, "data_type": "float"},
+            },
+        }
+    }
+    (out / "config.json").write_text(json.dumps(cfg))
+
+    added = repair_fused_name_gaps(out)
+    assert set(added) == {
+        "model.layers.0.mlp.gate_up_proj",
+        "model.layers.1.mlp.shared_experts.gate_up_proj",
+    }
+    ec = json.loads((out / "config.json").read_text())["quantization_config"]["extra_config"]
+    assert ec["model.layers.0.mlp.gate_up_proj"] == {"bits": 16, "data_type": "float"}
+    # down_proj 不成对，不补
+    assert "model.layers.0.mlp.gate_up_proj.weight" not in ec
+
+
+def test_repair_fused_name_gaps_noop(tmp_path):
+    from aqa.quantize import repair_fused_name_gaps
+
+    out = tmp_path / "quantized"
+    out.mkdir()
+    (out / "config.json").write_text(json.dumps({"quantization_config": {"extra_config": {}}}))
+    assert repair_fused_name_gaps(out) == []
+    # 无 config / 无 extra_config 也安全
+    (out / "config.json").write_text(json.dumps({"a": 1}))
+    assert repair_fused_name_gaps(out) == []

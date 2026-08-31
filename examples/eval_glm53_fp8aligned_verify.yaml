@@ -1,0 +1,44 @@
+# 验证 GLM-5.3-Flash RTN 量化产物（gate_up_proj 融合名修复后）——纯评估。
+# 背景：RTN run2 量化成功但评估时 vllm 炸 KeyError layers.0.mlp.gate_up_proj.weight——
+# 融合 MLP 名（gate_up_proj）不在 extra_config 里，vllm 把 dense 层误建成量化层。
+# 已在导出 config.json 的 extra_config 补 3 个融合名。本 yaml 验证修复。
+model: /home/kaokaolv/aqa_results/glm53_flash_day0/rtn_fp8aligned/20260831-001342/20260831-071419/quantized
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: false            # baseline 已有（mean 0.8827）
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      enable_thinking: false
+      reasoning_parser: glm45
+      max_num_seqs: 256       # KDA/Mamba 缓存块约束
+    group: true
+    seed: 42
+
+gate:
+  min_accuracy: 0.87          # 参照 baseline 0.8827，留 1.3 点余量
+
+agent:
+  optimize: false
+  fix_loop: false
+
+executor:
+  type: local
+  num_gpus: 4                # 0-3 号卡（6/7 在跑 tuning）；W4A16 约 200GB，TP4 每卡 ~50GB
+  image:
+    gpu: vllm/vllm-openai:glm53-flash-x86_64-cu130
+  env:
+    type: docker
+    packages: [lm-eval, datasets, pillow]   # 纯评估，不需要 auto-round
+    mounts:
+      - /home/kaokaolv/models:/home/kaokaolv/models
+      - /home/kaokaolv/aqa_results:/home/kaokaolv/aqa_results
+
+output:
+  dir: /home/kaokaolv/aqa_results/glm53_flash_day0/rtn_fp8aligned_eval2
+  unique_dir: true
+  sinks:
+    - type: local_fs

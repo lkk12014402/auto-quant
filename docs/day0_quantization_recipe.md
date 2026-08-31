@@ -2,7 +2,7 @@
 
 > 适用场景：新发布的模型架构，HF transformers / 官方 vllm release / auto-round
 > 三者之一或全部尚未支持。本文是**通用方法论**（怎么查、怎么判、怎么做、怎么沉淀），
-> 附录 A 是首个实证案例（Qwen3.8-Flash-Next）的完整记录。
+> 附录 A/B 是两个实证案例（Qwen3.8-Flash-Next、GLM-5.3-Flash）的完整记录。
 > 与正常量化路径的区别：正常路径（如 `examples/run_5000_qwen3.8_27B.yaml`）假设
 > 三件套都认这个模型，直接进量化+评估；day-0 要先花小成本确认"谁不认、怎么补"。
 
@@ -207,3 +207,74 @@ HF dataset）在内层 run 里统一发生，与载体无关；secrets 经 `coll
 - PLE 分片修复脚本：`/tmp/repair_ple_shards.py`；推理冒烟脚本：`scripts/smoke_vllm.py`。
 - 运行 yaml：`examples/run_qwen38_flash_next_docker.yaml`（RTN）、`run_qwen38_flash_next_tuning.yaml`（调优）、`eval_qwen38_flash_next_tuned.yaml`（纯评估）。
 - 产物：`aqa_results/qwen38_flash_next_w4a16_docker/`（RTN）、`qwen38_flash_next_w4a16_tuning/`（调优量化）、`qwen38_flash_next_tuning_eval/`（调优评估）。
+
+---
+
+# 附录 B：GLM-5.3-Flash 实证全记录（2026-08-31）
+
+模型：`zai-org/GLM-5.3-Flash`（`glm5_next`；320B/18B 激活；45 层 = 34 KDA 线性
+注意力 + 11 稀疏 MLA(indexer)；MLP 3 dense + 42 sparse(288 experts top-8 + 1 shared)；
+hyper-connection；MTP；多模态；原生 FP8）。量化源 = **官方 BF16 变体**
+（`GLM-5.3-Flash-BF16`，bf16→W4 保真最高，勿从 FP8 二次压缩）。
+过程全记录（逐命令逐推理）：`aqa_results/glm53_flash_day0/RUN_JOURNAL.md`。
+
+## B.1 判定与决策
+
+- transformers 5.16.1 认 `glm5_next`（调优路径可用，需 packages 升版——镜像自带
+  5.15.1 不认）；vllm 0.26.0/0.28.0 注册表均无，PR #53906 open 且含 CUDA kernel +
+  scheduler 核心改动 → **patch 否决**；
+- 最终路线：官方定制镜像 `vllm/vllm-openai:glm53-flash-x86_64-cu130` + docker 派发
+  （同附录 A 结论：有官方定制镜像就别自己编译）；
+- auto-round 通用路径可用，但 **GLM 预置规则会强制 dense MLP 保 bf16**——ignore 里
+  放开也无效，配置双重检查时要把"预置规则"也算进命中模拟。
+
+## B.2 RTN（model_free，保守范围）线 ✅
+
+- bf16 baseline（TP8）：piqa 0.8292 / hellaswag 0.8614(acc_norm) / mmlu 0.8666 /
+  gsm8k 0.9735，**mean 0.8827**；
+- W4A16 RTN（只量化 routed experts）：piqa 0.8357 / hellaswag 0.8597 / mmlu 0.8629 /
+  gsm8k 0.9621，**mean 0.8801**（掉点 0.26pp，gate GO）。
+
+## B.3 坑全记录
+
+| # | 坑 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | 引擎初始化炸 `max_num_seqs (1024) exceeds available Mamba cache blocks (512)` | KDA 线性注意力的 Mamba 状态缓存每序列占一块，512 块 < vllm 默认 1024 | `model_args` 加 `max_num_seqs: 256`。**线性注意力架构的固有约束，serve/评估都要带** |
+| 2 | 量化产物加载炸 `KeyError: layers.0.mlp.gate_up_proj.weight` | auto-round 导出 extra_config 用**未融合名**（gate_proj/up_proj），vllm 把 dense/shared MLP 建成**融合** `gate_up_proj`（MergedColumnParallelLinear），INC 跳过检查是精确名匹配 → 融合层被误建成量化层 | aqa 导出后自动 `repair_fused_name_gaps`（凡 `X.gate_proj`+`X.up_proj` 成对在表，补 `X.gate_up_proj` bits:16）+2 测试。**通用化沉淀，不止 GLM** |
+| 3 | 调优 compile 下 layer 3 炸 `TorchRuntimeError: invert on bf16` | `modeling_glm5_next.py` 875/959/963/1022 四处 `~mask` 漏 `.bool()`（同文件 176 行是规范写法）——eager 下 mask 是 bool 无感，**dynamo fake tensor 下是 bf16**，反转非法 | transformers 补丁 wheel（四处补 `.bool()`），`patches/transformers_glm5_next_mask_bool.patch`。**新架构建模代码 dtype 归一常不一致，`~mask` 在 compile/fake-tensor 下是照妖镜** |
+| 4 | 激进版量化后加载炸 `KeyError: layers.11.self_attn.kv_a_proj_with_mqa.qweight`（**反方向**） | 对齐官方 FP8 范围量化了稀疏 MLA 大投影（q_a/q_b/kv_a），但 vllm glm5next+INC 把它们建成普通层——**checkpoint 有量化权重，模型侧没有 qweight 槽** | 回收 ignore。**结论：可部署量化范围 = auto-round 能量化 ∩ vllm 能加载**，官方 FP8 范围超出交集的部分守不住 |
+
+另复用了附录 A 的两个修复：torch `runtime_wrappers.py` 的 `_cc.run`→`_cc.copy().run`
+（pytorch#186659 移植，开 compile 必须，`patches/torch_186659_compiled_backward_context.patch`）；
+调优逐 block 串行 → **2 卡够，多卡只解决装得下不加速**（实测双卡 ~100+81GB vram、
+峰值 RAM ~800GB，45 块 × ~6 分钟）。
+
+## B.4 激进 RTN（FP8 范围对齐）线
+
+动机：官方 FP8 版量化了 attn 以外的更多模块，验证"跟着 FP8 范围量化 W4"是否可行。
+yaml：`examples/run_glm53_flash_w4a16_rtn_fp8aligned.yaml`。
+
+- 子串陷阱的两个锚定修法（实证）：`mlp.gate.`（尾点）保护路由器但不挡 dense
+  `gate_proj`；`self_attn.b_proj`（锚定）保护 KDA 的 b_proj 但不挡稀疏层 `q_b_proj`；
+- 三方交集实测：dense MLP 被 auto-round GLM 预置规则强制保留（放开无效）；
+  稀疏 MLA 大投影被 vllm INC 拒载（坑 4）→ **实际量化范围 = experts + shared_experts，
+  相比保守版的唯一增量是 shared_experts**；
+- `mapping_proj` 是 FP8 config 的占位项，checkpoint 里不存在（对齐前先验证模块存在性）；
+- **结果：与保守版同口径持平**（piqa 0.8341 / mmlu 0.8620 / gsm8k 0.9644，
+  Δ ≤0.23pp）——shared_experts 纳入量化不掉点，放心扩大范围；
+- 插曲：run 内 gate 报 NO-GO 是 hellaswag 口径从 acc_norm 切 acc 拉低 mean 的误报——
+  **gate 阈值是口径绑定的，改 benchmark 口径必须同步改阈值**。
+
+## B.5 产物与补丁归档
+
+- pinned recipe：`recipes/quant/zai-org__GLM-5.3-Flash.json`；
+- 运行 yaml：`examples/run_glm53_flash_w4a16_rtn.yaml`（保守 RTN）、
+  `run_glm53_flash_w4a16_rtn_fp8aligned.yaml`（激进 RTN）、
+  `run_glm53_flash_w4a16_tuning.yaml`（调优 iters=200）、
+  `eval_glm53_rtn_verify.yaml` / `eval_glm53_fp8aligned_verify.yaml`（纯评估复跑）；
+- 补丁：`patches/torch_186659_compiled_backward_context.patch`、
+  `patches/transformers_glm5_next_mask_bool.patch`（应用方式见 `patches/README.md`；
+  补丁版全文件分别在 `aqa_gpu_logs/patches/runtime_wrappers.py`、
+  `aqa_gpu_logs/wheels/transformers-5.16.1-py3-none-any.whl`）；
+- aqa 改动：`repair_fused_name_gaps` 进 `aqa/quantize/__init__.py` 的导出后链（+2 测试）；
+- 产物：`aqa_results/glm53_flash_day0/`（rtn/ tuning/ logs/ RUN_JOURNAL.md）。
