@@ -223,4 +223,66 @@ def test_convert_missing_file_raises(tmp_path):
 
 
 def test_adapter_registry_complete():
-    assert set(ADAPTERS) == {"openclaw", "copilot", "claude", "codex"}
+    assert set(ADAPTERS) == {"openclaw", "copilot", "claude", "codex", "kimi"}
+
+
+# ── kimi ─────────────────────────────────────────────────────────────────────
+def test_kimi_adapter(tmp_path):
+    sess = tmp_path / "sessions" / "wd_x" / "session_abc123" / "agents" / "main"
+    sess.mkdir(parents=True)
+    path = _write(sess, "wire.jsonl", [
+        {"type": "metadata", "protocol_version": "1.5", "created_at": 1},
+        {"type": "profile.bind", "agentId": "main", "modelAlias": "kimi-code/k3"},
+        {"type": "turn.prompt", "agentId": "main",
+         "input": [{"type": "text", "text": "Fix the bug"}], "origin": {"kind": "user"}},
+        {"type": "context.append_message", "agentId": "main",
+         "message": {"role": "user", "content": [{"type": "text", "text": "Fix the bug"}]}},
+        {"type": "context.append_loop_event", "agentId": "main",
+         "event": {"type": "step.begin", "uuid": "s1", "turnId": "0", "step": 1}},
+        {"type": "context.append_loop_event", "agentId": "main",
+         "event": {"type": "content.part", "stepUuid": "s1",
+                   "part": {"type": "think", "think": "read first"}}},
+        {"type": "context.append_loop_event", "agentId": "main",
+         "event": {"type": "tool.call", "stepUuid": "s1", "toolCallId": "tool_1",
+                   "name": "Bash", "args": {"command": "cat app.py"}}},
+        {"type": "context.append_loop_event", "agentId": "main",
+         "event": {"type": "tool.result", "toolCallId": "tool_1",
+                   "result": {"output": "def main(): pass"}}},
+        {"type": "context.append_loop_event", "agentId": "main",
+         "event": {"type": "step.end", "uuid": "s1", "finishReason": "tool_use",
+                   "usage": {"inputOther": 500, "output": 40,
+                             "inputCacheRead": 1000, "inputCacheCreation": 0}}},
+        {"type": "context.append_loop_event", "agentId": "main",
+         "event": {"type": "step.begin", "uuid": "s2", "turnId": "0", "step": 2}},
+        {"type": "context.append_loop_event", "agentId": "main",
+         "event": {"type": "content.part", "stepUuid": "s2",
+                   "part": {"type": "text", "text": "Fixed."}}},
+        {"type": "context.append_loop_event", "agentId": "main",
+         "event": {"type": "step.end", "uuid": "s2", "finishReason": "stop",
+                   "usage": {"inputOther": 600, "output": 10,
+                             "inputCacheRead": 1100, "inputCacheCreation": 0}}},
+    ])
+    assert detect_backend(path) == "kimi"
+    atif = convert(path)
+    assert validate_atif(atif) == []
+    assert atif["agent"]["name"] == "kimi"
+    assert atif["agent"]["model_name"] == "kimi-code/k3"
+    assert atif["session_id"] == "session_abc123"
+    steps = atif["steps"]
+    # turn.prompt must not duplicate the committed user message
+    assert [s["message"] for s in steps if s["source"] == "user"] == ["Fix the bug"]
+    agent_step = next(s for s in steps if s["source"] == "agent" and s.get("tool_calls"))
+    assert agent_step["reasoning_content"] == "read first"
+    assert agent_step["tool_calls"][0] == {"tool_call_id": "tool_1", "function_name": "Bash",
+                                           "arguments": {"command": "cat app.py"}}
+    assert agent_step["observation"]["results"][0]["content"] == "def main(): pass"
+    assert agent_step["metrics"]["prompt_tokens"] == 500
+    assert agent_step["metrics"]["cached_tokens"] == 1000
+    assert atif["final_metrics"]["total_completion_tokens"] == 50
+
+
+def test_kimi_adapter_rejects_non_wire(tmp_path):
+    path = _write(tmp_path, "wire.jsonl", [{"foo": 1}])
+    assert detect_backend(path) is None
+    with pytest.raises(AqaError, match="no adapter"):
+        convert(path)

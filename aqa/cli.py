@@ -163,6 +163,42 @@ def traces_export(paths, source, success_filter, sharegpt, view, out_jsonl, parq
     click.echo(f"exported {len(rows)} row(s) -> {', '.join(targets)}")
 
 
+@traces.command("convert")
+@click.option("--path", "paths", multiple=True, required=True,
+              type=click.Path(exists=True),
+              help="Raw agent-backend session log (kimi wire.jsonl / claude / codex "
+                   "rollout / copilot / openclaw; repeatable).")
+@click.option("--backend", default=None,
+              type=click.Choice(["kimi", "claude", "codex", "copilot", "openclaw"]),
+              help="Force the adapter (default: auto-detect from the artifact).")
+@click.option("--model-name", default="", help="Model name when the log lacks one.")
+@click.option("--instruction", default=None,
+              help="Override the first user message (e.g. the task statement).")
+@click.option("--out", "out_dir", type=click.Path(), default=None,
+              help="Directory for trajectories.jsonl (default: ./traces_atif).")
+def traces_convert(paths, backend, model_name, instruction, out_dir) -> None:
+    """Convert raw agent session logs to ATIF trajectories.jsonl.
+
+    The output directory feeds directly into `aqa traces export` /
+    `distill` / `publish`.
+    """
+    from .agent.adapters import convert as convert_session
+
+    dest = Path(out_dir or "traces_atif")
+    dest.mkdir(parents=True, exist_ok=True)
+    out_file = dest / "trajectories.jsonl"
+    n = 0
+    with out_file.open("w") as f:
+        for raw in paths:
+            atif = convert_session(raw, backend=backend, model_name=model_name,
+                                   instruction=instruction)
+            f.write(json.dumps(atif, ensure_ascii=False) + "\n")
+            n += 1
+            click.echo(f"{raw}: {len(atif['steps'])} steps "
+                       f"(session {atif['session_id']}, backend={atif['agent']['name']})")
+    click.echo(f"converted {n} session(s) -> {out_file}")
+
+
 @traces.command("distill")
 @click.option("--path", "paths", multiple=True, required=True,
               type=click.Path(exists=True),

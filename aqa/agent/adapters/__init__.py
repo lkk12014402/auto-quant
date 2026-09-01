@@ -15,11 +15,12 @@ from .base import Adapter
 from .claude import ADAPTER as CLAUDE
 from .codex import ADAPTER as CODEX
 from .copilot import ADAPTER as COPILOT
+from .kimi import ADAPTER as KIMI
 from .openclaw import ADAPTER as OPENCLAW
 
 _log = get_logger("agent.adapters")
 
-ADAPTERS: dict[str, Adapter] = {a.name: a for a in (OPENCLAW, COPILOT, CLAUDE, CODEX)}
+ADAPTERS: dict[str, Adapter] = {a.name: a for a in (OPENCLAW, COPILOT, CLAUDE, CODEX, KIMI)}
 
 
 def detect_backend(path: str | Path) -> str | None:
