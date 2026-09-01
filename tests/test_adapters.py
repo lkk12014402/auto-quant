@@ -286,6 +286,21 @@ def test_kimi_adapter(tmp_path):
     assert atif["final_metrics"]["total_completion_tokens"] == 50
 
 
+def test_kimi_adapter_subagent_session_id(tmp_path):
+    sess = tmp_path / "sessions" / "wd_x" / "session_abc123" / "agents" / "agent-12"
+    sess.mkdir(parents=True)
+    path = _write(sess, "wire.jsonl", [
+        {"type": "metadata", "protocol_version": "1.5"},
+        {"type": "context.append_message",
+         "message": {"role": "user", "content": [{"type": "text", "text": "sub task"}]}},
+        {"type": "context.append_loop_event",
+         "event": {"type": "content.part", "part": {"type": "text", "text": "done"}}},
+        {"type": "context.append_loop_event", "event": {"type": "step.end", "usage": {}}},
+    ])
+    atif = convert(path)
+    assert atif["session_id"] == "session_abc123_agent-12"
+
+
 def test_kimi_adapter_rejects_non_wire(tmp_path):
     path = _write(tmp_path, "wire.jsonl", [{"foo": 1}])
     assert detect_backend(path) is None

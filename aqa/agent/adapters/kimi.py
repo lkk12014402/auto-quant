@@ -124,12 +124,16 @@ class KimiAdapter:
 
         if len(sb.steps) < 2:
             return None
-        # session id from .../session_<id>/agents/<agent>/wire.jsonl
+        # session id from .../session_<id>/agents/<agent>/wire.jsonl；子代理
+        # （agent-N）与 main 共用 session_<id>，归档目录会撞名，补上代理名
         session_id = path.stem
         for parent in path.parents:
             if parent.name.startswith("session_"):
                 session_id = parent.name
                 break
+        if (path.parent.parent.name == "agents" and path.parent.name != "main"
+                and session_id.startswith("session_")):
+            session_id = f"{session_id}_{path.parent.name}"
         final = {
             "total_prompt_tokens": total["prompt"],
             "total_completion_tokens": total["completion"],
