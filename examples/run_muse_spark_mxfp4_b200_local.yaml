@@ -1,0 +1,46 @@
+# Muse-Spark-1.2-820B-A42B day-0：MXFP4 量化+评估，B200 常驻容器内 local 执行。
+# 容器 muse-aqa 已在 B200 上运行（8×B200、/home 挂载、环境按 env_setup.sh 装配）。
+# 本 yaml 在容器内运行：aqa run examples/run_muse_spark_mxfp4_b200_local.yaml
+model: /home/hshen/jianan/Muse-Spark-1.2-820B-A42B_fc7a86a
+
+quant:
+  scheme: MXFP4
+  method: model_free
+  export_format: llm_compressor
+  ignore_layers: "router,pooler,self_attn,vision_model,vision_perception,modalities,audio"
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: false            # bf16 1.64TB 单机放不下；NVFP4 版作参照另行评估
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      trust_remote_code: true
+      tokenizer_mode: musespark1x
+    group: true
+    seed: 42
+
+gate:
+  min_accuracy: 0.80         # 无 baseline；出分后校准
+
+agent:
+  optimize: false            # recipe 钉死（分析文档方案 A）
+  fix_loop: true             # 一线修理由 copilot（opus tier）承担
+  tiers: [opus]
+  patch:
+    capture: true
+
+executor:
+  type: local                # 已在 GPU 容器内，直接跑
+  num_gpus: 4                # MXFP4 ~430GB，TP4 评估；量化本身不吃 GPU
+
+output:
+  dir: /home/kaokaolv/aqa_results/muse_spark_mxfp4
+  unique_dir: true
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN

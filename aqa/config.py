@@ -316,6 +316,10 @@ class SshConfig(BaseModel):
     accelerator: Literal["cuda", "xpu"] = "cuda"
     auth: SshAuth = Field(default_factory=SshAuth)
     jump: list[SshHop] = Field(default_factory=list)
+    # Extra bind mounts for the remote container (docker `-v host:cont` specs,
+    # e.g. a shared filesystem holding local model weights:
+    # ["/home:/home"] makes /home/user/models visible inside the run).
+    mounts: list[str] = Field(default_factory=list)
 
 
 class ImageConfig(BaseModel):

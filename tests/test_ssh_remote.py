@@ -228,3 +228,22 @@ def test_bootstrap_agent_provision_enabled_by_optimize_only():
     boot = build_container_bootstrap(cfg)
     assert "aqa.agent.provision" in boot
     assert "@github/copilot" in boot
+
+
+def test_remote_script_ssh_mounts():
+    """executor.ssh.mounts add bind mounts to the remote container (shared FS)."""
+    import copy
+    data = copy.deepcopy(_BASE)
+    data["executor"]["ssh"]["mounts"] = ["/home:/home", "/data/models:/models:ro"]
+    cfg = parse_run_config(data)
+    script = build_remote_script(cfg, "r1", has_secrets=False)
+    assert "-v /home:/home" in script
+    assert "-v /data/models:/models:ro" in script
+
+
+def test_remote_script_no_mounts_by_default():
+    cfg = _cfg()
+    script = build_remote_script(cfg, "r1", has_secrets=False)
+    mount_lines = [l for l in script.splitlines() if "-v " in l]
+    assert len(mount_lines) == 3  # $REPO + HF cache + the chown helper
+    assert not any("-v /" in l and "$" not in l for l in mount_lines)  # no host-path mounts

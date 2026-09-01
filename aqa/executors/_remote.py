@@ -183,6 +183,8 @@ def build_remote_script(
     build_proxy = "".join(f'    --build-arg {k}={shlex.quote(v)} \\\n' for k, v in proxy_pairs)
     run_proxy = "".join(f'    -e {k}={shlex.quote(v)} \\\n' for k, v in proxy_pairs)
     env_file_arg = '    --env-file "$WORK/_secrets.env" \\\n' if has_secrets else ""
+    mounts = (run_cfg.executor.ssh.mounts if run_cfg.executor.ssh else []) or []
+    mounts_args = "".join(f'    -v {shlex.quote(m)} \\\n' for m in mounts)
 
     tag = f"aqa-gpu:{'local' if dockerfile else 'base'}"
 
@@ -242,7 +244,7 @@ docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 rc=0
 ( set -x
 docker run --rm --name "$CONTAINER" \\
-{device_args}{env_file_arg}{run_proxy}    -v "$REPO":{CONTAINER_REPO} \\
+{device_args}{env_file_arg}{run_proxy}{mounts_args}    -v "$REPO":{CONTAINER_REPO} \\
     -v "$HF_CACHE_ABS":{CONTAINER_HF_CACHE} \\
     --entrypoint bash \\
     "$IMAGE" \\
