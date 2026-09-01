@@ -86,6 +86,9 @@ def test_copilot_adapter_flat(tmp_path):
 # ── copilot (session-event schema) ───────────────────────────────────────────
 def test_copilot_adapter_session_events(tmp_path):
     path = _write(tmp_path, "copilot-cli.jsonl", [
+        {"type": "session.start",
+         "data": {"sessionId": "04e43240-test", "copilotVersion": "1.0.80"},
+         "timestamp": "2026-08-29T00:59:59Z"},
         {"type": "user.message", "data": {"content": "Fix the bug"},
          "timestamp": "2026-08-29T01:00:00Z"},
         {"type": "assistant.message",
@@ -102,6 +105,8 @@ def test_copilot_adapter_session_events(tmp_path):
     ])
     atif = convert(path)
     assert validate_atif(atif) == []
+    assert atif["session_id"] == "04e43240-test"
+    assert atif["agent"]["version"] == "1.0.80"
     agent_step = next(s for s in atif["steps"] if s["source"] == "agent")
     assert agent_step["model_name"] == "gpt-5.2"
     assert agent_step["metrics"]["completion_tokens"] == 42

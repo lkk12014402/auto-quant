@@ -9,7 +9,9 @@ Source format (harbor copilot_cli.py contract): jsonl of copilot
   ``assistant.message`` / ``tool.execution_complete`` / ``result``) with the
   payload under ``data``.
 
-Session id is not carried in the log -- Harbor hardcodes "copilot-cli".
+Session id: newer copilot versions carry it in ``session.start``
+(``data.sessionId``, plus ``copilotVersion``); older logs carry none --
+those fall back to Harbor's hardcoded "copilot-cli".
 """
 
 from __future__ import annotations
@@ -56,12 +58,18 @@ class CopilotAdapter:
         total_in = total_out = 0
         model_seen = model_name
         first_user = True
+        session_id = ""
+        cli_version = ""
         for ev in events:
             etype = ev.get("type", "")
             ts = ev.get("timestamp") if isinstance(ev.get("timestamp"), str) else None
             tsk = {"timestamp": ts} if ts else {}
 
-            if etype == "message":  # flat schema
+            if etype == "session.start":  # session-event schema metadata
+                data = ev.get("data") or {}
+                session_id = data.get("sessionId", "") or session_id
+                cli_version = data.get("copilotVersion", "") or cli_version
+            elif etype == "message":  # flat schema
                 role = ev.get("role", "user")
                 text = flatten_content(ev.get("content"))
                 if role == "assistant":
@@ -131,8 +139,11 @@ class CopilotAdapter:
                      "total_completion_tokens": total_out or None}
             final = {k: v for k, v in final.items() if v is not None}
         return make_trajectory(
-            session_id="copilot-cli",  # logs carry no session id
+            # Newer copilot logs carry the session id in session.start; older
+            # ones carry none (Harbor hardcodes "copilot-cli" for those).
+            session_id=session_id or "copilot-cli",
             agent_name="copilot",
+            agent_version=cli_version or "unknown",
             model_name=model_seen or env_or("", "COPILOT_MODEL"),
             steps=sb.steps, final_metrics=final or None,
         )
