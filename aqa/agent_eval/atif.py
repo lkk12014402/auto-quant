@@ -126,7 +126,10 @@ def trajectory_to_atif(
         if stats.cost_usd is not None:
             final_metrics["total_cost_usd"] = stats.cost_usd
         atif["final_metrics"] = final_metrics
-    return atif
+    # aqa 自身 ReAct 轨迹与外部 backend 适配器共用同一脱敏规则
+    from ..agent.redact import redact_atif
+
+    return redact_atif(atif)
 
 
 def validate_atif(data: dict[str, Any]) -> list[str]:

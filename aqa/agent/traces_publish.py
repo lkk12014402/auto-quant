@@ -69,8 +69,11 @@ def stage_trajectory_archive(
         session = _safe_session_id(str(atif.get("session_id") or atif.get("trajectory_id") or ""))
         sess_dir = dest / "trajectories" / session
         sess_dir.mkdir(parents=True, exist_ok=True)
+        # trajectories.jsonl 可能早于适配器侧脱敏；归档前统一再过一遍
+        from .redact import redact_atif
+
         (sess_dir / "trajectory.json").write_text(
-            json.dumps(atif, indent=2, ensure_ascii=False) + "\n")
+            json.dumps(redact_atif(atif), indent=2, ensure_ascii=False) + "\n")
         written.append(f"trajectories/{session}/trajectory.json")
         for view in views:
             row = (atif_to_sft_row(atif, run=str(src_path.parent)) if view == "sft"

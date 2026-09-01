@@ -33,9 +33,13 @@ EXCLUDED_SUFFIXES = {
 SECRET_PATTERNS = (
     re.compile(r"hf_[A-Za-z0-9]{20,}"),
     re.compile(r"(?:ghp|github_pat)_[A-Za-z0-9_]{20,}"),
-    re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
+    re.compile(r"glpat-[A-Za-z0-9_\-]{15,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"),
     re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s\"']+"),
     re.compile(r"(?i)(x-access-token:)[^@\s/]+"),
+    # generic credentials in URL userinfo: scheme://user:secret@host
+    re.compile(r"(https?://[^/\s:@]+:)[^@\s/]+(@)"),
 )
 
 
@@ -43,7 +47,11 @@ def sanitize_text(text: str) -> str:
     """Redact tokens/secrets from a text artifact before it leaves the machine."""
     for pattern in SECRET_PATTERNS:
         if pattern.groups:
-            text = pattern.sub(lambda m: m.group(1) + "***REDACTED***", text)
+            def _sub(m: re.Match, n: int = pattern.groups) -> str:
+                # keep every capture group, inserting the redaction after group 1
+                return m.group(1) + "***REDACTED***" + "".join(
+                    m.group(i) or "" for i in range(2, n + 1))
+            text = pattern.sub(_sub, text)
         else:
             text = pattern.sub("***REDACTED***", text)
     return text

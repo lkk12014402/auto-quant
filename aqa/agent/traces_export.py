@@ -216,6 +216,10 @@ def export_agent_eval(
             except json.JSONDecodeError:
                 _log.warning("%s: skipping malformed line", path)
                 continue
+            # Older trajectories.jsonl may predate adapter-side redaction.
+            from .redact import redact_atif
+
+            redact_atif(atif)
             extra = atif.get("extra") or {}
             # Rows lacking outcome metadata are kept -- nothing to judge them by.
             if (success_only and ("solved" in extra or "reward" in extra)

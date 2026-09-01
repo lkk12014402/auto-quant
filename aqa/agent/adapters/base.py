@@ -88,7 +88,15 @@ def make_trajectory(*, session_id: str, agent_name: str, steps: list[dict[str, A
                     model_name: str = "", agent_version: str = "",
                     final_metrics: dict[str, Any] | None = None,
                     extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Assemble the ATIF root dict (steps renumbered 1..N)."""
+    """Assemble the ATIF root dict (steps renumbered 1..N).
+
+    All backends funnel through here, so secret redaction
+    (:func:`aqa.agent.redact.redact_atif`) is applied at this single choke
+    point -- session logs routinely capture commands that print credentials,
+    and every downstream dataset view inherits whatever we miss.
+    """
+    from ..redact import redact_atif
+
     for i, step in enumerate(steps, start=1):
         step["step_id"] = i
     traj: dict[str, Any] = {
@@ -105,7 +113,7 @@ def make_trajectory(*, session_id: str, agent_name: str, steps: list[dict[str, A
         traj["final_metrics"] = final_metrics
     if extra:
         traj["extra"] = extra
-    return traj
+    return redact_atif(traj)
 
 
 class StepBuilder:
