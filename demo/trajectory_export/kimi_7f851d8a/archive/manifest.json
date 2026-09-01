@@ -1,0 +1,8 @@
+{
+  "sessions": 1,
+  "files": [
+    "trajectories/session_7f851d8a-b474-4658-9969-f1ec7246362e/trajectory.json",
+    "trajectories/session_7f851d8a-b474-4658-9969-f1ec7246362e/dataset_sft.jsonl",
+    "trajectories/session_7f851d8a-b474-4658-9969-f1ec7246362e/dataset_rl.jsonl"
+  ]
+}
