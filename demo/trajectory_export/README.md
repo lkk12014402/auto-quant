@@ -20,6 +20,13 @@ demo/trajectory_export/
 ├── kimi_8df5de67*/
 ├── copilot_<id8>/            # GitHub Copilot CLI 会话 ×10（来自容器 lkk-ki 的
 │                             # ~/.copilot/session-state/*/events.jsonl）
+├── copilot_a397b109/         # muse_support 迁移工作会话完整版（B300 整机
+│                             # ~/copilot_B300，2576 步、106 轮用户交互；
+│                             # 取代 09-03 从 ~/Pai-Megatron-Patch 导出的
+│                             # 668 步部分版）。内容：muse 插件 0.17→main
+│                             # 迁移 + EP all-reduce 根因 + MXFP4/W4A16
+│                             # 在新栈上的使能 + 以 nvfp4 为锚的 logprob
+│                             # 数值验证方法论 + 打包分支与 XPU 分支合并
 │   ├── trajectories.jsonl
 │   ├── sft.jsonl / rl.jsonl / sharegpt.jsonl
 │   └── knowledge/trajectory.jsonl   # 仅当该会话有 error→fix 条目时存在
@@ -33,8 +40,9 @@ demo/trajectory_export/
 ## 复现命令
 
 ```bash
-# 1. 会话日志 → ATIF（backend 自动识别；copilot 需文件名含 "copilot"）
-aqa traces convert --path <session.jsonl> --out <out_dir>
+# 1. 会话日志 → ATIF（backend 自动识别；文件名不含 backend 名时
+#    用 --backend 强制指定，如 copilot 的 events.jsonl）
+aqa traces convert --path <session.jsonl> [--backend copilot] --out <out_dir>
 
 # 2. ATIF → 数据集视图
 aqa traces export --path <out_dir> --view sft --out sft.jsonl
