@@ -1,0 +1,9 @@
+# aime25: AIME 2025 (30 problems, 0-shot, accuracy). See aime26.yaml.
+name: aime25
+harness: evalscope
+type: generative
+
+scoring:
+  metric: "accuracy"
+
+description: AIME 2025 competition math (evalscope, 0-shot, avg over repeats).

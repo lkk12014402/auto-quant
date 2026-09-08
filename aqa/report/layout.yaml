@@ -1,0 +1,137 @@
+# Run artifact layout — aqa run / aqa sweep 产物目录的显式契约。
+#
+# 本文件是落盘结构的 single source of truth：
+# - `aqa inspect <run_dir>` 用它校验一个真实 run 目录（缺失/异常即报出）
+# - dataset sink 上传范围以各条目的 `sink` 标记为准（weights: false 的不上传）
+# - 外部 agent（owner）驱动 aqa 时，按同样结构组织自己补充的产物
+#
+# 字段：
+#   path     相对 run 目录的路径（<...> 为变量段）
+#   kind     file | dir
+#   when     always | done | quantize | gate | baseline | thinking_dual | fix_loop |
+#            patch_capture | local_fs_sink | sweep | staged_docker | staged_venv
+#   sink     true = 进 dataset sink 上传包（脱敏后）；false = 权重/大文件，不上传
+#   desc     内容与用途
+
+layout:
+  - path: aqa_run.json
+    kind: file
+    when: always
+    sink: true
+    desc: '运行状态机（{"model", "state": running|done|failed}）；sink 上传前刷新终态。'
+
+  - path: run_manifest.json
+    kind: file
+    when: done
+    sink: true
+    desc: 复现清单——model/quant/eval 配置、环境版本、实际执行的量化与评估命令、结果分数、self-heal 记录。
+
+  - path: .quant_command.json
+    kind: file
+    when: quantize
+    sink: true
+    desc: 实际执行的 auto-round 命令及来源（builder | agent-optimize）。排查"量化命令是什么"看这里。
+
+  - path: gate.json
+    kind: file
+    when: gate
+    sink: true
+    desc: GO/NO-GO/INCONCLUSIVE 判定 + 理由；thinking 双模式时含 modes 逐模式明细。
+
+  - path: quantized/
+    kind: dir
+    when: quantize
+    sink: false
+    desc: 量化 checkpoint（权重）。dataset sink 结构性排除；上传 HF 需 provider.upload（HF model repo）。
+
+  - path: quantized/quantize.log
+    kind: file
+    when: quantize
+    sink: true
+    desc: auto-round 全程日志（层进度、量化摘要、导出问题）。
+
+  - path: eval/
+    kind: dir
+    when: done
+    sink: true
+    desc: 评估产物（单模式或 thinking=on）。accuracy.json（mean_score + 逐 benchmark 分数与命令）+ <task_group>/（lm_eval 输出与 .eval.log）。
+
+  - path: eval/accuracy.json
+    kind: file
+    when: done
+    sink: true
+    desc: '{model, backend, mean_score, results{task: {score, metric, num_samples}}, commands, healed}。'
+
+  - path: eval_thinking_off/
+    kind: dir
+    when: thinking_dual
+    sink: true
+    desc: thinking=off 模式的评估产物，结构同 eval/。
+
+  - path: baseline/
+    kind: dir
+    when: baseline
+    sink: true
+    desc: 'bf16 基线评估（eval.baseline: true），accuracy.json 同构；gate 对比的一侧。'
+
+  - path: baseline_thinking_off/
+    kind: dir
+    when: thinking_dual
+    sink: true
+    desc: bf16 基线的 thinking=off 评估。
+
+  - path: logs/
+    kind: dir
+    when: always
+    sink: true
+    desc: 执行器日志（executor_*.log）+ agent 产物（agent_optimize/ 推荐过程、agent_fixes/<phase>/ 每轮修复记录）。
+
+  - path: patches/
+    kind: dir
+    when: fix_loop
+    sink: true
+    desc: fix-loop 产出的可用补丁（<phase>/ 下 patch 文件 + 说明）；owner 复查补丁的落点。
+
+  - path: patch_snapshot/
+    kind: dir
+    when: patch_capture
+    sink: true
+    desc: 'patch.capture: true 时工作区改动的快照（量化/评估前环境状态的 diff）。'
+
+  - path: <artifact_name>/
+    kind: dir
+    when: local_fs_sink
+    sink: true
+    desc: local_fs sink 的产物拷贝（<model>-AutoRound-<scheme>-<method>/），含 run_meta.json。
+
+  - path: sweep_report.json
+    kind: file
+    when: sweep
+    sink: true
+    desc: aqa sweep 多候选对比：各档命令、状态、逐 benchmark 分数、baseline。
+
+  - path: .aqa_local_docker/
+    kind: dir
+    when: staged_docker
+    sink: false
+    desc: local docker staged inner run 工件（_run.yaml 等），调试用。
+
+  - path: .aqa_local_venv/
+    kind: dir
+    when: staged_venv
+    sink: false
+    desc: local venv staged inner run 工件。
+
+# when 条件的判定规则（inspect 据此决定"该不该有"）：
+#   always        每个 run 都有
+#   done          run 正常完成（aqa_run.json.state == done）
+#   quantize      provider.type == quantize
+#   gate          配置了 gate（max_accuracy_drop 或 min_accuracy）
+#   baseline      eval.baseline: true
+#   thinking_dual eval.thinking 判定为双模式（auto 检出 thinking 或 both）
+#   fix_loop      agent.fix_loop: true
+#   patch_capture patch.capture: true
+#   local_fs_sink output.sinks 含 local_fs
+#   sweep         aqa sweep 编排（quant.recipe_sweep: true）
+#   staged_docker executor local + env.type == docker
+#   staged_venv   executor local + env.type == venv

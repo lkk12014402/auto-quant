@@ -1,0 +1,46 @@
+# Qwen3-30B-A3B-Instruct-2507 档1：MXFP8 主体 + 路由专家 MXFP4（model_free）
+# （= quant_30B.md 手工档 1；本文件同时是 fp8kv / fp8kv_fp8attn 两档的 _base_）
+#
+# 运行（local venv + owner agent 驱动；可与其它两档并行，各占 1 卡）：
+#   source env.sh && export AR_MODEL_FREE_SHARD_PARALLELISM=1
+#   CUDA_VISIBLE_DEVICES=<空闲卡> aqa run examples/local_venv/run_qwen3_30b_mixed.yaml
+
+model: /models/Qwen3-30B-A3B-Instruct-2507   # 无此路径则改 Qwen/Qwen3-30B-A3B-Instruct-2507
+
+quant:
+  scheme: MXFP8
+  method: model_free
+  export_format: llm_compressor
+  ignore_layers: "lm_head,embed_tokens,mlp.gate"
+  layer_config: {mlp.experts: {bits: 4, data_type: mx_fp}}
+
+provider:
+  type: quantize
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag]   # gsm8k recipe 默认即手工的 5-shot/chat_template/batch64
+  batch_size: "64"
+  baseline: false              # 手工流程未测 bf16；要算保持率改 true
+  thinking: auto               # Instruct-2507 无 enable_thinking 开关 → 自动单模式
+  lm_eval:
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.6
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: ~/.venv-qwen30b      # 三档共用同一 venv（幂等复用）
+    create: true
+    packages: auto             # auto-round + lm-eval + vllm
+
+output:
+  dir: ./results/qwen3_30b_a3b/mixed_mxfp4e_mxfp8
+  unique_dir: true
+  sinks:
+    - type: local_fs

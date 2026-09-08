@@ -1,0 +1,214 @@
+=== kimi main session ===
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/main/wire.jsonl: 3957 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 526 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a
+=== kimi subagents ===
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-0/wire.jsonl: 16 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-0, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-0/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 5 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-0/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-0
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-10/wire.jsonl: 11 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-10, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-10/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 5 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-10/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-10
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-11/wire.jsonl: 12 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-11, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-11/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 4 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-11/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-11
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-12/wire.jsonl: 26 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-12, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-12/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 5 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-12/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-12
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-13/wire.jsonl: 245 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-13, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-13/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 48 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-13/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-13
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-14/wire.jsonl: 19 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-14, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-14/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+no knowledge entries found (no error→progress patterns)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-14
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-15/wire.jsonl: 17 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-15, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-15/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 4 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-15/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-15
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-16/wire.jsonl: 37 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-16, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-16/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 14 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-16/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-16
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-17/wire.jsonl: 23 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-17, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-17/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 11 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-17/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-17
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-18/wire.jsonl: 12 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-18, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-18/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 3 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-18/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-18
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-19/wire.jsonl: 80 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-19, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-19/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 15 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-19/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-19
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-1/wire.jsonl: 30 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-1, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-1/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 4 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-1/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-1
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-20/wire.jsonl: 81 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-20, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-20/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 27 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-20/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-20
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-21/wire.jsonl: 233 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-21, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-21/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 58 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-21/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-21
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-2/wire.jsonl: 46 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-2, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-2/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 7 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-2/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-2
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-3/wire.jsonl: 32 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-3, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-3/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 9 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-3/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-3
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-4/wire.jsonl: 38 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-4, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-4/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 10 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-4/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-4
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-5/wire.jsonl: 14 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-5, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-5/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 6 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-5/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-5
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-6/wire.jsonl: 22 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-6, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-6/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 10 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-6/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-6
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-7/wire.jsonl: 6 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-7, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-7/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 2 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-7/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-7
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-8/wire.jsonl: 57 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-8, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-8/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 19 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-8/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-8
+/home/kaokaolv/.kimi-code/sessions/wd_kaokaolv_25b9c78aa31b/session_7f851d8a-b474-4658-9969-f1ec7246362e/agents/agent-9/wire.jsonl: 39 steps (session session_7f851d8a-b474-4658-9969-f1ec7246362e_agent-9, backend=kimi)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-9/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 22 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-9/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/kimi_7f851d8a_agent-9
+=== milan_copilot sessions ===
+/home/kaokaolv/milan_copilot/session-state/134698e3-347b-45fe-babd-68d4e97a217a//events.jsonl: 14 steps (session 134698e3-347b-45fe-babd-68d4e97a217a, backend=copilot)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_134698e3/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 3 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_134698e3/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_134698e3
+/home/kaokaolv/milan_copilot/session-state/69c576fa-af3d-47b5-ad26-728762164ff9//events.jsonl: 43 steps (session 69c576fa-af3d-47b5-ad26-728762164ff9, backend=copilot)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_69c576fa/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 11 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_69c576fa/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_69c576fa
+/home/kaokaolv/milan_copilot/session-state/917b450a-6dd0-4dac-8cea-fbfceef3fb37//events.jsonl: 269 steps (session 917b450a-6dd0-4dac-8cea-fbfceef3fb37, backend=copilot)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_917b450a/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 68 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_917b450a/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_917b450a
+/home/kaokaolv/milan_copilot/session-state/9a98beb2-913d-4918-8c8e-a49cd0011c8d//events.jsonl: 30 steps (session 9a98beb2-913d-4918-8c8e-a49cd0011c8d, backend=copilot)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_9a98beb2/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 8 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_9a98beb2/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_9a98beb2
+/home/kaokaolv/milan_copilot/session-state/9c2c541d-3df0-4cbe-9f4c-396de1a552cf//events.jsonl: 9354 steps (session 9c2c541d-3df0-4cbe-9f4c-396de1a552cf, backend=copilot)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_9c2c541d/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 1418 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_9c2c541d/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_9c2c541d
+/home/kaokaolv/milan_copilot/session-state/bc86ac3b-a2ab-4989-bf31-8bb130d66c02//events.jsonl: 475 steps (session bc86ac3b-a2ab-4989-bf31-8bb130d66c02, backend=copilot)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_bc86ac3b/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 107 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_bc86ac3b/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_bc86ac3b
+/home/kaokaolv/milan_copilot/session-state/f5283a97-cae9-4080-8e1c-392a4dd41350//events.jsonl: 379 steps (session f5283a97-cae9-4080-8e1c-392a4dd41350, backend=copilot)
+converted 1 session(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_f5283a97/trajectories.jsonl
+exported 1 row(s) -> sft.jsonl
+exported 1 row(s) -> rl.jsonl
+exported 1 row(s) -> sharegpt.jsonl
+distilled 83 knowledge entrie(s) -> /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_f5283a97/knowledge (phase=trajectory)
+OK   /home/kaokaolv/auto_agent/my_commit/auto-quant/demo/trajectory_export/copilot_f5283a97
+ALL DONE

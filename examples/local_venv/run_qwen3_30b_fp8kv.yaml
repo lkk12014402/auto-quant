@@ -1,0 +1,17 @@
+# Qwen3-30B-A3B-Instruct-2507 档2：档1 + 静态 FP8 KV cache（= 手工档 2）
+# 与档1的差异：校准路径（method: autoround, iters: 0）+ --static_kv_dtype fp8，
+# 评估时 vllm 侧带 kv_cache_dtype=fp8。
+_base_: run_qwen3_30b_mixed.yaml
+
+quant:
+  method: autoround            # static_kv_fp8 需校准，schema 禁止 model_free
+  iters: 0
+  static_kv_fp8: true          # --static_kv_dtype fp8
+
+eval:
+  lm_eval:
+    model_args:
+      kv_cache_dtype: fp8      # 与手工 MODEL_ARGS 的 kv_cache_dtype=fp8 对齐
+
+output:
+  dir: ./results/qwen3_30b_a3b/fp8kv

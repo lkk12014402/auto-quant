@@ -2,3 +2,6 @@
 # Python caches
 __pycache__/
 *.pyc
+
+# Secrets (HF tokens, ssh passwords, agent keys) — never commit
+env.sh

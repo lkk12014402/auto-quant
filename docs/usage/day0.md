@@ -6,7 +6,7 @@
 ## 什么时候走这条路
 
 新发布的模型架构，transformers / 官方 vllm release / auto-round 有任一不认。
-正常路径（`examples/run_5000_qwen3.8_27B.yaml`）假设三件套都认；day-0 先花小
+正常路径（`examples/ssh_docker/run_5000_qwen3.8_27B.yaml`）假设三件套都认；day-0 先花小
 成本确认"谁不认、怎么补"。
 
 ## 判定（分钟级，不下载权重）
@@ -37,7 +37,7 @@ config 解析 → bf16 单请求冒烟 → **量化产物加载冒烟**（最危
 
 ## 参考案例
 
-`examples/run_qwen38_flash_next*.yaml`（RTN / tuning / 纯评估三个）+
+`examples/local_docker/run_qwen38_flash_next*.yaml`（RTN / tuning / 纯评估三个）+
 `recipes/quant/Qwen__Qwen3.8-Flash-Next.json`（pinned recipe）+
 `patches/autoround_qwen4exp_fixes.patch`（运行前提的 auto-round 补丁，
 应用方式见 `patches/README.md`）。

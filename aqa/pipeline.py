@@ -321,6 +321,35 @@ def _run_evaluate(run_cfg: RunConfig, model: str, eval_dir: Path,
     return holder["result"]
 
 
+def _run_evaluate_modes(run_cfg: RunConfig, model: str, eval_dir: Path,
+                        out_dir: Path, num_gpus: int, knowledge=None,
+                        run_id: str = "", phase_name: str = "evaluate",
+                        heal: HealTally | None = None) -> dict[str, EvalResult]:
+    """Evaluate under each required thinking mode; returns {mode: EvalResult}.
+
+    Modes come from ``eval.thinking`` (auto-detection or operator override).
+    The "on" run lands in ``eval_dir`` (legacy layout); an "off" run goes to a
+    sibling ``<name>_thinking_off`` dir so downstream consumers can pair modes
+    (gate, sinks) instead of mixing two very different score scales.
+    """
+    from .eval.thinking import apply_mode_to_cfg, resolve_thinking_modes
+
+    modes = resolve_thinking_modes(run_cfg.eval, model)
+    if len(modes) > 1:
+        _log.info("thinking-capable model: evaluating BOTH modes (on, off)")
+    results: dict[str, EvalResult] = {}
+    for mode in modes:
+        rcfg = run_cfg.model_copy(update={"eval": apply_mode_to_cfg(run_cfg.eval, mode)})
+        d = eval_dir if mode == "on" else eval_dir.with_name(eval_dir.name + "_thinking_off")
+        phase = phase_name if mode == "on" else f"{phase_name}_thinking_off"
+        results[mode] = _run_evaluate(rcfg, model, d, out_dir, num_gpus, knowledge,
+                                      run_id, phase_name=phase, heal=heal)
+        write_accuracy_json(results[mode], d)
+        if len(modes) > 1:
+            _log.info("thinking mode=%s done -> %s", mode, d)
+    return results
+
+
 def _resolve_model(run_cfg: RunConfig, out_dir: Path, num_gpus: int, knowledge=None,
                    run_id: str = "", heal: HealTally | None = None):
     """Resolve the evaluation target via the configured model provider.
@@ -363,15 +392,18 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path) -> ProcessState:
 
     try:
         # ── optional bf16 baseline evaluation ────────────────────────────────
+        baseline_modes: dict[str, EvalResult] = {}
         if run_cfg.eval.baseline:
             _log.info("== baseline eval (bf16) ==")
             base_dir = out_dir / "baseline"
-            baseline = _run_evaluate(run_cfg, run_cfg.model, base_dir, out_dir,
-                                     num_gpus, knowledge, run_id,
-                                     phase_name="baseline", heal=heal)
-            write_accuracy_json(baseline, base_dir)
-            _dispatch_sinks(run_cfg, base_dir, RunMeta(
-                model=run_cfg.model, artifact_name=_artifact_name(run_cfg, "baseline")))
+            baseline_modes = _run_evaluate_modes(
+                run_cfg, run_cfg.model, base_dir, out_dir, num_gpus, knowledge,
+                run_id, phase_name="baseline", heal=heal)
+            for mode in baseline_modes:
+                d = base_dir if mode == "on" else base_dir.with_name("baseline_thinking_off")
+                _dispatch_sinks(run_cfg, d, RunMeta(
+                    model=run_cfg.model, artifact_name=_artifact_name(run_cfg, "baseline")))
+        baseline = baseline_modes.get("on")
 
         # ── resolve the eval target (provider: pretrained|quantize|endpoint) ──
         resolved = _resolve_model(run_cfg, out_dir, num_gpus, knowledge, run_id,
@@ -380,19 +412,28 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path) -> ProcessState:
 
         # ── evaluation of the (provided) model ───────────────────────────────
         _log.info("== evaluate ==")
-        result = _run_evaluate(run_cfg, eval_model, eval_dir, out_dir, num_gpus,
-                               knowledge, run_id, heal=heal)
-        write_accuracy_json(result, eval_dir)
+        eval_modes = _run_evaluate_modes(run_cfg, eval_model, eval_dir, out_dir,
+                                         num_gpus, knowledge, run_id, heal=heal)
+        result = eval_modes.get("on") or next(iter(eval_modes.values()))
 
-        # ── gate ─────────────────────────────────────────────────────────────
+        # ── gate (paired per thinking mode; worst verdict wins) ──────────────
         gate_verdict: str | None = None
         if run_cfg.gate is not None:
-            decision = evaluate_gate(result, baseline, run_cfg.gate)
-            gate_verdict = decision.verdict
+            rank = {"GO": 0, "INCONCLUSIVE": 1, "NO-GO": 2}
+            per_mode: dict[str, dict] = {}
+            reasons: list[str] = []
+            overall = "GO"
+            for mode, qres in eval_modes.items():
+                dec = evaluate_gate(qres, baseline_modes.get(mode), run_cfg.gate)
+                per_mode[mode] = {"verdict": dec.verdict, "reasons": dec.reasons}
+                reasons.extend(f"[{mode}] {r}" for r in dec.reasons)
+                if rank[dec.verdict] > rank[overall]:
+                    overall = dec.verdict
+            gate_verdict = overall
             (out_dir / "gate.json").write_text(
-                __import__("json").dumps({"verdict": decision.verdict, "reasons": decision.reasons},
-                                         indent=2))
-            _log.info("gate: %s (%s)", decision.verdict, "; ".join(decision.reasons))
+                __import__("json").dumps({"verdict": overall, "reasons": reasons,
+                                          "modes": per_mode}, indent=2))
+            _log.info("gate: %s (%s)", overall, "; ".join(reasons))
 
         results = {n: b.score for n, b in result.benchmarks.items()}
 

@@ -204,6 +204,8 @@ def _rel(module_key: str) -> str:
 
 def _hf_config(model_id: str, revision: str, token: str | None,
                filename: str = "config.json") -> dict:
+    if Path(model_id).is_dir():
+        return json.loads((Path(model_id) / filename).read_text())
     from huggingface_hub import hf_hub_download
     path = hf_hub_download(model_id, filename, revision=revision, token=token)
     return json.loads(Path(path).read_text())
@@ -211,6 +213,8 @@ def _hf_config(model_id: str, revision: str, token: str | None,
 
 def _has_model_index(model_id: str, revision: str, token: str | None) -> bool:
     """True when the repo carries a diffusers ``model_index.json`` (diffusion pipeline)."""
+    if Path(model_id).is_dir():
+        return (Path(model_id) / "model_index.json").is_file()
     from huggingface_hub import hf_hub_download
     try:
         from huggingface_hub.utils import EntryNotFoundError
@@ -230,6 +234,20 @@ def _tensor_names(model_id: str, revision: str, token: str | None, *,
                   index_file: str = "model.safetensors.index.json",
                   single_file: str = "model.safetensors") -> list[str]:
     """Tensor names from the safetensors index (no weights); fall back to a header read."""
+    if Path(model_id).is_dir():
+        idx = Path(model_id) / index_file
+        if idx.is_file():
+            return sorted(json.loads(idx.read_text()).get("weight_map", {}).keys())
+        names: list[str] = []
+        for shard in sorted(Path(model_id).glob("*.safetensors")):
+            try:
+                with open(shard, "rb") as fh:
+                    (n,) = struct.unpack("<Q", fh.read(8))
+                    header = json.loads(fh.read(n))
+                names.extend(k for k in header if k != "__metadata__")
+            except Exception:  # noqa: BLE001 - skip unreadable shard
+                continue
+        return sorted(names)
     from huggingface_hub import hf_hub_download
     try:
         from huggingface_hub.utils import EntryNotFoundError
@@ -604,6 +622,13 @@ def build_quant_constraints(quant_cfg: QuantConfig) -> list[QuantConstraint]:
     if "quant_lm_head" in setf and quant_cfg.quant_lm_head:
         cons.append(QuantConstraint(
             "MUST pass `--quant_lm_head`", "--quant_lm_head", "present"))
+    if "static_kv_fp8" in setf and quant_cfg.static_kv_fp8:
+        cons.append(QuantConstraint(
+            "MUST pass `--static_kv_dtype fp8`", "--static_kv_dtype", "value", "fp8"))
+    if "static_attention_fp8" in setf and quant_cfg.static_attention_fp8:
+        cons.append(QuantConstraint(
+            "MUST pass `--static_attention_dtype fp8`",
+            "--static_attention_dtype", "value", "fp8"))
     return cons
 
 

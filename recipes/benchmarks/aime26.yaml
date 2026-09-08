@@ -1,0 +1,14 @@
+# aime26: AIME 2026 (30 problems, 0-shot, accuracy).
+#
+# Reasoning benchmark routed to the evalscope harness — the harness owns the
+# vllm-serve lifecycle and scores via EvalScope's report json. Generation is
+# long-form (default max_tokens 30000 in the harness); judge-free rule grading
+# extracts \boxed{} answers.
+name: aime26
+harness: evalscope
+type: generative
+
+scoring:
+  metric: "accuracy"
+
+description: AIME 2026 competition math (evalscope, 0-shot, avg over repeats).

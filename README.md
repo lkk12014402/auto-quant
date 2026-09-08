@@ -162,7 +162,7 @@ provider: { type: endpoint, base_url: http://host:8000/v1, served_model: org/m,
 **Backward compatible.** Older quant-centric configs that put `quant:` at the top
 level keep working unchanged — the loader folds a top-level `quant:` into
 `provider: {type: quantize, quant: {...}}`, and `run_cfg.quant` still returns the
-quantize provider's config. `examples/run_5000.yaml` runs as before. Add your own
+quantize provider's config. `examples/ssh_docker/run_5000.yaml` runs as before. Add your own
 provider via the `aqa.providers` entry-point group.
 
 ### Customizing the quantization algorithm
@@ -232,7 +232,7 @@ executor:
 - **xpu** → `vllm/vllm-openai-xpu` base + `/dev/dri` passthrough, `--privileged`,
   `ZE_AFFINITY_MASK=<ids>`, `VLLM_WORKER_MULTIPROC_METHOD=spawn`. The base image
   already ships `vllm-xpu`, so aqa does **not** reinstall CUDA `vllm` (only
-  `auto-round` + `lm-eval` on top). See `examples/run_b60_xpu.yaml`.
+  `auto-round` + `lm-eval` on top). See `examples/ssh_docker/run_b60_xpu.yaml`.
 
 `image.dockerfile: local` builds the accelerator-appropriate shipped Dockerfile —
 `docker/gpu.dockerfile` (NGC) for CUDA, `docker/xpu.dockerfile` (Intel base) for

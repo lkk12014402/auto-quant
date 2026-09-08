@@ -47,6 +47,10 @@ def build_autoround_command(
         cmd += ["--nsamples", str(cfg.nsamples)]
     if cfg.quant_lm_head:
         cmd.append("--quant_lm_head")
+    if cfg.static_kv_fp8:
+        cmd += ["--static_kv_dtype", "fp8"]
+    if cfg.static_attention_fp8:
+        cmd += ["--static_attention_dtype", "fp8"]
     if cfg.ignore_layers:
         cmd += ["--ignore_layers", cfg.ignore_layers]
     if cfg.layer_config:

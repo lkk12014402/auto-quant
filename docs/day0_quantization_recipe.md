@@ -3,7 +3,7 @@
 > 适用场景：新发布的模型架构，HF transformers / 官方 vllm release / auto-round
 > 三者之一或全部尚未支持。本文是**通用方法论**（怎么查、怎么判、怎么做、怎么沉淀），
 > 附录 A/B 是两个实证案例（Qwen3.8-Flash-Next、GLM-5.3-Flash）的完整记录。
-> 与正常量化路径的区别：正常路径（如 `examples/run_5000_qwen3.8_27B.yaml`）假设
+> 与正常量化路径的区别：正常路径（如 `examples/ssh_docker/run_5000_qwen3.8_27B.yaml`）假设
 > 三件套都认这个模型，直接进量化+评估；day-0 要先花小成本确认"谁不认、怎么补"。
 
 ## 0. 先判定：到底谁不支持（分钟级，不下载权重）
@@ -205,7 +205,7 @@ HF dataset）在内层 run 里统一发生，与载体无关；secrets 经 `coll
 - auto-round 补丁：`patches/autoround_qwen4exp_fixes.patch`（resolver group_size + device.py Embedding 散布；应用方式见 `patches/README.md`）。
 - aqa 改动：本仓 `multi-modal` 分支的三笔 commit（provider 嵌套解析、config 结构恢复、导出修复、测试）。
 - PLE 分片修复脚本：`/tmp/repair_ple_shards.py`；推理冒烟脚本：`scripts/smoke_vllm.py`。
-- 运行 yaml：`examples/run_qwen38_flash_next_docker.yaml`（RTN）、`run_qwen38_flash_next_tuning.yaml`（调优）、`eval_qwen38_flash_next_tuned.yaml`（纯评估）。
+- 运行 yaml：`examples/local_docker/run_qwen38_flash_next_docker.yaml`（RTN）、`run_qwen38_flash_next_tuning.yaml`（调优）、`eval_qwen38_flash_next_tuned.yaml`（纯评估）。
 - 产物：`aqa_results/qwen38_flash_next_w4a16_docker/`（RTN）、`qwen38_flash_next_w4a16_tuning/`（调优量化）、`qwen38_flash_next_tuning_eval/`（调优评估）。
 
 ---
@@ -253,7 +253,7 @@ hyper-connection；MTP；多模态；原生 FP8）。量化源 = **官方 BF16 �
 ## B.4 激进 RTN（FP8 范围对齐）线
 
 动机：官方 FP8 版量化了 attn 以外的更多模块，验证"跟着 FP8 范围量化 W4"是否可行。
-yaml：`examples/run_glm53_flash_w4a16_rtn_fp8aligned.yaml`。
+yaml：`examples/local_docker/run_glm53_flash_w4a16_rtn_fp8aligned.yaml`。
 
 - 子串陷阱的两个锚定修法（实证）：`mlp.gate.`（尾点）保护路由器但不挡 dense
   `gate_proj`；`self_attn.b_proj`（锚定）保护 KDA 的 b_proj 但不挡稀疏层 `q_b_proj`。
@@ -295,7 +295,7 @@ yaml：`examples/run_glm53_flash_w4a16_rtn_fp8aligned.yaml`。
 ## B.6 产物与补丁归档
 
 - pinned recipe：`recipes/quant/zai-org__GLM-5.3-Flash.json`；
-- 运行 yaml：`examples/run_glm53_flash_w4a16_rtn.yaml`（保守 RTN）、
+- 运行 yaml：`examples/local_docker/run_glm53_flash_w4a16_rtn.yaml`（保守 RTN）、
   `run_glm53_flash_w4a16_rtn_fp8aligned.yaml`（激进 RTN）、
   `run_glm53_flash_w4a16_tuning.yaml`（调优 iters=200）、
   `eval_glm53_rtn_verify.yaml` / `eval_glm53_fp8aligned_verify.yaml` /

@@ -39,7 +39,8 @@ def _make_harness(name: str, cfg: EvalConfig, num_gpus: int):
     if name == "diffusion":
         return HARNESSES.create(name, limit=cfg.limit, **cfg.diffusion.model_dump())
     if name == "evalscope":
-        return HARNESSES.create(name, **cfg.evalscope)
+        return HARNESSES.create(
+            name, **({"num_gpus": num_gpus, "limit": cfg.limit} | cfg.evalscope))
     return HARNESSES.create(name)
 
 

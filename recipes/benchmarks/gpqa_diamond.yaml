@@ -1,20 +1,12 @@
-# GPQA-Diamond: graduate-level, Google-proof science multiple-choice.
+# gpqa_diamond: graduate-level Google-proof Q&A, diamond subset (198 questions).
 #
-# NEL's Nemotron instruct suite runs GPQA-Diamond. lm_eval ships several GPQA
-# variants; the zero-shot CoT generative form is closest to NEL's setup. If your
-# installed lm_eval names the task differently, override `lm_eval_task`.
+# 0-shot multiple choice via the evalscope harness; EvalScope shuffles the
+# options per question. Answers are read from the final "ANSWER: X" line.
 name: gpqa_diamond
-harness: lm_eval
-lm_eval_task: gpqa_diamond_cot_zeroshot
+harness: evalscope
 type: generative
 
-apply_chat_template: true
-fewshot_as_multiturn: false
-num_fewshot: 0
-gen_kwargs: { max_gen_toks: 2048 }
-
 scoring:
-  metric: "exact_match,none"
-  prefer: ["exact_match,none", "acc,none"]
+  metric: "accuracy"
 
-description: Graduate-level Google-proof science QA (Diamond split, zero-shot CoT).
+description: GPQA diamond subset (evalscope, 0-shot MCQ, shuffled options).

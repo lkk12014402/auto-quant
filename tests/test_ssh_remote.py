@@ -105,7 +105,8 @@ def test_container_packages_includes_vllm_for_vllm_backend():
     assert "vllm" in pkgs
     assert "auto-round" in pkgs and "lm-eval" in pkgs
     boot = build_container_bootstrap(cfg)
-    assert "pip install vllm" in boot
+    assert "_pkg_install vllm" in boot
+    assert "uv pip install --system" in boot  # uv preferred, pip fallback
     assert "PIP_BREAK_SYSTEM_PACKAGES=1" in boot
 
 

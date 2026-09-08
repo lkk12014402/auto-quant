@@ -29,11 +29,138 @@ def main() -> None:
 
 @main.command()
 @click.argument("config", type=click.Path(exists=True, dir_okay=False))
+@click.option("--only", default=None,
+              help="Comma-separated candidate names to run (default: all).")
+@click.option("--dry-run", is_flag=True,
+              help="Print the candidate plans + quant commands without executing.")
+def sweep(config: str, only: str | None, dry_run: bool) -> None:
+    """Run multiple quantization candidates (quant.recipe_sweep) and compare.
+
+    Each candidate runs as a full derived pipeline in its own subdirectory
+    (<output.dir>/<candidate>); the bf16 baseline is evaluated once (first
+    candidate) and reused for the comparison table.  A failing candidate is
+    recorded and does not abort the rest of the sweep.
+    """
+    from .agent.optimize import analyze_model
+    from .quantize import build_autoround_command
+    from .quantize.candidates import apply_candidate, resolve_candidates
+
+    cfg = load_run_config(config)
+    if not (cfg.quant and cfg.quant.recipe_sweep):
+        raise click.ClickException(
+            "quant.recipe_sweep is not enabled in this yaml; set `quant.recipe_sweep: true`")
+
+    analysis = analyze_model(cfg.model)
+    if not analysis.ok:
+        raise click.ClickException(f"model structure analysis failed: {analysis.error}")
+    candidates = resolve_candidates(analysis, cfg.quant)
+    if only:
+        wanted = {n.strip() for n in only.split(",") if n.strip()}
+        unknown = wanted - {c.name for c in candidates}
+        if unknown:
+            raise click.ClickException(
+                f"unknown candidate(s) {sorted(unknown)}; available: {[c.name for c in candidates]}")
+        candidates = [c for c in candidates if c.name in wanted]
+
+    base_dir = Path(cfg.output.dir)
+    num_gpus = cfg.executor.num_gpus or 1
+    plan_rows: list[dict] = []
+    for cand in candidates:
+        qcfg = apply_candidate(cfg.quant, cand)
+        cmd = build_autoround_command(cfg.model, qcfg, base_dir / cand.name / "quantized",
+                                      num_gpus=num_gpus)
+        plan_rows.append({"name": cand.name, "rationale": cand.rationale,
+                          "quant": qcfg.model_dump(exclude_none=True), "command": cmd})
+    if dry_run:
+        for row in plan_rows:
+            click.echo(f"== {row['name']}: {row['rationale']}")
+            click.echo(f"   {' '.join(row['command'])}")
+        return
+
+    click.echo(f"sweep: {len(candidates)} candidate(s) for {cfg.model} -> {base_dir}")
+    executor = EXECUTORS.create(cfg.executor.type, **cfg.executor.options)
+    report: dict = {"model": cfg.model, "base_dir": str(base_dir),
+                    "candidates": []}
+    baseline_scores: dict | None = None
+    for i, (cand, row) in enumerate(zip(candidates, plan_rows)):
+        qcfg = apply_candidate(cfg.quant, cand).model_copy(
+            update={"recipe_sweep": False, "recipe_sweep_candidates": None})
+        eval_cfg = cfg.eval if (i == 0 or not cfg.eval.baseline) \
+            else cfg.eval.model_copy(update={"baseline": False})
+        if cand.eval_model_args:
+            lm_opts = eval_cfg.lm_eval.model_copy(update={
+                "model_args": {**eval_cfg.lm_eval.model_args, **cand.eval_model_args}})
+            eval_cfg = eval_cfg.model_copy(update={"lm_eval": lm_opts})
+        out_cfg = cfg.output.model_copy(update={"dir": str(base_dir / cand.name)})
+        rcfg = cfg.model_copy(update={"quant": qcfg, "eval": eval_cfg, "output": out_cfg})
+        click.echo(f"\n===== [{i + 1}/{len(candidates)}] {cand.name}: {cand.rationale}")
+        entry: dict = {"name": cand.name, "rationale": cand.rationale,
+                       "command": row["command"], "output_dir": str(base_dir / cand.name)}
+        try:
+            result = executor.run(rcfg)
+            entry["state"] = result.state.value
+        except Exception as exc:  # noqa: BLE001 - one failure must not kill the sweep
+            _log.warning("candidate %s failed: %s", cand.name, exc)
+            entry["state"] = f"failed: {exc}"
+        scores = _read_scores(base_dir / cand.name / "eval" / "accuracy.json")
+        entry["scores"] = scores
+        if i == 0 and cfg.eval.baseline:
+            baseline_scores = _read_scores(base_dir / cand.name / "baseline" / "accuracy.json")
+        report["candidates"].append(entry)
+    report["baseline"] = baseline_scores
+    (base_dir / "sweep_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    _print_sweep_table(report)
+    click.echo(f"\nsweep report -> {base_dir / 'sweep_report.json'}")
+
+
+def _read_scores(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return {k: v.get("score") for k, v in (data.get("results") or {}).items()}
+
+
+def _print_sweep_table(report: dict) -> None:
+    benches: list[str] = sorted(
+        {b for c in report["candidates"] for b in (c.get("scores") or {})})
+    if not benches:
+        click.echo("\n(no benchmark scores collected)")
+        return
+    header = f"{'benchmark':<14}{'baseline':>10}" + "".join(
+        f"{c['name']:>14}" for c in report["candidates"])
+    click.echo("\n" + header)
+    for b in benches:
+        row = f"{b:<14}"
+        base = (report.get("baseline") or {}).get(b)
+        row += f"{base:>10.4f}" if isinstance(base, float) else f"{'-':>10}"
+        for c in report["candidates"]:
+            s = (c.get("scores") or {}).get(b)
+            row += f"{s:>14.4f}" if isinstance(s, float) else f"{'-':>14}"
+        click.echo(row)
+
+
+@main.command()
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False))
+def inspect(run_dir: str) -> None:
+    """Validate a run output directory against the artifact layout contract
+    (aqa/report/layout.yaml) and print what is present / missing."""
+    from .report.layout import format_report, inspect_run_dir
+
+    click.echo(format_report(inspect_run_dir(run_dir)))
+
+
+@main.command()
+@click.argument("config", type=click.Path(exists=True, dir_okay=False))
 @click.option("--dry-run", is_flag=True, help="Validate and print the plan without executing.")
 @click.option("--resume", is_flag=True, help="Resume an interrupted run if detected.")
 def run(config: str, dry_run: bool, resume: bool) -> None:
     """Run a full quantize -> evaluate -> gate pipeline from a run.yaml."""
     cfg = load_run_config(config)
+    if cfg.quant and cfg.quant.recipe_sweep:
+        raise click.ClickException(
+            "this yaml enables quant.recipe_sweep; run it with `aqa sweep <yaml>` "
+            "(multi-candidate orchestration), not `aqa run`")
     executor = EXECUTORS.create(cfg.executor.type, **cfg.executor.options)
     result = executor.run(cfg, dry_run=dry_run, resume=resume)
     click.echo(f"state={result.state.value} output={result.output_dir}")
@@ -285,10 +412,15 @@ def list_cmd(what: str) -> None:
 def eval(config: str, out: str) -> None:
     """Evaluate a model (no quantization) from a run.yaml, locally in-process."""
     from .eval.runner import run_evaluation
+    from .eval.thinking import apply_mode_to_cfg, resolve_thinking_modes
 
     cfg = load_run_config(config)
-    result = run_evaluation(cfg.model, cfg.eval, Path(out))
-    click.echo(json.dumps(result.to_dict(), indent=2))
+    out_dir = Path(out)
+    for mode in resolve_thinking_modes(cfg.eval, cfg.model):
+        cmode = apply_mode_to_cfg(cfg.eval, mode)
+        result = run_evaluation(cfg.model, cmode, out_dir if mode == "on"
+                                else out_dir.with_name(out_dir.name + "_thinking_off"))
+        click.echo(json.dumps(result.to_dict(), indent=2))
 
 
 @main.command()

@@ -1,5 +1,5 @@
 # Remote run over (optionally multi-hop) SSH. Secrets come ONLY from env vars.
-_base_: run.yaml
+_base_: ../run.yaml
 executor:
   type: ssh
   image:

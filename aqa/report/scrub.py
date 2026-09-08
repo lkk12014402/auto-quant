@@ -32,7 +32,9 @@ EXCLUDED_SUFFIXES = {
 
 SECRET_PATTERNS = (
     re.compile(r"hf_[A-Za-z0-9]{20,}"),
-    re.compile(r"(?:ghp|github_pat)_[A-Za-z0-9_]{20,}"),
+    # GitHub token family: ghp_ (personal), gho_ (OAuth), ghu_ (user-to-server),
+    # ghs_ (server-to-server), ghr_ (refresh), github_pat_ (fine-grained).
+    re.compile(r"(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}"),
     re.compile(r"glpat-[A-Za-z0-9_\-]{15,}"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"),

@@ -39,7 +39,7 @@ def test_base_inheritance_and_examples():
     assert cfg.eval.baseline is True
     # run_ssh.yaml inherits run.yaml via _base_ and overrides executor
     os.environ.setdefault("GPU_SSH_PASS", "x")
-    ssh_cfg = load_run_config(os.path.join(EXAMPLES, "run_ssh.yaml"))
+    ssh_cfg = load_run_config(os.path.join(EXAMPLES, "ssh_docker", "run_ssh.yaml"))
     assert ssh_cfg.executor.type == "ssh"
     assert ssh_cfg.quant.scheme == "MXFP4"  # inherited from base
     assert ssh_cfg.executor.ssh.gpus == "0,1,2,3"

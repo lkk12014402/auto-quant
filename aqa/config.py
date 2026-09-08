@@ -62,6 +62,19 @@ class QuantConfig(BaseModel):
     # visible cards), else auto-round's single-device default. Set explicitly
     # (e.g. ``"auto"`` / ``"0,1"``) to override the automatic choice.
     device_map: str | None = None
+    # Static KV-cache FP8 (``--static_kv_dtype fp8``) and static FP8 attention
+    # (``--static_attention_dtype fp8``). Both measure static scales from
+    # calibration data, so they only apply to the calibration path
+    # (method="autoround"); model_free never runs the model.
+    static_kv_fp8: bool = False
+    static_attention_fp8: bool = False
+    # Multi-recipe sweep (`aqa sweep`): explore several candidate plans instead
+    # of a single quantization. ``True`` uses the built-in candidate set derived
+    # from the model's structure (conservative/aggressive/mixed/tuning);
+    # ``recipe_sweep_candidates`` replaces it with an explicit list of
+    # {name, description?, <any QuantConfig field>} entries.
+    recipe_sweep: bool = False
+    recipe_sweep_candidates: list[dict[str, Any]] | None = None
     extra_args: list[str] = Field(default_factory=list)
 
     _ALG_TOKENS = {
@@ -123,6 +136,15 @@ class QuantConfig(BaseModel):
                 "enable_alg_ext (auto-round v2) only applies to the auto_round "
                 "algorithm; add 'auto_round' to `algorithm` or drop enable_alg_ext"
             )
+        if self.method == "model_free" and (self.static_kv_fp8 or self.static_attention_fp8):
+            raise ValueError(
+                "static_kv_fp8 / static_attention_fp8 need calibration (static "
+                "scales are measured from data); set method='autoround' to use them"
+            )
+        if self.recipe_sweep_candidates and not self.recipe_sweep:
+            raise ValueError(
+                "recipe_sweep_candidates is set but recipe_sweep is false; "
+                "set recipe_sweep: true and run with `aqa sweep`")
         return self
 
 
@@ -238,6 +260,18 @@ class EvalConfig(BaseModel):
     limit: int | None = None  # cap samples per benchmark (smoke runs)
     generative_tasks: list[str] = Field(default_factory=lambda: ["gsm8k"])
     gen_max_toks: int = 2048
+
+    # Thinking-mode evaluation. Reasoning models (qwen3, glm, ...) answer very
+    # differently with chain-of-thought on vs off, so both settings may need
+    # measuring. ``auto`` (default) detects a thinking-capable model from its
+    # chat template (`enable_thinking` switch) and runs BOTH modes when found —
+    # single run otherwise (identical to legacy behavior). ``both`` forces the
+    # dual run, ``on``/``off`` force a single mode. ``thinking_off_model_args``
+    # is merged into the backend's model_args for the "off" run; override it
+    # for models whose disable-switch differs from qwen-style enable_thinking.
+    thinking: Literal["auto", "both", "on", "off"] = "auto"
+    thinking_off_model_args: dict[str, Any] = Field(
+        default_factory=lambda: {"enable_thinking": False})
 
     # Per-harness option blocks (differentiate the eval methods under `eval`).
     lm_eval: LmEvalOptions = Field(default_factory=LmEvalOptions)

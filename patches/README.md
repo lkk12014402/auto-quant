@@ -2,11 +2,35 @@
 
 `autoround_qwen4exp_fixes.patch` — two fixes against auto-round main @ `bd9a13ce`
 (0.15.0-dev), required for the tuning path on `qwen4_exp` (Qwen3.8-Flash-Next).
+
+## ⚠️ 两种文件布局，先确认再打（打错 = 量化静默失效）
+
+`apply_plan_to_model` 在代码库里有两种位置，**内容逐字节相同、路径不同**：
+
+| 代码基线 | 文件路径 | 用哪份 patch |
+|---|---|---|
+| intel/auto-round 上游 main（≥ #2013，2026-08-04）/ v0.15.0+ | `auto_round/compressors/layer_config/resolver.py` | `autoround_qwen4exp_fixes.patch` |
+| fork `lkk12014402/auto-round` main / B300 day-0 集成分支（扁平布局） | `auto_round/compressors/layer_config_resolver.py` | `autoround_qwen4exp_fixes_flat_layout.patch` |
+
+确认方法：`ls auto_round/compressors/layer_config_resolver.py` 存在即为扁平布局。
+
+**绝对不要手工把 patch 移植到别的版本上**——B300 出过一次事故：手工改的
+`_should_strip_scheme_attrs` 版本把专家 Linear 的 scheme 属性剥错 → 量化静默跳过
+全部专家 → FP8 导出 = 原样 bf16（360GB 而非 240GB），不报错、不警告。
+打错基线（≤0.14.x）同理：那些版本连融合 MoE 拆解（#2072）都没有，请直接升级
+≥0.15.0，不要 backport。
+
+**每次量化后必做 sanity check**（30 秒，能抓住所有静默失效）：
+输出目录体积 ≈ 预期（W4A16≈181G / FP8≈240G / bf16 全量 360G），且 safetensors 里
+`experts.*.weight` 的 dtype 是 int32 packed（W4A16）或 F8_E4M3（FP8）。
+
 Apply inside the auto-round repo:
 
 ```bash
 cd <auto-round repo>
-git apply /path/to/autoround_qwen4exp_fixes.patch
+git apply /path/to/autoround_qwen4exp_fixes.patch            # 上游布局
+# 或
+git apply /path/to/autoround_qwen4exp_fixes_flat_layout.patch # 扁平布局（fork/B300）
 pip wheel . --no-deps -w /tmp/wheels   # container 无 git，源码直装会挂在 setup.py 的 git describe
 ```
 

@@ -1,0 +1,82 @@
+# Qwen3-30B-A3B-Instruct-2507 — 三档混合量化 sweep（复刻 quant_30B.md 的手工流程）
+#
+# 变体对照：
+#   mixed_mxfp4e_mxfp8 = 手工档 1（--model_free --scheme MXFP8 + 专家 MXFP4）
+#   fp8kv              = 手工档 2（+ --static_kv_dtype fp8；校准路径 iters 0）
+#   fp8kv_fp8attn      = 手工档 3（+ --static_attention_dtype fp8）
+#
+# 运行（local venv + copilot 作为 owner agent 驱动）：
+#   source env.sh
+#   export AR_MODEL_FREE_SHARD_PARALLELISM=1   # model_free 分档的分片并发限流（手工同款）
+#   aqa sweep examples/local_venv/run_qwen3_30b_a3b_sweep.yaml --dry-run   # owner 先审命令
+#   aqa sweep examples/local_venv/run_qwen3_30b_a3b_sweep.yaml
+# 完成后：aqa inspect <output.dir>/<candidate>；对比表见 <output.dir>/sweep_report.json
+
+model: /models/Qwen3-30B-A3B-Instruct-2507   # 本地无此路径则改 HF id：Qwen/Qwen3-30B-A3B-Instruct-2507
+
+quant:
+  scheme: MXFP8            # 候选档会各自覆盖；这里只是兜底默认
+  method: model_free
+  export_format: llm_compressor
+  recipe_sweep: true
+  recipe_sweep_candidates:
+    - name: mixed_mxfp4e_mxfp8
+      description: 手工档1：MXFP8 主体 + 路由专家 MXFP4（model_free 免校准）
+      scheme: MXFP8
+      method: model_free
+      ignore_layers: "lm_head,embed_tokens,mlp.gate"
+      layer_config: {mlp.experts: {bits: 4, data_type: mx_fp}}
+    - name: fp8kv
+      description: 手工档2：档1 + 静态 FP8 KV cache（校准路径，iters=0 即 RTN 权重）
+      scheme: MXFP8
+      method: autoround          # static_kv_fp8 需校准，schema 禁止 model_free
+      iters: 0
+      static_kv_fp8: true        # --static_kv_dtype fp8
+      ignore_layers: "lm_head,embed_tokens,mlp.gate"
+      layer_config: {mlp.experts: {bits: 4, data_type: mx_fp}}
+      eval_model_args: {kv_cache_dtype: fp8}   # 仅本档评估时带 FP8 KV
+    - name: fp8kv_fp8attn
+      description: 手工档3：档2 + 静态 FP8 attention
+      scheme: MXFP8
+      method: autoround
+      iters: 0
+      static_kv_fp8: true
+      static_attention_fp8: true  # --static_attention_dtype fp8
+      ignore_layers: "lm_head,embed_tokens,mlp.gate"
+      layer_config: {mlp.experts: {bits: 4, data_type: mx_fp}}
+      eval_model_args: {kv_cache_dtype: fp8}
+
+provider:
+  type: quantize
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag]   # gsm8k recipe 默认即 5-shot/chat_template/batch64，与手工一致
+  batch_size: "64"
+  baseline: false              # 手工流程未测 bf16 基线；要算保持率就改 true（首个候选测一次）
+  thinking: auto               # Instruct-2507 模板无 enable_thinking 开关 → 自动单模式
+  lm_eval:
+    model_args:                # 与手工 MODEL_ARGS 对齐（TP1 由 executor.num_gpus 决定）
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.6
+
+executor:
+  type: local
+  num_gpus: 1                  # 手工为每档各用 1 卡；sweep 串行执行，单卡足够
+  env:
+    type: venv
+    path: ~/.venv-qwen30b      # owner 侧先行创建或由 aqa provision（create: true）
+    create: true
+    packages: auto             # 推导安装 auto-round + lm-eval + vllm（backend=vllm）
+
+output:
+  dir: ./results/qwen3_30b_a3b_sweep
+  unique_dir: true             # 时间戳子目录 + latest 软链
+  sinks:
+    - type: local_fs
+# 需要回传 HF dataset 时追加（配合 env.sh 的 LOCAL_RESULTS_*）：
+#    - type: hf_dataset
+#      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+#      token_env: LOCAL_RESULTS_HF_TOKEN

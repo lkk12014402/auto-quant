@@ -283,10 +283,28 @@ def container_packages(run_cfg: RunConfig) -> list[str]:
     elif run_cfg.eval.backend in ("vllm", "vllm_xpu") and _accelerator(run_cfg) != "xpu":
         pkgs.append("vllm")
     pkgs += ["auto-round", "lm-eval"]
+    if _needs_evalscope(run_cfg):
+        # evalscope harness serves the model itself with vllm serve.
+        pkgs += ["evalscope"]
+        if "vllm" not in pkgs and _accelerator(run_cfg) != "xpu":
+            pkgs.append("vllm")
     for extra in run_cfg.executor.image.pip_install:
         if extra and extra not in pkgs:
             pkgs.append(extra)
     return pkgs
+
+
+def _needs_evalscope(run_cfg: RunConfig) -> bool:
+    """True when any requested benchmark routes to the evalscope harness."""
+    if run_cfg.eval.harness == "evalscope":
+        return True
+    try:
+        from ..eval.registry import BenchmarkRegistry
+
+        reg = BenchmarkRegistry()
+        return any(reg.get(b).harness == "evalscope" for b in run_cfg.eval.benchmarks)
+    except Exception:  # noqa: BLE001 - missing recipe files must not break env build
+        return False
 
 
 def _agent_enabled(run_cfg: RunConfig) -> bool:
@@ -371,14 +389,21 @@ cd {CONTAINER_REPO}
 
 export PIP_BREAK_SYSTEM_PACKAGES=1 PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# Prefer uv (the docker images ship it for exactly this); fall back to pip.
+if command -v uv >/dev/null 2>&1; then
+    _pkg_install() {{ uv pip install --system --break-system-packages "$@"; }}
+else
+    _pkg_install() {{ pip install "$@"; }}
+fi
+
 echo "== container: install aqa (editable) =="
-if ! pip install -e . ; then
+if ! _pkg_install -e . ; then
     echo "[bootstrap] FATAL: failed to install aqa" >&2
     exit 1
 fi
 
 echo "== container: install quant/eval stack: {pkgs} =="
-pip install {pkgs} \\
+_pkg_install {pkgs} \\
     || echo "[bootstrap] WARN: stack install had errors; continuing (agent-fix may repair env)"
 {agent_step}
 echo "== container: environment =="
