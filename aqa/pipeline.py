@@ -136,10 +136,15 @@ def _make_run_id(run_cfg: RunConfig) -> str:
 
 
 def _artifact_name(run_cfg: RunConfig, suffix: str) -> str:
-    short = run_cfg.model.split("/")[-1]
-    if run_cfg.quant and suffix == "quant":
-        return f"{short}-AutoRound-{run_cfg.quant.scheme}-{run_cfg.quant.method}"
-    return f"{short}-BF16-Baseline"
+    from .report.names import canonical_artifact_name
+
+    if suffix == "sweep":
+        short = run_cfg.model.split("/")[-1]
+        return f"{short}-AutoRound-sweep"
+    if suffix == "baseline":
+        short = run_cfg.model.split("/")[-1]
+        return f"{short}-BF16-Baseline"
+    return canonical_artifact_name(run_cfg)
 
 
 def _dispatch_sinks(run_cfg: RunConfig, run_dir: Path, meta: RunMeta) -> None:
@@ -173,6 +178,7 @@ def _optimized_command(run_cfg: RunConfig, quant_dir: Path, out_dir: Path) -> st
             user_context=run_cfg.agent.context or "",
             constraints=build_quant_constraints(run_cfg.quant),
             log_dir=out_dir / "logs" / "agent_optimize",
+            use_synced_references=run_cfg.agent.knowledge.use_references,
         )
     except Exception as exc:  # noqa: BLE001 - optimize can only help, never block
         # An exception here is always unexpected (a legitimate "no usable
@@ -444,6 +450,7 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path) -> ProcessState:
         write_manifest(manifest, out_dir)
 
         _write_terminal_state(out_dir, ProcessState.DONE, run_cfg.model)
+        _sediment_sessions(run_cfg, out_dir, knowledge, run_id)
         _dispatch_sinks(run_cfg, eval_dir, RunMeta(
             model=run_cfg.model,
             scheme=run_cfg.quant.scheme if run_cfg.quant else None,
@@ -465,6 +472,25 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path) -> ProcessState:
                               run_id=run_id, heal=heal)
         _finalize_knowledge(knowledge)
         raise
+
+
+def _sediment_sessions(run_cfg: RunConfig, out_dir: Path, knowledge, run_id: str) -> None:
+    """ATIF-ize this run's agent sessions and push to the dataset's trajectories/.
+
+    Best-effort by design — sedimentation never fails or blocks a run.  Covers
+    fix-loop/optimize sessions (``logs/agent_*/*.events.jsonl``) plus raw
+    backend logs the owner dropped into ``<run_dir>/sessions/``.
+    """
+    if not run_cfg.agent.sediment_sessions:
+        return
+    try:
+        from .agent.session_sediment import sediment_sessions
+
+        staged = sediment_sessions(out_dir, run_id)
+        if staged and knowledge is not None:
+            knowledge.push_sessions(staged[0].parent)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("session sediment failed (non-fatal): %s", exc)
 
 
 def _finalize_knowledge(knowledge) -> None:
@@ -497,6 +523,7 @@ def _writeback_on_failure(run_cfg: RunConfig, out_dir: Path, eval_dir: Path,
     run_dir = eval_dir if eval_dir.exists() else out_dir
     _log.warning("run failed (%s); writing back partial results + status=%s", reason, status)
     _write_terminal_state(out_dir, ProcessState.FAILED, run_cfg.model)
+    _sediment_sessions(run_cfg, out_dir, knowledge, run_id)
     # A failed run still gets a manifest (empty results) so the attempt is auditable.
     try:
         empty = EvalResult(model=run_cfg.model, backend=run_cfg.eval.backend)
@@ -597,6 +624,14 @@ def _maybe_upload_model(run_cfg: RunConfig, resolved, result: EvalResult, out_di
         artifact_name=cfg.repo_name or _artifact_name(run_cfg, "quant"),
         extra={"results": {n: b.score for n, b in result.benchmarks.items()}},
     )
+    # Feed the card's Reproduce & Environment section from the manifest the run
+    # just wrote (actual quant/eval commands + pinned package versions).
+    try:
+        manifest = json.loads((out_dir / "run_manifest.json").read_text())
+        meta.extra["commands"] = manifest.get("commands") or {}
+        meta.extra["versions"] = (manifest.get("environment") or {}).get("packages") or {}
+    except Exception as exc:  # noqa: BLE001 - card details are best-effort
+        _log.debug("model card details unavailable: %s", exc)
     try:
         url = sink.upload(model_dir, meta)
         _log.info("== model uploaded == %s", url)

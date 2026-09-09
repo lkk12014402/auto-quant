@@ -313,7 +313,9 @@ _METHOD_LINKS = {
 }
 
 
-def build_model_card(meta: RunMeta, *, repo_name: str, results: dict[str, float] | None = None) -> str:
+def build_model_card(meta: RunMeta, *, repo_name: str, results: dict[str, float] | None = None,
+                     commands: dict[str, Any] | None = None,
+                     versions: dict[str, str] | None = None) -> str:
     """Render a compact README.md model card for a quantized model repo."""
     base = meta.model or "Unknown"
     scheme = meta.scheme or "Unknown"
@@ -347,6 +349,31 @@ def build_model_card(meta: RunMeta, *, repo_name: str, results: dict[str, float]
     if results:
         lines += ["", "## Evaluation", "", "| Benchmark | Score |", "|---|---|"]
         lines += [f"| {name} | {score:.4f} |" for name, score in sorted(results.items())]
+    if commands or versions:
+        lines += ["", "## Reproduce & Environment", ""]
+        qcmd = (commands or {}).get("quantize")
+        if qcmd:
+            lines += ["Quantized with:", "", "```bash", qcmd, "```", ""]
+        ecmds = (commands or {}).get("evaluate") or []
+        if ecmds:
+            lines += ["Evaluated with:", "", "```bash", *ecmds, "```", ""]
+        if versions:
+            keep = [k for k in ("auto-round", "auto_round", "lm-eval", "lm_eval",
+                                "transformers", "torch", "vllm") if k in versions]
+            seen: set[str] = set()
+            rows = []
+            for k in keep:
+                canon = k.replace("_", "-").lower()
+                if canon in seen:
+                    continue
+                seen.add(canon)
+                rows.append(f"| {k} | {versions[k]} |")
+            if rows:
+                lines += ["| Package | Version |", "|---|---|", *rows, ""]
+        lines += [("Inference: load this repo with a vllm build that supports the "
+                   f"{scheme} format (day-0 architectures may need the model card's "
+                   "custom image/branch — check the quantize command above for the "
+                   "environment used)."), ""]
     lines += ["", ("_Produced with [autoquant-agent](https://github.com/) — "
               "agent-driven quantize + evaluate + self-heal._"), ""]
     return "\n".join(lines)
@@ -445,8 +472,11 @@ class HfModelSink:
 
     def _write_model_card(self, model_dir: Path, meta: RunMeta, repo_name: str) -> None:
         results = meta.extra.get("results") if isinstance(meta.extra, dict) else None
+        commands = meta.extra.get("commands") if isinstance(meta.extra, dict) else None
+        versions = meta.extra.get("versions") if isinstance(meta.extra, dict) else None
         try:
             (model_dir / "README.md").write_text(
-                build_model_card(meta, repo_name=repo_name, results=results), encoding="utf-8")
+                build_model_card(meta, repo_name=repo_name, results=results,
+                                 commands=commands, versions=versions), encoding="utf-8")
         except OSError as exc:  # never block the upload on a card write
             _log.warning("hf_model: could not write model card: %s", exc)

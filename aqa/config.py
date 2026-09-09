@@ -307,6 +307,11 @@ class KnowledgeConfig(BaseModel):
     local_dir: str | None = None     # local cache; default ~/.cache/aqa/knowledge
     replay: bool = True              # try recorded patches before invoking the agent
     push: bool = True                # upload new lessons/patches back to the repo
+    # Whether the optimize agent reads the synced `references/` layer (fresher,
+    # owner-maintained) or is pinned to the packaged copies. Refreshing is
+    # always a manual owner action (aqa knowledge push-references); this only
+    # gates consumption. Set false for pinned/reproducible experiments.
+    use_references: bool = True
 
 
 class AgentConfig(BaseModel):
@@ -322,6 +327,10 @@ class AgentConfig(BaseModel):
     context: str | None = None  # inline text or "@file" (resolved by loader)
     patch: PatchConfig = Field(default_factory=PatchConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
+    # End-of-run session sedimentation: ATIF-ize the run's fix-loop/optimize
+    # sessions (+ anything the owner dropped into <run_dir>/sessions/) and push
+    # to the results dataset's trajectories/ tree. Best-effort, never blocks.
+    sediment_sessions: bool = True
 
 
 class SshAuth(BaseModel):

@@ -108,6 +108,7 @@ class RunManifest:
     results: dict[str, Any]
     gate: dict[str, Any] | None = None
     commands: dict[str, Any] = field(default_factory=dict)
+    owner_actions: list[dict[str, Any]] | None = None
     reproduce: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -192,6 +193,12 @@ def build_manifest(
 
     commands = _commands_block(result, out_dir)
 
+    # Owner-agent actions logged during the run (env tweaks, extra commands,
+    # patch notes) ride the manifest so the uploaded record reflects not just
+    # what aqa did but what the owner did around it.  Convention: JSONL at
+    # <output.dir>/owner_actions.jsonl (see docs/usage/owner_interface.md).
+    owner_actions = _read_owner_actions(out_dir)
+
     return RunManifest(
         schema_version=SCHEMA_VERSION,
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -203,8 +210,27 @@ def build_manifest(
         results=results_block,
         gate=gate,
         commands=commands,
+        owner_actions=owner_actions,
         reproduce={"command": _reproduce_command(config_path), "config": config_path},
     )
+
+
+def _read_owner_actions(out_dir: Path | None) -> list[dict[str, Any]] | None:
+    if out_dir is None:
+        return None
+    path = Path(out_dir) / "owner_actions.jsonl"
+    if not path.is_file():
+        return None
+    entries: list[dict[str, Any]] = []
+    for line in path.read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            entries.append({"kind": "unparsed", "text": line})
+    return entries or None
 
 
 def _efficiency_block(result: EvalResult, usage: Any) -> dict[str, Any] | None:

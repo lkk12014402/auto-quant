@@ -126,3 +126,39 @@ def test_custom_candidate_eval_model_args():
     assert cands[0].eval_model_args == {"kv_cache_dtype": "fp8"}
     # eval_model_args is not a QuantConfig field and must not leak into overrides
     assert "eval_model_args" not in cands[0].overrides
+
+
+def test_sweep_level_sink_dispatch(tmp_path, monkeypatch):
+    """sweep 结束时把 base 目录（含 sweep_report.json）单独 dispatch 一次。"""
+    from click.testing import CliRunner
+
+    import aqa.cli as cli_mod
+    from aqa.cli import main
+
+    (tmp_path / "config.json").write_text(
+        '{"architectures": ["Qwen3MoeForCausalLM"], "num_experts": 8}')
+    (tmp_path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"model.layers.0.self_attn.q_proj.weight": "x"}}')
+    yaml_path = tmp_path / "run.yaml"
+    yaml_path.write_text(
+        f"model: {tmp_path}\nquant:\n  scheme: MXFP4\n  recipe_sweep: true\n"
+        f"  recipe_sweep_candidates: [{{name: only, scheme: MXFP4}}]\n"
+        f"eval:\n  benchmarks: [piqa]\noutput:\n  dir: {tmp_path}/out\n")
+
+    dispatched = []
+    monkeypatch.setattr("aqa.pipeline._dispatch_sinks",
+                        lambda cfg, d, meta: dispatched.append((str(d), meta.artifact_name)))
+
+    class _FakeResult:
+        class state:
+            value = "done"
+        output_dir = tmp_path / "out" / "only"
+
+    monkeypatch.setattr("aqa.cli.EXECUTORS", type("E", (), {
+        "create": staticmethod(lambda *a, **k: type("X", (), {
+            "run": lambda self, c, **kw: _FakeResult()})())}))
+
+    r = CliRunner().invoke(main, ["sweep", str(yaml_path)])
+    assert r.exit_code == 0, r.output
+    assert dispatched and dispatched[0][0] == str(tmp_path / "out")
+    assert dispatched[0][1].endswith("AutoRound-sweep")

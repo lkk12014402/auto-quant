@@ -1,0 +1,68 @@
+# Knowledge store 结构定义（HF dataset 的 knowledge/ 子树 / 本地 ~/.cache/aqa/knowledge）
+#
+# knowledge store 的结构契约。`aqa knowledge show` 与 sync/push 以此为真源；
+# 每个条目注明生产者（auto=运行自动沉淀 / owner=人工维护推送）。
+
+layout:
+  - path: lessons/
+    kind: dir
+    format: "*.jsonl（每行一条 lesson：error signature → root_cause/fix/outcome）"
+    producer: auto
+    required: false
+    desc: 修复经验，fix-loop 成功/失败后由 aqa 写入；`aqa traces distill` 也可从轨迹蒸馏。
+
+  - path: patches/<phase>/
+    kind: dir
+    format: "<签名哈希>/{patch.diff, manifest.json}"
+    producer: auto
+    required: false
+    desc: 可回放补丁，按错误签名归档（跨模型复用）；fix-loop 的 replay 先查这里。
+
+  - path: trajectories/
+    kind: dir
+    format: trajectories.jsonl（ATIF）
+    producer: auto
+    required: false
+    desc: agent 会话轨迹（训练数据化的源）。
+    # 注意区分 dataset 层面的两个 trajectories/：
+    # - knowledge/trajectories/（本条目）：fix-loop 逐相位轨迹**摘要**（TrajectoryStore）
+    # - dataset 根部并列的 trajectories/：完整 session 的 ATIF 轨迹
+    #   （run 收尾自动沉淀 logs/agent_*/ 的 events + owner 放 sessions/ 的会话，
+    #   见 aqa/agent/session_sediment.py 与 skills/session-sediment/SKILL.md）
+
+  - path: stats/
+    kind: dir
+    format: "*.json（replay_hit/hit_rate 等聚合）"
+    producer: auto
+    required: false
+    desc: 知识回放命中率统计。
+
+  - path: references/
+    kind: dir
+    format: "*.md + MANIFEST.json"
+    producer: owner
+    required: false
+    desc: 人工维护的参考知识（auto-round recipe/全参数参考等），随上游迭代刷新。
+
+  - path: references/MANIFEST.json
+    kind: file
+    format: 见下方 manifest_schema
+    producer: owner
+    required: true  # references/ 存在时必有
+    desc: 新鲜度锚点；`aqa knowledge show` 读它，`aqa knowledge diff` 用它的 auto_round_ref 圈定上游变更。
+
+manifest_schema:
+  # MANIFEST.json 顶层字段
+  updated_at: "ISO 时间戳（最近一次任意更新）"
+  auto_round_ref: "整树基线：文档最后全量验证对应的 auto-round 版本/commit，如 '0.15.0-dev@bd9a13ce'"
+  note: "最近一次更新的自由文本说明"
+  files:
+    "<文件名>":
+      auto_round_ref: "该文件验证时的 auto-round ref（可与整树不同——逐文件新鲜度）"
+      updated_at: "该文件最近更新时间"
+      scope: "一句话说明该文件覆盖范围（如 'LLM 量化 recipe'）"
+
+# 更新语义（aqa knowledge push-references）：
+#   默认 replace：整树替换（--from 目录成为新的 references/ 全部内容）
+#   --file <name>:  增量：只更新单个文件（merge），只刷该文件的 per-file 新鲜度条目
+# 读取优先级（消费方）：references/ 同步副本 > aqa 打包副本（离线兜底）

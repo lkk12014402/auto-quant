@@ -1,0 +1,55 @@
+# lm_eval + evalscope 混合评估示例：一次 run 里
+#   gsm8k/piqa/mmlu/hellaswag → lm_eval harness（vllm backend）
+#   aime26/gpqa_diamond       → evalscope harness（自起 vllm serve）
+#
+# 机制（详见 AGENTS.md §5）：每个 benchmark 按 recipes/benchmarks/<task>.yaml 的
+# harness 字段路由，runner 分桶**顺序执行**——lm_eval 子进程退出后 evalscope 才
+# 拉起 vllm serve，不会抢卡；thinking 双模式对两个 harness 各自翻译生效。
+#
+# 冒烟（推荐先跑这个）：
+#   aqa run examples/run_lm_eval_plus_evalscope.yaml --dry-run
+#   把 eval.limit 放开前先用 limit 验证判分链路（aime 无 judge 时走 \boxed{} 规则提取）
+
+model: Qwen/Qwen3-30B-A3B-Instruct-2507   # 换你的模型；本地路径也行
+
+provider:
+  type: pretrained        # 纯评估示例；要量化改 quantize 并加 quant: 段
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag, aime26, gpqa_diamond]
+  batch_size: "64"
+  baseline: false
+  limit: 20                # 冒烟限量；正式跑删掉这行
+  thinking: auto           # thinking 模型自动开/关各测一遍（两个 harness 都生效）
+
+  lm_eval:
+    model_args:            # 按需调整；TP 由 executor.num_gpus 决定
+      max_model_len: 8192
+      gpu_memory_utilization: 0.6
+
+  evalscope:               # 只影响 aime26/gpqa_diamond 两个任务
+    repeats: 4             # avg@4（aime 样本少，重复取均值更稳；Qwen 报告口径可到 64）
+    eval_batch_size: 32
+    # generation_config 默认即推理友好值（max_tokens 30000, t=0.6, top_p 0.95）
+    server_args:           # 传给 vllm serve 的额外参数
+      max_model_len: 32768
+      gpu_memory_utilization: 0.85
+    # port: 8801           # 端口冲突时改
+
+executor:
+  type: local
+  num_gpus: 1              # lm_eval TP 与 evalscope serve TP 共用此值
+  # 无 env 块 = in-process，要求当前环境已装 lm_eval/vllm/evalscope；
+  # 要 aqa 建环境，加：
+  # env:
+  #   type: venv
+  #   path: ~/.venv-mixed-eval
+  #   create: true
+  #   packages: auto       # 推导含 evalscope+vllm（aime 任务触发）
+
+output:
+  dir: ./results/lm_eval_plus_evalscope_demo
+  unique_dir: true
+  sinks:
+    - type: local_fs

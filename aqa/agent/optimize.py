@@ -334,26 +334,40 @@ _RECIPE_KNOWLEDGE_PATH = Path(__file__).resolve().parent / "recipes" / "auto_rou
 _DIFFUSION_KNOWLEDGE_PATH = Path(__file__).resolve().parent / "recipes" / "auto_round_diffusion.md"
 
 
-def load_recipe_knowledge(*, include_diffusion: bool = False) -> str:
+def load_recipe_knowledge(*, include_diffusion: bool = False,
+                          knowledge_dir: Path | None = None,
+                          use_synced: bool = True) -> str:
     """Return the packaged distilled auto_round recipe knowledge (best-effort).
 
-    This is the reference corpus that grounds the agent's structured analysis in
-    real-world MXFP4/MoE recipes rather than guesswork.  Missing/unreadable asset
-    degrades gracefully to an empty string (the flow still works, just less informed).
-    ``include_diffusion`` appends the distilled diffusion/VLM knowledge; pass it for
-    diffusion pipelines (``ModelAnalysis.is_diffusion``) so DiT-specific constraints
-    (transformer-only quantization, coco2014 calibration, auto_round export for
-    vllm-omni) reach the prompt without bloating LLM-only runs.
+    Freshness order: the synced ``references/`` subtree of the shared knowledge
+    store (maintained by owners as auto-round evolves) wins over the copy
+    packaged with the aqa release; the packaged copy is the offline fallback.
+    ``use_synced=False`` pins consumption to the packaged copies
+    (``agent.knowledge.use_references: false``).
+    Missing/unreadable asset degrades gracefully to an empty string (the flow
+    still works, just less informed).  ``include_diffusion`` appends the
+    distilled diffusion/VLM knowledge; pass it for diffusion pipelines
+    (``ModelAnalysis.is_diffusion``) so DiT-specific constraints reach the prompt.
     """
-    try:
-        text = _RECIPE_KNOWLEDGE_PATH.read_text(encoding="utf-8")
-    except OSError:
-        text = ""
+    from .knowledge import default_local_dir
+
+    refs = (knowledge_dir or default_local_dir()) / "references"
+
+    def _read(name: str) -> str:
+        bases = (refs, _RECIPE_KNOWLEDGE_PATH.parent) if use_synced \
+            else (_RECIPE_KNOWLEDGE_PATH.parent,)
+        for base in bases:
+            try:
+                text = (base / name).read_text(encoding="utf-8")
+                if text.strip():
+                    return text
+            except OSError:
+                continue
+        return ""
+
+    text = _read(_RECIPE_KNOWLEDGE_PATH.name)
     if include_diffusion:
-        try:
-            extra = _DIFFUSION_KNOWLEDGE_PATH.read_text(encoding="utf-8")
-        except OSError:
-            extra = ""
+        extra = _read(_DIFFUSION_KNOWLEDGE_PATH.name)
         if extra:
             text = f"{text}\n\n{extra}" if text else extra
     return text
@@ -710,6 +724,7 @@ def run_agent_optimize(
     recipe_knowledge: str | None = None,
     constraints: list[QuantConstraint] | None = None,
     log_dir: Path | None = None,
+    use_synced_references: bool = True,
 ) -> str | None:
     """Analyse the model, ask the agent for a command, validate it; None on any miss."""
     a = analyze_model(model, revision=revision, token=token)
@@ -717,7 +732,8 @@ def run_agent_optimize(
         _log.warning("agent-optimize: analysis failed: %s", a.error)
         return None
     if recipe_knowledge is None:
-        recipe_knowledge = load_recipe_knowledge(include_diffusion=a.is_diffusion)
+        recipe_knowledge = load_recipe_knowledge(include_diffusion=a.is_diffusion,
+                                                 use_synced=use_synced_references)
     prompt = build_optimize_prompt(
         a, scheme=scheme, method=method, export_format=export_format,
         output_dir=output_dir, skill_recipe=skill_recipe, user_context=user_context,

@@ -122,6 +122,12 @@ layout:
     sink: false
     desc: local venv staged inner run 工件。
 
+  - path: owner_actions.jsonl
+    kind: file
+    when: optional
+    sink: true
+    desc: 'owner/人工在 run 期间的动作记录（`aqa log-action` 追加：env/command/patch/note/decision）；run 结束时并入 run_manifest.json 的 owner_actions 段。'
+
 # when 条件的判定规则（inspect 据此决定"该不该有"）：
 #   always        每个 run 都有
 #   done          run 正常完成（aqa_run.json.state == done）
@@ -135,3 +141,4 @@ layout:
 #   sweep         aqa sweep 编排（quant.recipe_sweep: true）
 #   staged_docker executor local + env.type == docker
 #   staged_venv   executor local + env.type == venv
+#   optional      从不强制（存在即 present，缺失不算 incomplete；如 owner_actions.jsonl）

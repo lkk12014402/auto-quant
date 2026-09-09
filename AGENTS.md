@@ -4,6 +4,26 @@
 **owner 角色**驱动 aqa 的外部 agent。读完本文件再动手；凡本文件与代码冲突，
 以代码为准（并修正本文件）。
 
+## 文档地图
+
+| 主题 | 位置 |
+|---|---|
+| **本文件（owner 操作总纲）** | `AGENTS.md` |
+| yaml 字段参考 | `docs/usage/yaml_reference.md` |
+| 环境构建（三形态 + 安装内容） | `docs/usage/environments.md` |
+| 内部 agent 输入/输出（optimize + fix-loop） | `docs/usage/agents_io.md` |
+| owner 与 aqa 的接口契约（含无 owner 的纯 CLI 模式） | `docs/usage/owner_interface.md` |
+| 补丁转 PR（fork 同步 + worktree + gh） | `docs/usage/publish_patch.md` |
+| 环境变量参考（密钥/行为/场景速查） | `docs/usage/env_vars.md` |
+| 落盘结构契约（本地 + sink 远端） | `aqa/report/layout.yaml` + `docs/run_layout.md` |
+| auto-round 知识刷新机制 | `docs/knowledge_refresh.md` |
+| knowledge/session 沉淀机制 | `docs/usage/knowledge_sessions.md` |
+| owner 收尾 skill（session 沉淀） | `skills/session-sediment/SKILL.md` |
+| day-0 新架构 playbook | `docs/day0_quantization_recipe.md` |
+| auto-round 全参数参考（file:line 引用） | `docs/autoround_full_reference.md` |
+| 结构分析 skill（逐模块精度判定） | `/home/kaokaolv/Pai-Megatron-Patch/autoround-quant-analysis/SKILL.md` |
+| 内部 skill（provision 给 aqa 的 agent） | `skills/{quantize,evaluate,fix-and-patch}/SKILL.md` |
+
 ## 0. 角色定位与铁律
 
 - **你是 owner，aqa 是执行器。** aqa 内部的 agent fix-loop / optimize agent
@@ -14,6 +34,11 @@
   只看它最后说"修好了"。
 - **先 yaml，后运行。** 任何量化/评估任务必须先写出运行 yaml 配置，再执行
   `aqa run <yaml>`。不允许徒手拼 auto-round / lm_eval 命令绕过 aqa。
+  **写 yaml 时回传字段必须补全**（`aqa validate` 会做确定性提醒）：
+  env.sh 提供了 `LOCAL_RESULTS_DATASET` + `LOCAL_RESULTS_HF_TOKEN` 就配
+  `output.sinks: [local_fs, hf_dataset]`；`agent.fix_loop` 开着就配
+  `agent.knowledge.repo`（knowledge 与 trajectories 同库回传）。
+  不写 = 结果只留本机，违背"全程留痕回传"的铁律。
 - **owner 侧全程留痕。** 你的分析过程、运行命令、日志路径、思考与结论、
   所有 fix/patch，都要落盘（推荐落进 run 的 `output.dir` 或 aqa_results 工作目录），
   并随结果回传（见 §6）。可参照本仓库 `docs/day0_quantization_recipe.md` 与
@@ -22,7 +47,10 @@
   回答的问题，不要让 agent 猜。
 - **owner 保持灵活性，但偏离必须可复现。** 鼓励主动查证与实验：查 GitHub
   最新代码/相关 PR 与 issue、web search、安装更新版本的依赖、切换不满足
-  需求的版本（transformers/vllm/auto-round）。但每一次偏离默认都要落到
+  需求的版本（transformers/vllm/auto-round/llm-compressor 等任何相关仓，
+  不局限于 auto-round——查询方法见 `skills/fix-and-patch/SKILL.md` 的
+  "Upstream lookup playbook"：git ls-remote 查最新 tag、GitHub search API
+  按错误串搜 issue/PR、raw 定点读上游源码）。但每一次偏离默认都要落到
   可复现的形式：依赖变更固化进 yaml（`env.packages` 显式 pin），代码修复
   沉淀为 `patches/` 补丁，决策与依据记进 run 日志。**禁止不留痕的手改环境**——
   否则下一次 run 不可复现，上传的 manifest 也在说谎。
@@ -178,6 +206,30 @@ aqa sweep <yaml> --only conservative,tuning
 baseline 只测一次（第一档），`sweep_report.json` 含各档分数与命令。
 **`aqa run` 遇到 recipe_sweep 会直接报错并指向 `aqa sweep`**。
 
+### 3.3 量化知识的更新机制（references）
+
+auto-round 迭代快，aqa 打包的量化知识会过期。知识分两层：
+
+- **打包层**：`aqa/agent/recipes/*.md`、`docs/autoround_full_reference.md`
+  （随 aqa 发布，可能旧）
+- **增量层**：knowledge store 的 `references/` 子树（与 fix-knowledge 共用
+  HF dataset，run 开始 `sync_down` 拉最新）——optimize agent 的 prompt 知识
+  **优先读这一层**，读不到回退打包层
+
+owner 的职责：**开始任务前用 `aqa knowledge show` 看 `auto_round_ref`
+（文档验证时的 auto-round 版本），比你将用的 auto-round 旧就触发刷新**——
+`aqa knowledge diff --auto-round-dir <repo>` 圈定变更范围，逐条复核后更新
+文档并 `aqa knowledge push-references` 推送共享。完整流程与纪律见
+`docs/knowledge_refresh.md`。fix-loop / optimize agent 读到的是同一套
+references，所以你刷新一次，所有 agent 都受益。
+
+**用不用增量层是可选的**：`agent.knowledge.use_references: false` 会把
+optimize 锁回打包层（复现实验、排除知识漂移时用）；**刷新永远是 owner 手动
+动作**，run 不会自动更新知识——不刷新就只是继续用现有层，不会有意外变化。
+
+
+
+
 ## 4. day-0：新架构判定与对策
 
 拿到新模型先做**三件套支持探针**（确定性，勿猜）：
@@ -271,8 +323,15 @@ sk-、AKIA、Bearer 等（所以 layout.yaml 里每个本地条目会原样出�
 └── knowledge/                                   # 附加③共享修复知识（配了 knowledge repo 才有）
 ```
 
-- `org` = 模型 id 的 org 段；`artifact` = `<model>-AutoRound-<scheme>-<method>`；
-  `run_id` = 时间戳+短哈希（`_make_run_id`）
+- `org` = 模型 id 的 org 段；`run_id` = 时间戳+短哈希（`_make_run_id`）
+- **artifact 命名统一规范**（dataset 路径与 HF model repo 同名，真源
+  `aqa/report/names.py`）：
+  `<Model>-<Scheme>[-Mixed][-FP8KV][-FP8Attn][-CT][-RTN]-AutoRound`——
+  `Mixed`=有 layer_config（前导 scheme 取最低比特）；`CT`=llm_compressor 格式；
+  `RTN`=model_free 或 iters=0（紧邻 AutoRound，对齐已发布命名
+  `...-W4A16-RTN-AutoRound`）；baseline/聚合分别用 `-BF16-Baseline` /
+  `-AutoRound-sweep`。**存量上传的旧命名（`...-AutoRound-<scheme>-<method>`）
+  不改**，只对新 run 生效。
 - 实证样例（此前 ssh docker 线的真实上传）：
   `hf.co/datasets/lvkaokao/lb_local/tree/main/results/Qwen/Qwen3.5-35B-A3B-AutoRound-MXFP8-model_free/run_Qwen3.5-35B-A3B_MXFP8_20260821-052837_a49094`
 - 配置项：`repo / path_in_repo(默认 results) / token_env / full_run /
@@ -294,16 +353,26 @@ output:
 **约定：放进 run 目录，sink 自然带走**——没有第二套机制，也不该有：
 
 - 分析文档 / 决策记录 → run 目录顶层（如 `<Model>_quantization_analysis.md`）或 `logs/`
-- owner 的 fix/patch → `patches/<phase>/`（与 aqa 自产补丁同构）
-- owner 的运行命令与结论 → 写入 run 目录文档；`run_manifest.json` 已含实际执行命令
+- owner 的 fix/patch → `aqa capture-patch <run_dir> --repo <git仓>` 把工作区
+  diff 捕获到 `patches/owner/`（aqa 内部 fix-loop 的 patch capture 管的是它自己
+  改的可编辑依赖，见 `aqa/agent/patch.py`；owner 手改用这条命令对齐）
+- 值得上游的补丁 → `aqa publish-patch <patch文件> --repo-dir <fork本地仓>
+  --title ...`（先 `--dry-run` 验证 apply）：自动同步 fork 基线、临时
+  worktree 打补丁、push 分支、`gh pr create`。token 只走环境变量（GH_TOKEN）
+- **run 期间的环境变更/额外命令/决策 → `aqa log-action <run_dir> --kind ...`
+  追加进 `owner_actions.jsonl`**，run 结束时并入 `run_manifest.json` 的
+  `owner_actions` 段（无人模式自然缺省）。接口契约全文见
+  `docs/usage/owner_interface.md`
 - 上传前所有文本过 `scrub.py` 脱敏（token/口令正则集），权重与 staged 工件
   （`.aqa_local_*/`）结构性排除——所以**放心放文本，别放权重**
 
 ### 6.5 量化模型权重
 
 默认**不外传**。需要发布时配 `provider.upload: {repo, token_env}` →
-`HfModelSink` 推到 HF **model** repo（自动创建仓库 + 生成模型卡）；评估失败但
-量化成功时也会兜底推送。
+`HfModelSink` 推到 HF **model** repo（自动创建仓库 + 生成模型卡）。
+模型卡除精度表外带 **Reproduce & Environment** 章节：实际量化命令、评估命令、
+关键包版本（auto-round/lm_eval/transformers/torch/vllm，取自本次 run 的
+manifest）与推理提示；评估失败但量化成功时也会兜底推送。
 
 ### 6.6 密钥链（env.sh → yaml → sink）
 

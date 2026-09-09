@@ -363,7 +363,7 @@ def test_run_agent_optimize_loads_diffusion_knowledge_for_dit(monkeypatch, tmp_p
                         lambda *a, **k: ModelAnalysis(model_id="org/flux", is_diffusion=True))
     seen = {}
 
-    def fake_load(*, include_diffusion=False):
+    def fake_load(*, include_diffusion=False, **_kw):
         seen["include_diffusion"] = include_diffusion
         return ""
 

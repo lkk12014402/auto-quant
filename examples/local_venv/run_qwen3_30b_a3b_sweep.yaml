@@ -76,7 +76,17 @@ output:
   unique_dir: true             # 时间戳子目录 + latest 软链
   sinks:
     - type: local_fs
-# 需要回传 HF dataset 时追加（配合 env.sh 的 LOCAL_RESULTS_*）：
-#    - type: hf_dataset
-#      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
-#      token_env: LOCAL_RESULTS_HF_TOKEN
+    # 回传 HF dataset（需 env.sh 的 LOCAL_RESULTS_*）：
+    # - 每个候选 run 目录各传一份（run_<run_id>/）
+    # - sweep 结束把 base 目录（含 sweep_report.json 对比表）单独传一份
+    #   （artifact 名 <model>-AutoRound-sweep，status 记 "Sweep x/N done"）
+    # - 配了 agent.knowledge.repo 时，knowledge + session 轨迹同库回传
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: true               # 修复经验沉淀到共享 knowledge 库
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}   # knowledge/ 与 trajectories/ 并列回传
+    token_env: LOCAL_RESULTS_HF_TOKEN
