@@ -135,14 +135,26 @@ def _make_run_id(run_cfg: RunConfig) -> str:
     return make_run_id(run_cfg)
 
 
+def _report_model(run_cfg: RunConfig) -> str:
+    """Canonical model identity for reporting/sinks (org slug + results 'model').
+
+    Prefers ``output.report_model`` so a local checkpoint path doesn't collapse
+    the dataset org to ``unknown``.
+    """
+    return run_cfg.output.report_model or run_cfg.model
+
+
 def _artifact_name(run_cfg: RunConfig, suffix: str) -> str:
     from .report.names import canonical_artifact_name
 
+    if run_cfg.output.artifact_name:
+        return run_cfg.output.artifact_name
+    ident = _report_model(run_cfg)
     if suffix == "sweep":
-        short = run_cfg.model.split("/")[-1]
+        short = ident.split("/")[-1]
         return f"{short}-AutoRound-sweep"
     if suffix == "baseline":
-        short = run_cfg.model.split("/")[-1]
+        short = ident.split("/")[-1]
         return f"{short}-BF16-Baseline"
     return canonical_artifact_name(run_cfg)
 
@@ -452,7 +464,7 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path) -> ProcessState:
         _write_terminal_state(out_dir, ProcessState.DONE, run_cfg.model)
         _sediment_sessions(run_cfg, out_dir, knowledge, run_id)
         _dispatch_sinks(run_cfg, eval_dir, RunMeta(
-            model=run_cfg.model,
+            model=_report_model(run_cfg),
             scheme=run_cfg.quant.scheme if run_cfg.quant else None,
             method=run_cfg.quant.method if run_cfg.quant else None,
             artifact_name=_artifact_name(run_cfg, "quant"),
@@ -536,7 +548,7 @@ def _writeback_on_failure(run_cfg: RunConfig, out_dir: Path, eval_dir: Path,
         _log.warning("failure-path manifest error: %s", man_exc)
     try:
         _dispatch_sinks(run_cfg, run_dir, RunMeta(
-            model=run_cfg.model,
+            model=_report_model(run_cfg),
             scheme=run_cfg.quant.scheme if run_cfg.quant else None,
             method=run_cfg.quant.method if run_cfg.quant else None,
             artifact_name=_artifact_name(run_cfg, "quant"),
@@ -618,7 +630,7 @@ def _maybe_upload_model(run_cfg: RunConfig, resolved, result: EvalResult, out_di
         model_card=cfg.model_card,
     )
     meta = RunMeta(
-        model=run_cfg.model,
+        model=_report_model(run_cfg),
         scheme=run_cfg.quant.scheme if run_cfg.quant else None,
         method=run_cfg.quant.method if run_cfg.quant else None,
         artifact_name=cfg.repo_name or _artifact_name(run_cfg, "quant"),

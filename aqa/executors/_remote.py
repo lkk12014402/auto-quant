@@ -276,8 +276,11 @@ def container_packages(run_cfg: RunConfig) -> list[str]:
     pkgs: list[str] = []
     if run_cfg.eval.backend == "vllm_omni":
         # Diffusion text-to-image stack: engine + pipeline utils + CLIP scorer deps.
+        # vllm-omni imports `vllm` (e.g. vllm.config.lora) but doesn't pin it as a
+        # dependency, so install vllm explicitly or the diffusion harness fails at
+        # import with a misleading "vllm-omni is not installed".
         pkgs += [
-            "vllm-omni", "diffusers", "datasets", "transformers",
+            "vllm", "vllm-omni", "diffusers", "datasets", "transformers",
             "sentencepiece", "accelerate", "pillow",
         ]
     elif run_cfg.eval.backend in ("vllm", "vllm_xpu") and _accelerator(run_cfg) != "xpu":

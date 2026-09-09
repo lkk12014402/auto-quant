@@ -6,8 +6,11 @@
 
 ```
 demo/trajectory_export/
-├── kimi_7f851d8a/            # Kimi Code CLI 会话（本机 GLM day-0 工作会话，
-│   │                         # 2778 步，含 archive/ 发布包 + knowledge 299 条）
+├── kimi_7f851d8a/            # Kimi Code CLI 主会话（本机长任务会话，4604 步、
+│   │                         # 876 轮用户交互，含 aqa 全部 feature 建设、
+│   │                         # INC-Quantization-Recipes 回刷方案与 12 份 owner
+│   │                         # 任务书、远程 k8s llm-server 的 owner 修复 review
+│   │                         # 与 merge；agent-0..27 子代理轨迹 ×28）
 │   ├── trajectories.jsonl    # ATIF 轨迹
 │   ├── sft.jsonl / rl.jsonl / sharegpt.jsonl
 │   ├── archive/              # 分层发布包（trajectories/<sid>/ 三件套 + manifest）

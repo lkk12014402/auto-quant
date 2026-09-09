@@ -53,7 +53,10 @@ def _lowest_bit_scheme(quant) -> str:
 
 def canonical_artifact_name(run_cfg: RunConfig) -> str:
     """Canonical name for a quantize run's artifact (dataset path + model repo)."""
-    short = run_cfg.model.split("/")[-1] if run_cfg.model else "model"
+    if run_cfg.output.artifact_name:
+        return run_cfg.output.artifact_name
+    ident = run_cfg.output.report_model or run_cfg.model
+    short = ident.split("/")[-1] if ident else "model"
     quant = run_cfg.quant
     if quant is None:
         return f"{short}-BF16-Baseline"

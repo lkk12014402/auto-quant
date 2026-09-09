@@ -119,9 +119,15 @@ class LmEvalHarness:
                 if self.fewshot_as_multiturn is not None
                 else lead.fewshot_as_multiturn or True
             )
-            cmd += ["--apply_chat_template"]
-            if fewshot_mt:
-                cmd += ["--fewshot_as_multiturn"]
+            # Chat template defaults on for generative tasks, but an explicit
+            # run-level `lm_eval.apply_chat_template: false` drops it (e.g. Qwen3
+            # gsm8k scores better with raw 5-shot completions than chat-wrapped
+            # multi-turn prompts). `--fewshot_as_multiturn` only makes sense with
+            # a chat template, so it is nested under it.
+            if self.apply_chat_template is not False:
+                cmd += ["--apply_chat_template"]
+                if fewshot_mt:
+                    cmd += ["--fewshot_as_multiturn"]
             if backend.lm_eval_model_flag == "hf":
                 gen = self.gen_kwargs or lead.gen_kwargs or {"max_gen_toks": self.gen_max_toks}
                 cmd += ["--gen_kwargs", ",".join(f"{k}={v}" for k, v in gen.items())]

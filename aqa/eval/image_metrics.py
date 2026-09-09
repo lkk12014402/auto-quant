@@ -55,6 +55,20 @@ IMAGEREWARD_PINS = [
 ]
 IMAGEREWARD_MODEL = "ImageReward-v1.0"
 
+# ``pip install --target`` drags in image-reward's transitive torch/torchvision
+# (+ their nvidia/cuda/triton wheels). Because the scorer subprocess prepends the
+# isolated dir to PYTHONPATH, that torch would shadow the host's CUDA-correct
+# build -- and the pulled-in torch can be an ABI-mismatched build whose op table
+# is incomplete (``'_OpNamespace' 'aten' object has no attribute 'cholesky'``).
+# We purge the whole torch ecosystem from the isolated dir so ``import torch`` /
+# ``import torchvision`` fall through to the host interpreter's working install,
+# while keeping the isolated transformers/diffusers/timm/clip pins.
+_TORCH_ECOSYSTEM_ROOTS = (
+    "torch", "torchvision", "torchgen", "functorch", "triton",
+    "pytorch_triton", "nvidia", "cuda", "cuda_bindings", "cuda_pathfinder",
+    "cuda_toolkit",
+)
+
 # CLIP-IQA antonym prompt pairs (positive, negative), CLIP-IQA paper style.
 CLIP_IQA_PROMPT_PAIRS: list[tuple[str, str]] = [
     ("Good photo.", "Bad photo."),
@@ -65,6 +79,24 @@ CLIP_IQA_PROMPT_PAIRS: list[tuple[str, str]] = [
 METRICS = ("clip", "clip_iqa", "imagereward")
 
 
+def _purge_host_torch_from_target(target: Path) -> None:
+    """Remove torch-ecosystem packages from the isolated --target dir.
+
+    The subprocess prepends ``target`` to PYTHONPATH, so any torch/torchvision
+    installed here would shadow (and break, via ABI mismatch) the host's
+    CUDA-correct torch. Deleting them makes ``import torch`` resolve to the host.
+    """
+    import shutil
+
+    for entry in target.iterdir():
+        stem = entry.name.split("-", 1)[0].split(".", 1)[0]
+        if stem in _TORCH_ECOSYSTEM_ROOTS:
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+
+
 def ensure_imagereward_env() -> Path:
     """Provision the isolated ImageReward package dir (idempotent).
 
@@ -72,6 +104,9 @@ def ensure_imagereward_env() -> Path:
     needed; the dir then shadows nothing (it is only ever used via PYTHONPATH).
     """
     if (IMAGEREWARD_ENV_DIR / "ImageReward").is_dir():
+        # A previously-provisioned env may predate the torch purge below; make
+        # the idempotent path self-healing so stale torch wheels get removed.
+        _purge_host_torch_from_target(IMAGEREWARD_ENV_DIR)
         return IMAGEREWARD_ENV_DIR
     IMAGEREWARD_ENV_DIR.mkdir(parents=True, exist_ok=True)
     cmd = [sys.executable, "-m", "pip", "install", "--target", str(IMAGEREWARD_ENV_DIR), *IMAGEREWARD_PINS]
@@ -83,6 +118,7 @@ def ensure_imagereward_env() -> Path:
         )
     if not (IMAGEREWARD_ENV_DIR / "ImageReward").is_dir():
         raise AqaError(f"ImageReward env provisioning produced no package at {IMAGEREWARD_ENV_DIR}")
+    _purge_host_torch_from_target(IMAGEREWARD_ENV_DIR)
     return IMAGEREWARD_ENV_DIR
 
 

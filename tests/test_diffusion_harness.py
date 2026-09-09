@@ -75,7 +75,8 @@ def test_container_packages_vllm_omni():
     cfg = parse_run_config({"model": "org/m", "eval": {"backend": "vllm_omni"}})
     pkgs = container_packages(cfg)
     assert "vllm-omni" in pkgs
-    assert "vllm" not in pkgs
+    # vllm-omni imports vllm but doesn't pin it; without it the harness import fails
+    assert "vllm" in pkgs
     assert {"diffusers", "datasets", "transformers", "pillow"} <= set(pkgs)
 
 

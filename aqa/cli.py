@@ -120,7 +120,7 @@ def sweep(config: str, only: str | None, dry_run: bool) -> None:
         states = [c.get("state", "") for c in report["candidates"]]
         done = sum(1 for s in states if s == "done")
         _dispatch_sinks(cfg, base_dir, RunMeta(
-            model=cfg.model,
+            model=cfg.output.report_model or cfg.model,
             artifact_name=_artifact_name(cfg, "sweep"),
             run_root=base_dir,
             status=f"Sweep {done}/{len(states)} done"))

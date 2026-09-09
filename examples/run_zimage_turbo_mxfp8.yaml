@@ -1,0 +1,70 @@
+# Z-Image-Turbo (Tongyi-MAI, 6B S3-DiT) — MXFP8 v1（autoround RTN，iters 0）
+# owner 任务书：owner_tasks/z-image-turbo.md（公共协议 owner_tasks/README.md）
+#
+# diffusion 纪律（照 examples/run_diffusion_zimage*.yaml）：
+#   - 本地目录加载（auto-round diffusion 只认 <path>/model_index.json）
+#   - iters 0 + --disable_opt_rtn + --disable_model_free（否则被路由到 model_free → 空量化）
+#   - export_format auto_round（vllm-omni 按 quant_method="auto-round" 检测 DiT）
+#   - --ignore_layers adaLN_modulation（实证必须项：66 个 adaLN 张量，vllm-omni 设计上
+#     对 adaLN/t_embedder 全精度保留 quant_config=None，量化它们会加载失败）
+#   - coco2014 校准、8 步、guidance 0.0（蒸馏不做 CFG）
+#
+# 运行：source env.sh && CUDA_VISIBLE_DEVICES=3 aqa run examples/run_zimage_turbo_mxfp8.yaml
+
+model: /models/Z-Image-Turbo
+
+quant:
+  scheme: MXFP8
+  method: autoround
+  export_format: auto_round
+  iters: 0
+  extra_args:
+    - --disable_opt_rtn
+    - --disable_model_free
+    - --ignore_layers
+    - adaLN_modulation
+    - --dataset
+    - coco2014
+    - --num_inference_steps
+    - "8"
+    - --guidance_scale
+    - "0.0"
+
+eval:
+  benchmarks: [drawbench_metrics, geneval]
+  backend: vllm_omni
+  harness: diffusion
+  baseline: true
+  diffusion:
+    num_inference_steps: 8
+    guidance_scale: 0.0
+    height: 1024
+    width: 1024
+    seed: 42
+    scorer_model: openai/clip-vit-base-patch32
+
+agent:
+  fix_loop: true
+  optimize: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: ~/.venv-zimage
+    create: false          # 复用已修好的 venv（vllm+vllm-omni+flashinfer0.6.18）
+    packages: auto            # vllm_omni → vllm-omni + diffusers + auto-round + ...
+
+output:
+  dir: ./results/zimage-turbo-mxfp8
+  unique_dir: true
+  report_model: Tongyi-MAI/Z-Image-Turbo   # dataset org=Tongyi-MAI；artifact 由 quant 块推导
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN

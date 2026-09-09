@@ -456,6 +456,15 @@ class OutputConfig(BaseModel):
     # run10/run11 shared a dir and the checkpoint provenance got ambiguous).
     # Default false: an unchanged dir keeps the resume semantics.
     unique_dir: bool = False
+    # Reporting identity overrides for the dataset sink. When `model:` is a local
+    # checkpoint path (no `Org/Name`), the org slug can't be inferred and the
+    # dataset lands under `results/unknown/...`; likewise an eval-only run of a
+    # quantized dir has no `quant` block, so the artifact name defaults to
+    # `<dir>-BF16-Baseline`. Set these to pin the canonical identity:
+    #   report_model : canonical `Org/Model` id -> dataset org + artifact short name
+    #   artifact_name: explicit artifact name (dataset path segment + model repo)
+    report_model: str | None = None
+    artifact_name: str | None = None
 
 
 # ── Top-level ────────────────────────────────────────────────────────────────
