@@ -68,8 +68,16 @@ class RunMeta:
 
     @property
     def org(self) -> str:
-        """Owner slug derived from ``org/name`` model ids (else ``unknown``)."""
-        return self.model.split("/", 1)[0] if "/" in self.model else "unknown"
+        """Owner slug from ``org/name`` model ids; local paths bucket under ``local``."""
+        import os
+
+        m = self.model
+        # Local checkpoint dirs have no org; splitting an absolute path on "/"
+        # would yield an empty org ("results//<artifact>" -> _safe_name'd
+        # "unknown"), so bucket them explicitly.
+        if m.startswith(("/", "./", "~")) or (os.sep in m and Path(m).is_dir()):
+            return "local"
+        return m.split("/", 1)[0] if "/" in m else "unknown"
 
 
 @runtime_checkable

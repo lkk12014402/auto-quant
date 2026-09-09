@@ -176,3 +176,15 @@ def test_session_sediment_end_to_end(tmp_path, monkeypatch):
                         lambda *a, **k: "tok")
     assert store.push_sessions(stage / "run-1")
     assert calls["path_in_repo"] == "trajectories"
+
+
+def test_runmeta_org_local_path_buckets(tmp_path):
+    from aqa.report.sinks import RunMeta
+
+    assert RunMeta(model="Qwen/Qwen3-30B").org == "Qwen"
+    assert RunMeta(model="gpt2").org == "unknown"
+    assert RunMeta(model="/home/kaokaolv/models/Qwen3.8-Flash-Next").org == "local"
+    d = tmp_path / "mymodel"
+    d.mkdir()
+    assert RunMeta(model=str(d)).org == "local"
+    assert RunMeta(model="./models/x").org == "local"

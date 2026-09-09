@@ -19,6 +19,7 @@
 | auto-round 知识刷新机制 | `docs/knowledge_refresh.md` |
 | knowledge/session 沉淀机制 | `docs/usage/knowledge_sessions.md` |
 | owner 收尾 skill（session 沉淀） | `skills/session-sediment/SKILL.md` |
+| owner 回写 recipe 站 skill（量化完更新 INC-Quantization-Recipes） | `skills/recipe-page/SKILL.md` |
 | day-0 新架构 playbook | `docs/day0_quantization_recipe.md` |
 | auto-round 全参数参考（file:line 引用） | `docs/autoround_full_reference.md` |
 | 结构分析 skill（逐模块精度判定） | `/home/kaokaolv/Pai-Megatron-Patch/autoround-quant-analysis/SKILL.md` |
@@ -61,6 +62,8 @@
 ```
 ① 模型架构判定（day-0?）→ ② 选定运行环境 → ③ 写运行 yaml → ④ aqa run
 → ⑤ 把关 fix-loop（如开启）→ ⑥ gate/结果核对 → ⑦ 落盘与回传
+→ ⑧（可选）补丁处置（publish-patch）+ session 沉淀（session-sediment）
+   + recipe 站回写（recipe-page）
 ```
 
 ```bash
