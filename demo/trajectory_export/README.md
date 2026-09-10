@@ -21,6 +21,9 @@ demo/trajectory_export/
 ├── kimi_fe4af318_agent-*/    # 同会话的子代理轨迹 ×23（适配器给子代理的
 │                             # session_id 加代理名后缀消歧，否则归档目录撞名）
 ├── kimi_8df5de67*/
+├── kimi_800407d2/            # kimi 会话（wd_my_commit 工作区，253 步、53 轮，
+│                             # copilot 自定义 API 配置任务；脱敏实证：会话里贴的
+│                             # Access Token 已被规则正确掩码）
 ├── copilot_<id8>/            # GitHub Copilot CLI 会话 ×10（来自容器 lkk-ki 的
 │                             # ~/.copilot/session-state/*/events.jsonl）
 ├── copilot_a397b109/         # muse_support 迁移工作会话完整版（B300 整机
