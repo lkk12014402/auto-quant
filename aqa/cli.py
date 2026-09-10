@@ -376,6 +376,9 @@ def capture_patch(run_dir: str, repos: tuple[str, ...], label: str | None) -> No
 @click.option("--base", default="main", show_default=True, help="PR base branch.")
 @click.option("--fork-repo", default=None,
               help="owner/name of the fork for `gh pr create` (default: parsed from origin).")
+@click.option("--pr-repo", default=None,
+              help="Repo the PR targets (default: the fork itself; set to the upstream "
+                   "owner/name for a cross-repo upstream PR, head becomes <fork-owner>:<branch>).")
 @click.option("--title", required=True, help="PR title (also the commit message head).")
 @click.option("--body", default="", help="PR body (why/evidence/test results).")
 @click.option("--branch", default=None,
@@ -383,8 +386,8 @@ def capture_patch(run_dir: str, repos: tuple[str, ...], label: str | None) -> No
 @click.option("--dry-run", is_flag=True,
               help="Print the plan + `git apply --check` result; no fetch/push/PR.")
 def publish_patch(patch_file: str, repo_dir: str, upstream: str, base: str,
-                  fork_repo: str | None, title: str, body: str, branch: str | None,
-                  dry_run: bool) -> None:
+                  fork_repo: str | None, pr_repo: str | None, title: str, body: str,
+                  branch: str | None, dry_run: bool) -> None:
     """Turn a patch into a PR on the auto-round fork.
 
     Flow: sync fork (push upstream/<base> -> origin/<base>) -> temp worktree off
@@ -410,7 +413,7 @@ def publish_patch(patch_file: str, repo_dir: str, upstream: str, base: str,
     patch_path = Path(patch_file).resolve()
     patch_text = patch_path.read_text()
     touched = sorted({m.group(1) for m in
-                      re.finditer(r"^diff --git a/(\S+)", patch_text, re.M)})
+                      re.finditer(r"^(?:diff --git a/|--- a/)(\S+)", patch_text, re.M)})
     stem = re.sub(r"[^A-Za-z0-9_.-]+", "-", patch_path.stem)
     branch = branch or f"aqa/{stem}-{time.strftime('%Y%m%d')}"
     if fork_repo is None:
@@ -474,11 +477,14 @@ def publish_patch(patch_file: str, repo_dir: str, upstream: str, base: str,
         diffstat = git("diff", "--cached", "--stat", cwd=tmp).stdout.strip()
         git("commit", "-m", f"{title}\n\n{body}".strip(), cwd=tmp)
         click.echo(f"committed on {branch}:\n{diffstat}")
-        # 3. push + PR
+        # 3. push + PR (fork 内 PR 或跨仓上游 PR：--pr-repo 指定上游时
+        #    head 必须是 <fork-owner>:<branch>)
         git("push", "-u", "origin", branch, cwd=tmp)
+        target_repo = pr_repo or fork_repo
+        head = f"{fork_repo.split('/')[0]}:{branch}" if pr_repo else branch
         pr = subprocess.run(
-            ["gh", "pr", "create", "--repo", fork_repo, "--base", base,
-             "--head", branch, "--title", title, "--body", body or title],
+            ["gh", "pr", "create", "--repo", target_repo, "--base", base,
+             "--head", head, "--title", title, "--body", body or title],
             cwd=tmp, capture_output=True, text=True)
         if pr.returncode != 0:
             raise click.ClickException(f"gh pr create failed: {pr.stderr.strip()}")
