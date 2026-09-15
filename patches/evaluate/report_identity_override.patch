@@ -1,0 +1,118 @@
+diff --git a/aqa/cli.py b/aqa/cli.py
+index 10659ea..00e4922 100644
+--- a/aqa/cli.py
++++ b/aqa/cli.py
+@@ -120,7 +120,7 @@ def sweep(config: str, only: str | None, dry_run: bool) -> None:
+         states = [c.get("state", "") for c in report["candidates"]]
+         done = sum(1 for s in states if s == "done")
+         _dispatch_sinks(cfg, base_dir, RunMeta(
+-            model=cfg.model,
++            model=cfg.output.report_model or cfg.model,
+             artifact_name=_artifact_name(cfg, "sweep"),
+             run_root=base_dir,
+             status=f"Sweep {done}/{len(states)} done"))
+diff --git a/aqa/config.py b/aqa/config.py
+index 9af1012..791ac52 100644
+--- a/aqa/config.py
++++ b/aqa/config.py
+@@ -456,6 +456,15 @@ class OutputConfig(BaseModel):
+     # run10/run11 shared a dir and the checkpoint provenance got ambiguous).
+     # Default false: an unchanged dir keeps the resume semantics.
+     unique_dir: bool = False
++    # Reporting identity overrides for the dataset sink. When `model:` is a local
++    # checkpoint path (no `Org/Name`), the org slug can't be inferred and the
++    # dataset lands under `results/unknown/...`; likewise an eval-only run of a
++    # quantized dir has no `quant` block, so the artifact name defaults to
++    # `<dir>-BF16-Baseline`. Set these to pin the canonical identity:
++    #   report_model : canonical `Org/Model` id -> dataset org + artifact short name
++    #   artifact_name: explicit artifact name (dataset path segment + model repo)
++    report_model: str | None = None
++    artifact_name: str | None = None
+ 
+ 
+ # ── Top-level ────────────────────────────────────────────────────────────────
+diff --git a/aqa/pipeline.py b/aqa/pipeline.py
+index 03df419..ad16253 100644
+--- a/aqa/pipeline.py
++++ b/aqa/pipeline.py
+@@ -135,14 +135,26 @@ def _make_run_id(run_cfg: RunConfig) -> str:
+     return make_run_id(run_cfg)
+ 
+ 
++def _report_model(run_cfg: RunConfig) -> str:
++    """Canonical model identity for reporting/sinks (org slug + results 'model').
++
++    Prefers ``output.report_model`` so a local checkpoint path doesn't collapse
++    the dataset org to ``unknown``.
++    """
++    return run_cfg.output.report_model or run_cfg.model
++
++
+ def _artifact_name(run_cfg: RunConfig, suffix: str) -> str:
+     from .report.names import canonical_artifact_name
+ 
++    if run_cfg.output.artifact_name:
++        return run_cfg.output.artifact_name
++    ident = _report_model(run_cfg)
+     if suffix == "sweep":
+-        short = run_cfg.model.split("/")[-1]
++        short = ident.split("/")[-1]
+         return f"{short}-AutoRound-sweep"
+     if suffix == "baseline":
+-        short = run_cfg.model.split("/")[-1]
++        short = ident.split("/")[-1]
+         return f"{short}-BF16-Baseline"
+     return canonical_artifact_name(run_cfg)
+ 
+@@ -408,7 +420,7 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path) -> ProcessState:
+             for mode in baseline_modes:
+                 d = base_dir if mode == "on" else base_dir.with_name("baseline_thinking_off")
+                 _dispatch_sinks(run_cfg, d, RunMeta(
+-                    model=run_cfg.model, artifact_name=_artifact_name(run_cfg, "baseline")))
++                    model=_report_model(run_cfg), artifact_name=_artifact_name(run_cfg, "baseline")))
+         baseline = baseline_modes.get("on")
+ 
+         # ── resolve the eval target (provider: pretrained|quantize|endpoint) ──
+@@ -452,7 +464,7 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path) -> ProcessState:
+         _write_terminal_state(out_dir, ProcessState.DONE, run_cfg.model)
+         _sediment_sessions(run_cfg, out_dir, knowledge, run_id)
+         _dispatch_sinks(run_cfg, eval_dir, RunMeta(
+-            model=run_cfg.model,
++            model=_report_model(run_cfg),
+             scheme=run_cfg.quant.scheme if run_cfg.quant else None,
+             method=run_cfg.quant.method if run_cfg.quant else None,
+             artifact_name=_artifact_name(run_cfg, "quant"),
+@@ -536,7 +548,7 @@ def _writeback_on_failure(run_cfg: RunConfig, out_dir: Path, eval_dir: Path,
+         _log.warning("failure-path manifest error: %s", man_exc)
+     try:
+         _dispatch_sinks(run_cfg, run_dir, RunMeta(
+-            model=run_cfg.model,
++            model=_report_model(run_cfg),
+             scheme=run_cfg.quant.scheme if run_cfg.quant else None,
+             method=run_cfg.quant.method if run_cfg.quant else None,
+             artifact_name=_artifact_name(run_cfg, "quant"),
+@@ -618,7 +630,7 @@ def _maybe_upload_model(run_cfg: RunConfig, resolved, result: EvalResult, out_di
+         model_card=cfg.model_card,
+     )
+     meta = RunMeta(
+-        model=run_cfg.model,
++        model=_report_model(run_cfg),
+         scheme=run_cfg.quant.scheme if run_cfg.quant else None,
+         method=run_cfg.quant.method if run_cfg.quant else None,
+         artifact_name=cfg.repo_name or _artifact_name(run_cfg, "quant"),
+diff --git a/aqa/report/names.py b/aqa/report/names.py
+index 62eb56b..28019d3 100644
+--- a/aqa/report/names.py
++++ b/aqa/report/names.py
+@@ -53,7 +53,10 @@ def _lowest_bit_scheme(quant) -> str:
+ 
+ def canonical_artifact_name(run_cfg: RunConfig) -> str:
+     """Canonical name for a quantize run's artifact (dataset path + model repo)."""
+-    short = run_cfg.model.split("/")[-1] if run_cfg.model else "model"
++    if run_cfg.output.artifact_name:
++        return run_cfg.output.artifact_name
++    ident = run_cfg.output.report_model or run_cfg.model
++    short = ident.split("/")[-1] if ident else "model"
+     quant = run_cfg.quant
+     if quant is None:
+         return f"{short}-BF16-Baseline"

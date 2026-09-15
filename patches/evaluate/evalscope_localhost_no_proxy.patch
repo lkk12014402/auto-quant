@@ -1,0 +1,57 @@
+diff --git a/aqa/eval/harness/evalscope.py b/aqa/eval/harness/evalscope.py
+index 54c0164..a0041be 100644
+--- a/aqa/eval/harness/evalscope.py
++++ b/aqa/eval/harness/evalscope.py
+@@ -36,6 +36,25 @@ _FAIL_TAIL_LINES = 120
+ _HEALTH_POLL_INTERVAL = 10
+ 
+ 
++def _localhost_no_proxy_env() -> dict[str, str]:
++    """Env with 127.0.0.1/localhost appended to no_proxy/NO_PROXY.
++
++    The harness serves the model on 127.0.0.1 and talks to it over HTTP. When
++    the environment defines an HTTP(S) proxy (common in corp networks, e.g.
++    env.sh's LOCAL_HTTP_PROXY), both the readiness probe and evalscope's OpenAI
++    client would otherwise route localhost through the proxy and get a 403 —
++    hanging ``_wait_ready`` until timeout. We only bypass the proxy for
++    localhost so external dataset downloads still use it.
++    """
++    env = dict(os.environ)
++    hosts = ["127.0.0.1", "localhost", "0.0.0.0", "::1"]
++    for var in ("no_proxy", "NO_PROXY"):
++        existing = [p for p in env.get(var, "").split(",") if p.strip()]
++        merged = existing + [h for h in hosts if h not in existing]
++        env[var] = ",".join(merged)
++    return env
++
++
+ def _log_tail(path: Path, lines: int = _FAIL_TAIL_LINES) -> str:
+     try:
+         text = path.read_text(errors="replace")
+@@ -137,6 +156,8 @@ class EvalScopeHarness:
+ 
+     def _wait_ready(self, proc: subprocess.Popen, log_path: Path) -> None:
+         import urllib.request
++        # Bypass any configured HTTP proxy for the localhost health probe.
++        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+         url = f"http://127.0.0.1:{self.port}/v1/models"
+         deadline = time.time() + self.startup_timeout
+         while time.time() < deadline:
+@@ -145,7 +166,7 @@ class EvalScopeHarness:
+                     f"vllm serve exited early (rc={proc.returncode}); see {log_path}"
+                     + _log_tail(log_path))
+             try:
+-                with urllib.request.urlopen(url, timeout=5) as resp:
++                with opener.open(url, timeout=5) as resp:
+                     if resp.status == 200:
+                         return
+             except Exception:  # noqa: BLE001 - not up yet
+@@ -194,7 +215,7 @@ class EvalScopeHarness:
+             _log.info("[CMD] %s", shlex.join(eval_cmd))
+             from ...proc import stream_subprocess
+ 
+-            rc = stream_subprocess(eval_cmd, eval_log)
++            rc = stream_subprocess(eval_cmd, eval_log, env=_localhost_no_proxy_env())
+             if rc != 0:
+                 raise AqaError(
+                     f"evalscope failed (rc={rc}); see {eval_log}" + _log_tail(eval_log))

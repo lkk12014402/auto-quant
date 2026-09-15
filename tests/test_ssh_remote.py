@@ -248,3 +248,15 @@ def test_remote_script_no_mounts_by_default():
     mount_lines = [l for l in script.splitlines() if "-v " in l]
     assert len(mount_lines) == 3  # $REPO + HF cache + the chown helper
     assert not any("-v /" in l and "$" not in l for l in mount_lines)  # no host-path mounts
+
+
+def test_run_id_prefers_report_model_over_local_path():
+    data = {**_BASE, "model": "/models/auto-quant/results/x/quantized/Qwen3.5-9B-mxfp-w4g32"}
+    data["output"] = {**_BASE["output"], "report_model": "Qwen/Qwen3.5-9B"}
+    cfg = parse_run_config(data)
+    rid = make_run_id(cfg)
+    assert rid.startswith("Qwen3.5-9B_")
+    assert "mxfp-w4g32" not in rid
+    # without report_model the local dir name is used (legacy behavior)
+    cfg2 = parse_run_config({**_BASE, "model": "/models/x/Qwen3.5-9B-mxfp-w4g32"})
+    assert make_run_id(cfg2).startswith("Qwen3.5-9B-mxfp-w4g32_")

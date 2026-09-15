@@ -62,6 +62,20 @@ aqa traces distill --path <out_dir> --knowledge-root <out_dir>/knowledge
 aqa traces publish --path <dir1> --path <dir2> ... --stage-only --stage-dir archive
 ```
 
+## 固化脚本（批量沉淀 + 知识归集）
+
+| 脚本 | 用途 |
+|---|---|
+| `batch_export.sh` | 批量走 convert→export→distill 全管线（kimi 7f851d8a + milan_copilot 全部 session） |
+| `batch_export_2.sh` | 通用化版：按 session 目录批量处理（kimi 7f851d8a + 4f880e4d，含各自子代理），用法见文件头 |
+| `curate_knowledge.py` | **知识归集**：sync_down 共享 store → 合并本目录全部机械 distill（signature 去重）→ 写入人工提炼的 curated lessons → push_up 到 HF dataset。幂等可重复跑；`--no-push` 只写本地。新增经验在 `CURATED` 里追加（error_context 用真实报错原文，决定 fix-loop 日后能否命中） |
+
+```bash
+source env.sh   # LOCAL_RESULTS_DATASET / LOCAL_RESULTS_HF_TOKEN
+python demo/trajectory_export/curate_knowledge.py            # 全流程（含 push）
+python demo/trajectory_export/curate_knowledge.py --no-push  # 只写本地 store
+```
+
 ## 说明
 
 - 会话不含 solved/reward 元数据，走"无 outcome 保留"路径；fix-loop 产出的

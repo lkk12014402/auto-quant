@@ -1,0 +1,76 @@
+--- a/compressed_tensors/utils/helpers.py
++++ b/compressed_tensors/utils/helpers.py
+@@ -421,6 +421,27 @@
+             return self[args]
+ 
+ 
++_ATTENTION_DIM_ATTRS = ("num_attention_heads", "num_key_value_heads", "head_dim")
++
++
++def _attn_config_scope(config: PretrainedConfig) -> PretrainedConfig:
++    """Return the config level that actually declares the attention dims.
++
++    Composite (vision-language / nested) configs such as Qwen3_5 keep
++    `num_attention_heads` / `num_key_value_heads` / `head_dim` / `hidden_size`
++    only on the nested `text_config`, and transformers' composite config does
++    NOT proxy those attributes onto the root. Static KV/attention qparam
++    initialisation reads them off the root and raises, so descend one level
++    when the root declares none of them. Flat configs are returned unchanged.
++    """
++    if any(hasattr(config, a) for a in _ATTENTION_DIM_ATTRS):
++        return config
++    sub = getattr(config, "text_config", None)
++    if sub is not None and any(hasattr(sub, a) for a in _ATTENTION_DIM_ATTRS):
++        return sub
++    return config
++
++
+ def get_num_attn_heads(config: PretrainedConfig) -> int:
+     """
+     Get the number of attention heads used by a model
+@@ -428,11 +449,12 @@
+     :param config: model config
+     :return: num_attention_heads of model
+     """
+-    if hasattr(config, "num_attention_heads"):
+-        return config.num_attention_heads
++    cfg = _attn_config_scope(config)
++    if hasattr(cfg, "num_attention_heads"):
++        return cfg.num_attention_heads
+ 
+-    elif hasattr(config, "hidden_size") and hasattr(config, "head_dim"):
+-        return config.hidden_size // config.head_dim
++    elif hasattr(cfg, "hidden_size") and hasattr(cfg, "head_dim"):
++        return cfg.hidden_size // cfg.head_dim
+ 
+     else:
+         raise ValueError(
+@@ -449,8 +471,9 @@
+     :param config: model config
+     :return: num_key_value_heads of model
+     """
+-    if hasattr(config, "num_key_value_heads"):
+-        return config.num_key_value_heads
++    cfg = _attn_config_scope(config)
++    if hasattr(cfg, "num_key_value_heads"):
++        return cfg.num_key_value_heads
+ 
+     else:
+         raise ValueError(
+@@ -466,11 +489,12 @@
+     :param config: model config
+     :return: head_dim of model
+     """
+-    if hasattr(config, "head_dim"):
+-        return config.head_dim
++    cfg = _attn_config_scope(config)
++    if hasattr(cfg, "head_dim"):
++        return cfg.head_dim
+ 
+-    elif hasattr(config, "hidden_size") and hasattr(config, "num_attention_heads"):
+-        return config.hidden_size // config.num_attention_heads
++    elif hasattr(cfg, "hidden_size") and hasattr(cfg, "num_attention_heads"):
++        return cfg.hidden_size // cfg.num_attention_heads
+ 
+     else:
+         raise ValueError(

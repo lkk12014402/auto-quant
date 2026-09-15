@@ -73,7 +73,11 @@ _SECRET_ALLOWLIST = (
 def make_run_id(run_cfg: RunConfig) -> str:
     """Unique, filesystem-safe per-run id: ``<model>_<scheme>_<ts>_<rand>``."""
     scheme = run_cfg.quant.scheme if run_cfg.quant else "eval"
-    base = f"{run_cfg.model.split('/')[-1]}_{scheme}"
+    # Prefer the canonical `Org/Model` report id: for eval-only runs driven from a
+    # local export dir, `model` is a filesystem path and would leak the dir name
+    # (e.g. `Qwen3.5-9B-mxfp-w4g32`) into the public run id.
+    name = (run_cfg.output.report_model or run_cfg.model or "model").split("/")[-1]
+    base = f"{name}_{scheme}"
     base = "".join(c if (c.isalnum() or c in "-_.") else "-" for c in base)
     return f"{base}_{time.strftime('%Y%m%d-%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
