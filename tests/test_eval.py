@@ -253,35 +253,3 @@ def test_lm_eval_failure_embeds_log_tail(monkeypatch, tmp_path):
     from aqa.agent.lessons import extract_signature
     assert exception_type(msg) == "AssertionError"
     assert extract_signature(msg).startswith("AssertionError: mm_mxfp8")
-
-
-def test_runner_mixed_lm_eval_and_evalscope_harnesses(monkeypatch, tmp_path):
-    """One run can drive lm_eval tasks (gsm8k...) and evalscope tasks (aime26...)."""
-    from aqa.config import EvalConfig
-    from aqa.eval import runner
-
-    made = {}
-
-    def _mk(name, cfg, num_gpus):
-        h = _RecordingHarness()
-        h.name = name
-        made[name] = h
-        return h
-
-    monkeypatch.setattr(runner, "_make_harness", _mk)
-
-    class _FakeBackend:
-        name = "vllm"
-    monkeypatch.setattr(runner.BACKENDS, "create", lambda name: _FakeBackend())
-
-    cfg = EvalConfig(benchmarks=["piqa", "gsm8k", "aime26", "gpqa_diamond"],
-                     backend="vllm")
-    res = runner.run_evaluation("org/m", cfg, tmp_path, num_gpus=1)
-    # lm_eval 任务走 lm_eval harness；aime/gpqa 走 evalscope harness
-    assert "lm_eval" in made and "evalscope" in made
-    lm_names = {n for g in made["lm_eval"].groups for n in g} | set(made["lm_eval"].singles)
-    assert lm_names == {"piqa", "gsm8k"}
-    evalscope_names = (made["evalscope"].groups[0] if made["evalscope"].groups
-                       else made["evalscope"].singles)
-    assert set(evalscope_names) == {"aime26", "gpqa_diamond"}
-    assert set(res.benchmarks) == {"piqa", "gsm8k", "aime26", "gpqa_diamond"}

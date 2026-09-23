@@ -43,7 +43,15 @@ gate:
 | `drawbench_clip` | 图文对齐 | CLIP score（单值） |
 | `drawbench_metrics` | 图文对齐 + 画质 + 人类偏好 | CLIP / CLIP-IQA / ImageReward 三列 |
 | `geneval` | 对象级组合生成正确性 | Mask2Former 检测 + CLIP ViT-L/14（0..1，6 类任务均值） |
-| `dpgbench` | 密集 prompt 跟随 | mPLUG VQA 判分 |
+| `dpgbench` | 密集 prompt 跟随 | mPLUG VQA 判分（官方；其依赖链在 Python 3.12 上装不了，本机跑不动） |
+| `dpgbench_vllm` | 密集 prompt 跟随 | 同一批 prompt，判官换成 OpenAI 兼容的 vLLM VLM 端点（**文档化替换**，只可做同判官下的 delta） |
+| `cvtg2k` | 多区域视觉文字生成 | Word Accuracy / NED（PaddleOCR en）+ CLIPScore（OpenAI CLIP ViT-L/14），出 3 个结果 |
+| `glyphdraw2` | 文字渲染准确率 | Acc / NED（PP-OCR；语义借用 AnyText，无区域裁剪），出 2 个结果 |
+| `wise` | 世界知识一致性 | Qwen3.5-35B-A3B（vLLM OpenAI 端点）二值 0/1 判分，6 类加权 |
+
+后三者是后加的：`cvtg2k`/`glyphdraw2` 的 OCR 与 `wise` 的裁判都是懒加载、可注入的
+（测试用 fake）；`wise` 只实现可离线跑的 **Verified** 协议，legacy GPT-4o 协议不实现
+（需付费 API，且与官方榜单不可比）——细节见各自的 recipe `description` 与模块 docstring。
 
 三指标的 CLIP-IQA 复用同一 CLIP 模型（反义词 prompt 对），ImageReward 跑在
 隔离的 transformers-v4 子进程环境里（`aqa/eval/image_metrics.py` 顶部有
@@ -62,3 +70,9 @@ DeepSeek-OCR-2。示例 yaml 在 `examples/run_diffusion_*.yaml`。
   `repair_diffusion_export` 自动修；
 - 同进程二次加载 Omni 需要 teardown 分布式组（harness 已处理）；
 - SVDQuant→Nunchaku 仅 FLUX.1，FLUX.2 不命中其 adapter 检测。
+- **PaddleOCR 3.x**：2.x 的 `use_angle_cls`/`show_log` 与 `.ocr(cls=True)` 都没了，
+  调用改 `predict()`、结果从嵌套 list 改成带 `rec_texts` 的 dict —— `cvtg2k`/`glyphdraw2`
+  统一走 `aqa/eval/_paddleocr.py`。该适配层还会在 paddle 的 oneDNN 后端崩溃时
+  （paddlepaddle 3.3.1 + PP-OCRv6，`NotImplementedError:
+  ConvertPirAttribute2RuntimeAttribute not support`）自动用 `enable_mkldnn=False`
+  重建一次引擎，所以不必也不能靠 `FLAGS_use_mkldnn` 之类的环境变量规避。

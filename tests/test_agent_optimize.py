@@ -236,22 +236,6 @@ def test_build_quant_constraints_model_free_present_vs_absent():
     assert any(c.flag == "--model_free" and c.kind == "absent" for c in al)
 
 
-def test_build_quant_constraints_static_fp8():
-    from aqa.agent.optimize import build_quant_constraints
-
-    cons = build_quant_constraints(
-        _quant(method="autoround", static_kv_fp8=True, static_attention_fp8=True))
-    by_flag = {c.flag: c for c in cons}
-    assert by_flag["--static_kv_dtype"].kind == "value"
-    assert by_flag["--static_kv_dtype"].value == "fp8"
-    assert by_flag["--static_attention_dtype"].kind == "value"
-    assert by_flag["--static_attention_dtype"].value == "fp8"
-    # unset -> no constraint
-    none_cons = build_quant_constraints(_quant(method="autoround"))
-    assert "--static_kv_dtype" not in {c.flag for c in none_cons}
-    assert "--static_attention_dtype" not in {c.flag for c in none_cons}
-
-
 def test_validate_rejects_model_free_when_operator_forbids_it():
     # method=autoround => command must NOT pass --model_free (the gpt-oss trap).
     from aqa.agent.optimize import build_quant_constraints
@@ -363,7 +347,7 @@ def test_run_agent_optimize_loads_diffusion_knowledge_for_dit(monkeypatch, tmp_p
                         lambda *a, **k: ModelAnalysis(model_id="org/flux", is_diffusion=True))
     seen = {}
 
-    def fake_load(*, include_diffusion=False, **_kw):
+    def fake_load(*, include_diffusion=False):
         seen["include_diffusion"] = include_diffusion
         return ""
 

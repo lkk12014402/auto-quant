@@ -82,16 +82,75 @@ class GenevalSpec(BaseModel):
 class DpgBenchSpec(BaseModel):
     """Config for the ``dpgbench`` scorer (dense-prompt-following via VQA judge).
 
-    Defaults follow the official DPG-Bench protocol (mPLUG VQA via modelscope;
-    ``resolution`` should match the generation size -- with pic_num=1 the
-    top-left resolution-sized crop is judged).
+    ``judge`` selects the VQA backend: ``mplug`` (default; the official
+    mPLUG/modelscope judge, currently uninstallable on Python 3.12) or ``vllm``
+    (an OpenAI-compatible vLLM VLM endpoint, the documented substitution --
+    ``judge_model`` + ``base_url`` mirror the WISE judge config).  ``resolution``
+    should match the generation size -- with pic_num=1 the top-left
+    resolution-sized crop is judged.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    judge: Literal["mplug", "vllm"] = "mplug"
+    # mPLUG path.
     vqa_model: str = "damo/mplug_visual-question-answering_coco_large_en"
     resolution: int = 1024
     device: str = "auto"
+    # vLLM path (judge == "vllm").
+    judge_model: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    base_url: str = "http://127.0.0.1:8000/v1"
+    api_key_env: str = "OPENAI_API_KEY"
+    timeout: float = 300.0
+    max_tokens: int = 16
+
+
+class Cvtg2kSpec(BaseModel):
+    """Config for the ``cvtg2k`` scorer (complex visual text generation).
+
+    Defaults follow the TextCrafter reference: PaddleOCR ``lang="en"`` for OCR
+    and the official OpenAI CLIP ``ViT-L/14`` for CLIPScore.  ``clipscore_x2_5``
+    defaults to the reference's 2.5x CLIPScore-paper scale so the number is
+    comparable with the published anchors; pass ``False`` for the bare 0-1 cosine.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ocr_lang: str = "en"
+    clip_model: str = "ViT-L/14"
+    clipscore_x2_5: bool = True
+    device: str = "auto"
+
+
+class GlyphDraw2Spec(BaseModel):
+    """Config for the ``glyphdraw2`` scorer (text-rendering Acc/NED via PP-OCR).
+
+    Prompt records carry their own language, so ``ocr_lang`` is only the fallback
+    for records missing one.  Acc/NED semantics are borrowed from AnyText (see
+    ``aqa.eval.glyphdraw2``).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    ocr_lang: str = "en"
+    device: str = "auto"
+
+
+class WiseSpec(BaseModel):
+    """Config for the ``wise`` scorer (WISE_Verified binary 0/1 judge).
+
+    The judge is ``Qwen/Qwen3.5-35B-A3B`` served by vLLM over an
+    OpenAI-compatible endpoint (no weights loaded in-process); the API key is
+    read from ``api_key_env``.  Only the Verified protocol is supported.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    judge_model: str = "Qwen/Qwen3.5-35B-A3B"
+    base_url: str = "http://127.0.0.1:8000/v1"
+    api_key_env: str = "OPENAI_API_KEY"
+    timeout: float = 300.0
+    max_retries: int = 3
 
 
 class ImageMetricSpec(BaseModel):
@@ -127,6 +186,12 @@ class ScoringSpec(BaseModel):
     geneval: GenevalSpec | None = None
     # Config for scorer == "dpgbench" (ignored otherwise).
     dpgbench: DpgBenchSpec | None = None
+    # Config for scorer == "cvtg2k" (ignored otherwise).
+    cvtg2k: Cvtg2kSpec | None = None
+    # Config for scorer == "glyphdraw2" (ignored otherwise).
+    glyphdraw2: GlyphDraw2Spec | None = None
+    # Config for scorer == "wise" (ignored otherwise).
+    wise: WiseSpec | None = None
     # Config for scorer == "image_metrics" (ignored otherwise).
     image_metrics: ImageMetricSpec | None = None
 
@@ -195,6 +260,24 @@ class BenchmarkResult:
             turns=agent_result.total_turns(),
         )
 
+    def summary_dict(self) -> dict[str, Any]:
+        """Compact score entry for ``accuracy.json`` / the manifest.
+
+        When the harness marked the benchmark incomplete (its raw carries
+        ``complete: False`` -- e.g. some images failed to score because a judge
+        was unavailable), that is surfaced here too so a comparison table cannot
+        silently treat a partial run as a full measurement.
+        """
+        entry: dict[str, Any] = {
+            "score": self.score,
+            "metric": self.metric,
+            "num_samples": self.num_samples,
+        }
+        if self.raw.get("complete") is False:
+            entry["complete"] = False
+            entry["num_missing"] = self.raw.get("num_missing", 0)
+        return entry
+
 
 @dataclass
 class EvalResult:
@@ -251,7 +334,7 @@ class EvalResult:
             "backend": self.backend,
             "mean_score": self.mean_score(),
             "results": {
-                name: {"score": b.score, "metric": b.metric, "num_samples": b.num_samples}
+                name: b.summary_dict()
                 for name, b in self.benchmarks.items()
             },
             "commands": list(self.commands),

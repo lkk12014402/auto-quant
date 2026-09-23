@@ -1,0 +1,47 @@
+[aqa.backends]
+hf = aqa.backends.hf:HfBackend
+vllm = aqa.backends.vllm:VllmBackend
+vllm_omni = aqa.backends.vllm_omni:VllmOmniBackend
+
+[aqa.executors]
+local = aqa.executors.local:LocalExecutor
+ssh = aqa.executors.ssh:SshExecutor
+
+[aqa.harnesses]
+diffusion = aqa.eval.harness.diffusion:DiffusionHarness
+lm_eval = aqa.eval.harness.lm_eval:LmEvalHarness
+native = aqa.eval.harness.native:NativeHarness
+
+[aqa.hooks]
+eval_sanity = aqa.hooks.sanity:EvalSanityHook
+quant_sanity = aqa.hooks.sanity:QuantSanityHook
+
+[aqa.providers]
+endpoint = aqa.providers.builtin:EndpointProvider
+pretrained = aqa.providers.builtin:PretrainedProvider
+quantize = aqa.providers.builtin:QuantizeProvider
+
+[aqa.recipe_stores]
+hf_dataset = aqa.recipe_store:HfDatasetStore
+repo_dir = aqa.recipe_store:RepoDirStore
+
+[aqa.sandboxes]
+docker = aqa.sandbox.docker:DockerSandbox
+local = aqa.sandbox.local:LocalSandbox
+
+[aqa.scorers]
+answer_line = aqa.eval.scoring:answer_line
+code_exec = aqa.eval.code_exec:_default_code_exec
+exact_match = aqa.eval.scoring:exact_match
+fuzzy_match = aqa.eval.scoring:fuzzy_match
+llm_judge = aqa.eval.scoring:_default_llm_judge
+multichoice_regex = aqa.eval.scoring:multichoice_regex
+numeric_match = aqa.eval.scoring:numeric_match
+
+[aqa.sinks]
+hf_dataset = aqa.report.sinks:HfDatasetSink
+hf_model = aqa.report.sinks:HfModelSink
+local_fs = aqa.report.sinks:LocalFsSink
+
+[console_scripts]
+aqa = aqa.cli:main_entry

@@ -1,0 +1,38 @@
+name: dpgbench_vllm
+harness: diffusion
+type: generative
+# Same vendored DPG-Bench prompts as `dpgbench` (TencentQQGYLab/ELLA,
+# Apache-2.0 -- see NOTICE; 1065 dense prompts), scored with the substituted
+# vLLM VQA judge instead of the (uninstallable) official mPLUG judge.  Kept as a
+# separate benchmark name so results carry the judge they were measured with.
+dataset: recipes/data/dpgbench/prompts.jsonl
+prompt_field: prompt
+images_per_prompt: 1   # official: pic_num 1 (one image per prompt)
+scoring:
+  scorer: dpgbench
+  metric: dpgbench
+  dpgbench:
+    # OpenAI-compatible vLLM VLM endpoint; no judge weights are loaded in this
+    # process.  Start the server first, e.g.
+    #   vllm serve Qwen/Qwen3.5-35B-A3B --port 8123
+    # The same server also serves the WISE judge, so one process covers both.
+    judge: vllm
+    judge_model: Qwen/Qwen3.5-35B-A3B
+    base_url: http://127.0.0.1:8123/v1
+    api_key_env: OPENAI_API_KEY
+    timeout: 300.0
+    max_tokens: 16
+    # Unused on the vLLM path, kept so the file stays a drop-in for `dpgbench`.
+    vqa_model: damo/mplug_visual-question-answering_coco_large_en
+    resolution: 1024
+    device: auto
+description: >
+  DPG-Bench (ELLA, 2024) scored by a SUBSTITUTED judge: per-proposition VQA with
+  dependency zeroing, answered by an OpenAI-compatible vLLM VLM endpoint
+  (default here Qwen/Qwen3.5-35B-A3B) instead of the official mPLUG VQA judge,
+  whose dependency chain is uninstallable on Python 3.12. The metric keeps the
+  official definition (mean over images of per-image question accuracy, 0..1)
+  and the official prompts, but the answers come from a different judge: numbers
+  are comparable only as a DELTA between two model variants run under the SAME
+  judge and the SAME endpoint, and are NOT comparable to the published
+  HunyuanImage-3.0 anchor of 86.10 (or Z-Image's 88.14).

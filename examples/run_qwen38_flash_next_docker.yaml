@@ -1,0 +1,49 @@
+# Qwen3.8-Flash-Next 的 docker 路线：官方定制镜像 vllm/vllm-openai:qwen38-flash-next
+# （内含 qwen4_exp 支持的 vllm 构建）+ env docker 派发。
+# 关键：packages 显式列表排除 vllm——派生清单会装 PyPI vllm 覆盖镜像里的定制版。
+model: /home/kaokaolv/models/Qwen3.8-Flash-Next
+
+quant:
+  scheme: W4A16
+  method: model_free
+  export_format: auto_round   # model_free 的 INT 方案只认 auto_round(auto_gptq 打包)；llm_compressor 会触发回退到全量加载流程
+  ignore_layers: "lm_head,embed_tokens,visual,linear_attn,self_attn,hyper_connection,mlp.gate,shared_expert,in_proj_a,in_proj_b,ple,mtp,indexer"
+  # shared_expert 必保（每个 token 都过它，知识库 MoE 规则）；「shared_expert」子串
+  # 同时覆盖 shared_expert_gate（路由）。其余依据见上行注释与索引级核实记录。
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: true                 # TP4（GPU 3/4/5/7）跑 bf16 baseline
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      enable_thinking: false
+      reasoning_parser: qwen3
+    group: true
+    seed: 42
+
+gate:
+  max_accuracy_drop: 0.01
+
+agent:
+  optimize: false
+  fix_loop: false                # 本机无 agent CLI，失败人工介入
+
+executor:
+  type: local
+  num_gpus: 4
+  image:
+    gpu: vllm/vllm-openai:qwen38-flash-next   # 官方定制镜像（dockerfile 空 = 直接 pull 使用）
+  env:
+    type: docker
+    packages: [auto-round, lm-eval, datasets, pillow]   # 不要 vllm（镜像自带定制版）
+    mounts:
+      - /home/kaokaolv/models:/home/kaokaolv/models     # 模型目录进容器
+
+output:
+  dir: /home/kaokaolv/aqa_results/qwen38_flash_next_w4a16_docker
+  unique_dir: true             # 每次 run 独立时间戳目录 + latest 软链，杜绝跨 run 混淆
+  sinks:
+    - type: local_fs

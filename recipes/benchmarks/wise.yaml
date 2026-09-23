@@ -1,0 +1,36 @@
+name: wise
+harness: diffusion
+type: generative
+# Vendored WISE_Verified prompts (PKU-YuanGroup/WISE, Apache-2.0 -- see NOTICE;
+# 1,000 prompts, prompt_id 1..1000). Resolved relative to the repo root when
+# missing from the cwd.
+dataset: recipes/data/wise/prompts.jsonl
+prompt_field: prompt
+images_per_prompt: 1   # reference: one generated image per prompt (1.png..1000.png)
+scoring:
+  scorer: wise
+  metric: wise
+  wise:
+    # Judge = Qwen/Qwen3.5-35B-A3B served by vLLM over an OpenAI-compatible
+    # endpoint (no judge weights are loaded in-process). Point base_url at your
+    # `vllm serve` instance; the API key is read from api_key_env.
+    judge_model: Qwen/Qwen3.5-35B-A3B
+    # Workspace port: another user's server already holds :8000 (vLLM's
+    # default) on this box, so the judge is served on :8123 -- the SAME
+    # server feeds `dpgbench_vllm`. Start it with:
+    #   vllm serve <Qwen3.5-35B-A3B snapshot> --port 8123 \
+    #     --served-model-name Qwen/Qwen3.5-35B-A3B --trust-remote-code
+    base_url: http://127.0.0.1:8123/v1
+    api_key_env: OPENAI_API_KEY
+    timeout: 300.0
+    max_retries: 3
+description: >
+  WISE_Verified (PKU-YuanGroup/WISE; WISE paper arXiv:2503.07265): 1,000
+  world-knowledge prompts across culture/time/space/biology/physics/chemistry,
+  judged binary 0/1 by Qwen/Qwen3.5-35B-A3B (vLLM OpenAI endpoint). Overall =
+  0.40*CULTURE + 0.12*TIME + 0.12*SPACE + 0.12*BIOLOGY + 0.12*PHYSICS +
+  0.12*CHEMISTRY (0..1, higher is better). ONLY the offline Verified protocol is
+  implemented; the legacy GPT-4o protocol (WISE_legacy) needs a paid API and its
+  numbers are NOT comparable to the official leaderboard. Third-party anchor:
+  on the official WISE_Verified leaderboard (judge Qwen3.5-35B-A3B) HunyuanImage-3.0
+  = 0.4350 overall (rank 16); the widely-quoted 0.57 is the legacy protocol.

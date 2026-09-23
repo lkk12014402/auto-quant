@@ -1,0 +1,27 @@
+name: glyphdraw2
+harness: diffusion
+type: generative
+# Vendored GlyphDraw2 prompts (OPPO-Mente-Lab/GlyphDraw2, MIT -- see NOTICE; 440
+# prompts = complex/poster x en/zh). Resolved relative to the repo root when
+# missing from the cwd.
+dataset: recipes/data/glyphdraw2/prompts.jsonl
+prompt_field: prompt
+images_per_prompt: 1   # one generated image per prompt
+scoring:
+  scorer: glyphdraw2
+  metric: glyphdraw2
+  glyphdraw2:
+    # OCR = PaddleOCR (PP-OCR pipeline; lang per prompt: en -> "en", zh -> "ch").
+    device: auto
+description: >
+  GlyphDraw2 text-rendering benchmark (OPPO-Mente-Lab, 2024): 440 prompts
+  (complex/poster, en/zh) whose quoted target strings must be rendered. Emits
+  Acc (fraction of ground-truth text lines exactly recognized) and NED (mean
+  normalized edit distance), both 0..1, higher is better, judged by PP-OCR.
+  GlyphDraw2 ships OCR weights but NO runnable scorer, so the Acc/NED semantics
+  are borrowed from the public AnyText evaluator (tyxsspa/AnyText,
+  eval/eval_dgocr.py, Apache-2.0): WITHOUT region crops (GlyphDraw2 prompts have
+  no boxes) we OCR the whole image and match each ground-truth line to the
+  closest recognized line; the engine is PaddleOCR's pipeline, not GlyphDraw2's
+  unreleased recognizer. Not byte-parity with any official GlyphDraw2 scorer.
+  Third-party anchor (HunyuanImage-3.0 report): Acc 0.78.

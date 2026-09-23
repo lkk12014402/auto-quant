@@ -1,0 +1,54 @@
+# GLM-5.3-Flash day-0：W4A16 RTN（model_free，免校准）。
+# day-0 判定记录见 aqa_results/glm53_flash_day0/RUN_JOURNAL.md：
+# - transformers 5.16.1 认 glm5_next；vllm release/main 不认 → 官方定制镜像推理；
+# - 原生 FP8 权重，但量化源用官方 BF16 变体（bf16→W4 保真最高）；
+# - ignore 清单已对全索引模拟匹配（量化对象只剩 routed experts，零误伤）。
+model: /home/kaokaolv/models/GLM-5.3-Flash-BF16
+
+quant:
+  scheme: W4A16
+  method: model_free
+  export_format: auto_round   # model_free 的 INT 系只认 auto_round(auto_gptq 打包)
+  ignore_layers: "lm_head,embed_tokens,visual,hc_,indexer,self_attn,mlp.gate,shared_experts,eh_proj,enorm,hnorm,shared_head,norm,A_log,dt_bias,b_proj,f_a_proj,f_b_proj,g_a_proj,g_b_proj,conv1d,mlp.gate_proj,mlp.up_proj,mlp.down_proj"
+  # 保护：embed/lm_head/visual/hc_(hyper_connection)/indexer/self_attn(含KDA+稀疏MLA小件)/
+  # router(mlp.gate)/shared_experts/MTP(eh_proj,enorm,hnorm,shared_head)/norm/conv1d/
+  # 前3层dense MLP(mlp.{gate,up,down}_proj——auto-round GLM 预置规则 + 子串陷阱规避)
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: true             # BF16 基线（金标准参照）
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      enable_thinking: false
+      reasoning_parser: glm45   # model card/recipe 指定
+      max_num_seqs: 256         # KDA/Mamba 状态缓存每序列占一块（默认 512 块），
+                                # vllm 默认 max_num_seqs=1024 会爆引擎初始化；压到 256 留余量
+    group: true
+    seed: 42
+
+gate:
+  max_accuracy_drop: 0.01
+
+agent:
+  optimize: false
+  fix_loop: false            # 本机无 agent CLI；Kimi 人工承担 fix 角色
+
+executor:
+  type: local
+  num_gpus: 8                # BF16 640GB 需 TP8（TP4=160GB 超 143GB 单卡）；W4A16 后约 180GB
+  image:
+    gpu: vllm/vllm-openai:glm53-flash-x86_64-cu130   # 官方定制镜像（含 glm5_next 的 vllm 构建）
+  env:
+    type: docker
+    packages: [auto-round, lm-eval, datasets, pillow]   # 不要 vllm（镜像自带定制版）
+    mounts:
+      - /home/kaokaolv/models:/home/kaokaolv/models
+
+output:
+  dir: /home/kaokaolv/aqa_results/glm53_flash_day0/rtn
+  unique_dir: true
+  sinks:
+    - type: local_fs

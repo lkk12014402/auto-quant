@@ -1,0 +1,18 @@
+# CVTG-2K (complex visual text generation) eval-only template.
+# NOTE: `model` is a placeholder -- replace with a local DiT checkpoint dir
+# (`hf download <model> --local-dir <path>`, then set model to that path).
+model: example/diffusion-model
+eval:
+  benchmarks: [cvtg2k]   # emits cvtg2k.acc / cvtg2k.ned / cvtg2k.clipscore
+  backend: vllm_omni
+  harness: diffusion
+  diffusion:
+    num_inference_steps: 8
+    guidance_scale: 0.0
+    height: 1024
+    width: 1024
+    seed: 42
+output:
+  dir: ./results/cvtg2k
+  sinks:
+    - type: local_fs

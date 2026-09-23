@@ -1,0 +1,67 @@
+# Muse-Spark-1.2-820B-A42B day-0：MXFP4（model_free）量化 + vllm 插件栈评估。
+# 机器：hshen@sc09super22-b200（8×B200 183GB，共享 /home weka 挂载）。
+# 模型要点：musespark1x_omni 自定义架构；62 层 ×256 专家（fused 3-D w13/w2）≈97% 参数；
+# router 名不叫 gate（必须显式 ignore）；pooler/unpooler 每 token 过（保 bf16）；
+# 无 shared expert、无线性注意力。分析依据见 RUN_JOURNAL.md。
+# agent 分工：copilot（opus tier）做一线 fix；Kimi owner。
+model: /home/hshen/jianan/Muse-Spark-1.2-820B-A42B_fc7a86a
+
+quant:
+  scheme: MXFP4
+  method: model_free
+  export_format: llm_compressor
+  ignore_layers: "router,pooler,self_attn,vision_model,vision_perception,modalities,audio"
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: false            # bf16 1.64TB > 单机 8×183GB；NVFP4 版作参照另行评估
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      trust_remote_code: true   # 自定义架构（插件注册 musespark1x_omni）
+      tokenizer_mode: musespark1x   # 插件自带 tokenizer/renderer
+    group: true
+    seed: 42
+
+gate:
+  min_accuracy: 0.80         # 无 baseline；参照量级先保守，出分后校准
+
+agent:
+  optimize: false            # recipe 已钉死（分析文档 §5 方案 A），不需要 agent 造命令
+  fix_loop: true             # 一线修理由 copilot 后端承担
+  tiers: [opus]
+  patch:
+    capture: true
+
+executor:
+  type: ssh
+  image:
+    gpu: nvcr.io/nvidia/pytorch:26.01-py3
+    dockerfile: /home/kaokaolv/aqa_results/muse_spark_mxfp4/docker/muse_spark.dockerfile
+    pip_install:
+      # /home 经 ssh.mounts 挂进容器；两个本地 wheel 与 PyPI 同名包共存时 path 优先
+      - vllm==0.17.0   # 双保险（镜像已用 PIP_CONSTRAINT 钉住；防 bootstrap 裸装 vllm 升级）
+      - /home/kaokaolv/aqa_gpu_logs/wheels/auto_round-0.15.0-py3-none-any.whl
+      - /home/kaokaolv/aqa_gpu_logs/wheels/vllm_muse_spark-0.1.0-py3-none-any.whl
+  proxy:
+    http_proxy: ${LOCAL_HTTP_PROXY:-}
+    https_proxy: ${LOCAL_HTTPS_PROXY:-}
+  ssh:
+    host: ${GPU_HOST}
+    gpus: "0,1,2,3"            # MXFP4 导出 ~430GB，TP4 评估足够；量化本身不吃 GPU
+    mounts:
+      - /home:/home            # 模型/轮子/结果目录互通（共享 weka）
+    auth:
+      method: password
+      password_env: GPU_SSH_PASS
+
+output:
+  dir: /home/kaokaolv/aqa_results/muse_spark_mxfp4
+  unique_dir: true
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN

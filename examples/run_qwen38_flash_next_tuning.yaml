@@ -1,0 +1,67 @@
+# Qwen3.8-Flash-Next 调优版量化：与 run_qwen38_flash_next_docker.yaml（model_free RTN）
+# 同 recipe，唯一变化是走 auto-round 校准调优路径（method: autoround, iters=200）。
+#
+# 两个已验证的前提：
+# 1. 镜像自带 transformers 5.15.1 不认 qwen4_exp（CONFIG_MAPPING 未注册）——
+#    packages 升到 PyPI 5.16.1：已验证注册 qwen4_exp -> Qwen4ExpForCausalLM，
+#    且镜像内定制 vllm（0.1.dev20073）的 import 与 ModelConfig 解析均兼容。
+# 2. 调优用本地 auto-round 源码预打的 wheel（0.15.0-dev, bd9a13ce）而非 PyPI 0.14.2：
+#    day-0 架构吃最新修复。容器内无 git，源码目录直装会在 setup.py 的
+#    `git describe` 上炸（FileNotFoundError: git），故先在宿主打 wheel 再挂载。
+model: /home/kaokaolv/models/Qwen3.8-Flash-Next
+
+quant:
+  scheme: W4A16
+  method: autoround            # 模型真加载 + 校准调优（非 model_free）
+  iters: 200                   # nsamples 用 auto-round 默认 128
+  export_format: auto_round    # run13 同格式，与该镜像 vllm 已验证兼容
+  ignore_layers: "lm_head,embed_tokens,visual,linear_attn,self_attn,hyper_connection,mlp.gate,shared_expert,in_proj_a,in_proj_b,ple,mtp,indexer"
+  # shared_expert 必保（每个 token 都过它）；其余与 run13 清单一致。
+  extra_args:
+    - --disable_torch_compile  # 多卡 device_map=auto 会给叶子模块挂 accelerate AlignDevicesHook，
+                               # 编译后 backward 里 contextvars 重入崩溃（Context already entered）；
+                               # 单卡/CPU 路径不挂 hook 所以没事。关掉 compile 规避（linear_loop
+                               # experts 本来也吃不到多少编译收益）。
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: false              # bf16 baseline 已测（mean 0.8825，run13 同机同口径），复跑浪费数小时 TP4
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      enable_thinking: false
+      reasoning_parser: qwen3
+    group: true
+    seed: 42
+
+gate:
+  min_accuracy: 0.87           # 无 baseline 时 max_accuracy_drop 只能 INCONCLUSIVE；0.87 = baseline 0.8825 - 0.0125 余量
+
+agent:
+  optimize: false
+  fix_loop: false              # 本机无 agent CLI，失败人工介入
+
+executor:
+  type: local
+  num_gpus: 4
+  image:
+    gpu: vllm/vllm-openai:qwen38-flash-next   # 官方定制镜像（内含 qwen4_exp 的 vllm 构建）
+  env:
+    type: docker
+    packages:
+      - /opt/wheels/auto_round-0.15.0-py3-none-any.whl   # 本地源码预打 wheel（0.15.0-dev, bd9a13ce）；容器无 git，源码直装会挂在 setup.py 的 git describe
+      - transformers==5.16.1   # 镜像 5.15.1 不认 qwen4_exp
+      - lm-eval
+      - datasets
+      - pillow
+    mounts:
+      - /home/kaokaolv/models:/home/kaokaolv/models
+      - /home/kaokaolv/aqa_gpu_logs/wheels:/opt/wheels:ro
+
+output:
+  dir: /home/kaokaolv/aqa_results/qwen38_flash_next_w4a16_tuning
+  unique_dir: true             # 每次 run 独立时间戳目录 + latest 软链
+  sinks:
+    - type: local_fs

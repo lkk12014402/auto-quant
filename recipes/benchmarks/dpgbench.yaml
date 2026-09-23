@@ -10,12 +10,32 @@ scoring:
   scorer: dpgbench
   metric: dpgbench
   dpgbench:
-    # Official judge: mPLUG VQA via modelscope; resolution = generation size
-    # (with pic_num=1 the top-left resolution-sized crop is judged).
+    # Judge backend, left at the OFFICIAL default: mPLUG VQA via ModelScope.
+    # mPLUG's dependency chain (addict -> ... -> fairseq) is UNINSTALLABLE on
+    # Python 3.12 (fairseq's sdist is missing version.txt), so this recipe
+    # cannot run here; use `dpgbench_vllm` for a runnable, DOCUMENTED
+    # SUBSTITUTION whose numbers are comparable as a delta between two model
+    # variants only (never to the published HunyuanImage-3.0 anchor 86.10).
+    judge: mplug
     vqa_model: damo/mplug_visual-question-answering_coco_large_en
     resolution: 1024
     device: auto
+    # vLLM judge fields (used only when judge: vllm); kept at the code defaults.
+    judge_model: Qwen/Qwen2.5-VL-7B-Instruct
+    base_url: http://127.0.0.1:8000/v1
+    api_key_env: OPENAI_API_KEY
+    timeout: 300.0
+    max_tokens: 16
 description: >
-  DPG-Bench (ELLA, 2024): dense-prompt-following scored by mPLUG VQA per
-  proposition with dependency zeroing; score = mean over images of per-image
-  question accuracy (0..1, higher is better; Z-Image's published anchor 88.14).
+  DPG-Bench (ELLA, 2024): dense-prompt-following scored per proposition with
+  dependency zeroing; score = mean over images of per-image question accuracy
+  (0..1, higher is better). The DEFAULT/official judge is mPLUG VQA via
+  ModelScope (damo/mplug_visual-question-answering_coco_large_en), which is
+  CURRENTLY UNINSTALLABLE on Python 3.12 (its chain pulls addict/simplejson/
+  sortedcontainers/librosa/fairseq, and fairseq fails to build). Run
+  `dpgbench_vllm` instead: the vLLM judge is a DOCUMENTED SUBSTITUTION (judge
+  model default Qwen2.5-VL over an OpenAI-compatible endpoint), NOT the
+  official scorer, so DPG numbers measured with it are comparable only as a
+  DELTA between two model variants run under the SAME judge, and are NOT
+  comparable to the published HunyuanImage-3.0 anchor of 86.10 (or Z-Image's
+  88.14).

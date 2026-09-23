@@ -61,11 +61,11 @@ def test_convert_dpg_csv(tmp_path):
         'b,"prompt B",,1,0,attribute,color,attribute - color (red),Is it red?\n'
     )
     records = convert_dpg_csv(csv_path, tmp_path / "prompts.jsonl")
-    # the first data row is skipped (upstream parity), so item 'a' has qid 2 only
+    # the first data row is a real proposition, so it is kept (see the module docstring)
     assert [r["item_id"] for r in records] == ["a", "b"]
     qa = records[0]["questions"]
-    assert [q["qid"] for q in qa] == [2]
-    assert qa[0]["dependency"] == [1]  # dangling parent, as upstream produces
+    assert [q["qid"] for q in qa] == [1, 2]
+    assert qa[1]["dependency"] == [1]  # resolvable inside the record
     assert qa[0]["category"] == "entity - whole"
     assert records[0]["prompt"] == "prompt A"
     assert records[1]["questions"][0]["category"] == "attribute - color"
@@ -78,16 +78,36 @@ def test_convert_dpg_csv_multi_dependency(tmp_path):
     csv_path.write_text(
         "item_id,text,keywords,proposition_id,dependency,category_broad,"
         "category_detailed,tuple,question_natural_language\n"
-        # row 0 is skipped upstream; keep a sacrificial row so item a's qid 1 survives
-        'x,"sacrificial",,1,0,entity,whole,entity - whole (s),Skip me?\n'
         'a,"prompt A",,1,0,entity,whole,entity - whole (x),Q1?\n'
         'a,"prompt A",,2,"1, 3",entity,whole,entity - whole (y),Q2?\n'
     )
     records = convert_dpg_csv(csv_path, tmp_path / "p.jsonl")
-    # x never appears: its only row was the skipped first data row
     assert [r["item_id"] for r in records] == ["a"]
     assert [q["qid"] for q in records[0]["questions"]] == [1, 2]
     assert records[0]["questions"][1]["dependency"] == [1, 3]
+
+
+def test_convert_dpg_csv_keeps_the_vendored_data_consistent():
+    """No prompt may carry a dependency on a question it does not have.
+
+    This is what the removed first-data-row skip used to break: on the vendored
+    CSV every item starts at proposition_id 1, so dropping one row left 8
+    dangling edges on the first item and upstream's KeyError skipped its image
+    forever.
+    """
+    from aqa.eval.dpgbench import DATA_DIR, load_records
+
+    records = load_records(DATA_DIR / "prompts.jsonl")
+    assert len(records) == 1065
+    assert sum(len(r["questions"]) for r in records) == 14392
+    dangling = {
+        (r["item_id"], parent)
+        for r in records
+        for q in r["questions"]
+        for parent in q["dependency"]
+        if parent != 0 and parent not in {qq["qid"] for qq in r["questions"]}
+    }
+    assert dangling == set()
 
 
 # ── per-image scoring (fake judge) ───────────────────────────────────────────
@@ -117,10 +137,19 @@ def test_score_image_mixed_answers():
     assert result["score"] == pytest.approx(2 / 3)
 
 
-def test_score_image_dangling_dependency_raises():
+def test_score_image_dangling_dependency_does_not_zero():
+    """A parent the record does not carry cannot be shown to have answered 'no'."""
     rec = _record(0, [_q(2, "child?", [1])])  # parent qid 1 absent
-    with pytest.raises(KeyError):
-        score_image(_FakeJudge(), _FakeImage(), rec, resolution=1024)
+    result = score_image(_FakeJudge(), _FakeImage(), rec, resolution=1024)
+    assert result["score"] == 1.0  # judge defaults to 'yes'; no phantom zeroing
+
+
+def test_score_image_dangling_parent_does_not_rescue_a_no():
+    """The surviving parent still zeroes its child (normal dependency behavior)."""
+    rec = _record(0, [_q(1, "parent?", [0]), _q(2, "child?", [1, 9])])
+    result = score_image(_FakeJudge({"parent?": "no"}), _FakeImage(), rec, resolution=1024)
+    assert result["adj_scores"][2] == 0.0
+    assert result["raw_scores"][2] == 1.0  # categories use the raw score
 
 
 def test_score_image_pic_num_quadrants():
@@ -143,18 +172,29 @@ def _image_row(idx):
 def test_evaluate_rows_skips_failures_and_gaps():
     recs = [
         _record(0, [_q(1, "ok?", [0])]),
-        _record(1, [_q(2, "dangling?", [1])]),  # KeyError -> skipped (upstream parity)
+        # a parent the record does not carry is ignored, not a KeyError: the
+        # image is scored (regression guard for the old first-row-skip fallout)
+        _record(1, [_q(2, "dangling?", [1])]),
+        _record(2, [_q(1, "unreadable?", [0])]),
     ]
     judge = _FakeJudge()
+
+    def loader(path):
+        if path.endswith("0002.png"):
+            raise OSError("unreadable image")
+        return _FakeImage()
+
     scorer = DpgBenchScorer(judge=judge)
     rows = scorer.evaluate_rows(
-        [_image_row(0), _image_row(1), _image_row(2)],  # idx 2 has no record
-        recs, image_loader=lambda path: _FakeImage(),
+        [_image_row(0), _image_row(1), _image_row(2), _image_row(3)],  # idx 3: no record
+        recs, image_loader=loader,
     )
-    assert [r["idx"] for r in rows] == [0]
+    assert [r["idx"] for r in rows] == [0, 1]  # idx 2 fails, idx 3 has no record
     assert rows[0]["score"] == 1.0
     assert rows[0]["item_id"] == "item0"
     assert rows[0]["categories"] == {1: "entity - whole"}
+    assert rows[1]["score"] == 1.0  # dangling parent ignored -> all-yes image scores
+    assert scorer.num_skipped == 2  # the unreadable image + the record-less row
 
 
 def test_summarize_official_formula_quirk():
@@ -267,5 +307,5 @@ def test_vendored_prompts_jsonl():
 
     records = load_records(DATA_DIR / "prompts.jsonl")
     assert len(records) == 1065
-    assert sum(len(r["questions"]) for r in records) == 14391
+    assert sum(len(r["questions"]) for r in records) == 14392
     assert records[0]["item_id"] == "partiprompts97"

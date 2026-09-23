@@ -119,15 +119,9 @@ class LmEvalHarness:
                 if self.fewshot_as_multiturn is not None
                 else lead.fewshot_as_multiturn or True
             )
-            # Chat template defaults on for generative tasks, but an explicit
-            # run-level `lm_eval.apply_chat_template: false` drops it (e.g. Qwen3
-            # gsm8k scores better with raw 5-shot completions than chat-wrapped
-            # multi-turn prompts). `--fewshot_as_multiturn` only makes sense with
-            # a chat template, so it is nested under it.
-            if self.apply_chat_template is not False:
-                cmd += ["--apply_chat_template"]
-                if fewshot_mt:
-                    cmd += ["--fewshot_as_multiturn"]
+            cmd += ["--apply_chat_template"]
+            if fewshot_mt:
+                cmd += ["--fewshot_as_multiturn"]
             if backend.lm_eval_model_flag == "hf":
                 gen = self.gen_kwargs or lead.gen_kwargs or {"max_gen_toks": self.gen_max_toks}
                 cmd += ["--gen_kwargs", ",".join(f"{k}={v}" for k, v in gen.items())]
@@ -193,12 +187,10 @@ def _extract_metric(task_data: dict, recipe: BenchmarkRecipe) -> tuple[float, st
     prefer = list(recipe.scoring.prefer)
     if recipe.scoring.metric:
         prefer = [recipe.scoring.metric] + prefer
-    # exact_match variants first (generative), then acc, then acc_norm.
-    # `acc` precedes `acc_norm` to match the low_bit leaderboard convention
-    # (src/display/utils.py records every multiple-choice task as `acc,none`).
+    # exact_match variants first (generative), then acc_norm, then acc.
     default_order = [
         "exact_match,strict-match", "exact_match,flexible-extract", "exact_match",
-        "acc,none", "acc", "acc_norm,none", "acc_norm",
+        "acc_norm,none", "acc_norm", "acc,none", "acc",
     ]
     for key in prefer + default_order:
         if key in task_data and isinstance(task_data[key], (int, float)):

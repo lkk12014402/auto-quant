@@ -135,28 +135,11 @@ def _make_run_id(run_cfg: RunConfig) -> str:
     return make_run_id(run_cfg)
 
 
-def _report_model(run_cfg: RunConfig) -> str:
-    """Canonical model identity for reporting/sinks (org slug + results 'model').
-
-    Prefers ``output.report_model`` so a local checkpoint path doesn't collapse
-    the dataset org to ``unknown``.
-    """
-    return run_cfg.output.report_model or run_cfg.model
-
-
 def _artifact_name(run_cfg: RunConfig, suffix: str) -> str:
-    from .report.names import canonical_artifact_name
-
-    if run_cfg.output.artifact_name:
-        return run_cfg.output.artifact_name
-    ident = _report_model(run_cfg)
-    if suffix == "sweep":
-        short = ident.split("/")[-1]
-        return f"{short}-AutoRound-sweep"
-    if suffix == "baseline":
-        short = ident.split("/")[-1]
-        return f"{short}-BF16-Baseline"
-    return canonical_artifact_name(run_cfg)
+    short = run_cfg.model.split("/")[-1]
+    if run_cfg.quant and suffix == "quant":
+        return f"{short}-AutoRound-{run_cfg.quant.scheme}-{run_cfg.quant.method}"
+    return f"{short}-BF16-Baseline"
 
 
 def _dispatch_sinks(run_cfg: RunConfig, run_dir: Path, meta: RunMeta) -> None:
@@ -190,7 +173,6 @@ def _optimized_command(run_cfg: RunConfig, quant_dir: Path, out_dir: Path) -> st
             user_context=run_cfg.agent.context or "",
             constraints=build_quant_constraints(run_cfg.quant),
             log_dir=out_dir / "logs" / "agent_optimize",
-            use_synced_references=run_cfg.agent.knowledge.use_references,
         )
     except Exception as exc:  # noqa: BLE001 - optimize can only help, never block
         # An exception here is always unexpected (a legitimate "no usable
@@ -339,35 +321,6 @@ def _run_evaluate(run_cfg: RunConfig, model: str, eval_dir: Path,
     return holder["result"]
 
 
-def _run_evaluate_modes(run_cfg: RunConfig, model: str, eval_dir: Path,
-                        out_dir: Path, num_gpus: int, knowledge=None,
-                        run_id: str = "", phase_name: str = "evaluate",
-                        heal: HealTally | None = None) -> dict[str, EvalResult]:
-    """Evaluate under each required thinking mode; returns {mode: EvalResult}.
-
-    Modes come from ``eval.thinking`` (auto-detection or operator override).
-    The "on" run lands in ``eval_dir`` (legacy layout); an "off" run goes to a
-    sibling ``<name>_thinking_off`` dir so downstream consumers can pair modes
-    (gate, sinks) instead of mixing two very different score scales.
-    """
-    from .eval.thinking import apply_mode_to_cfg, resolve_thinking_modes
-
-    modes = resolve_thinking_modes(run_cfg.eval, model)
-    if len(modes) > 1:
-        _log.info("thinking-capable model: evaluating BOTH modes (on, off)")
-    results: dict[str, EvalResult] = {}
-    for mode in modes:
-        rcfg = run_cfg.model_copy(update={"eval": apply_mode_to_cfg(run_cfg.eval, mode)})
-        d = eval_dir if mode == "on" else eval_dir.with_name(eval_dir.name + "_thinking_off")
-        phase = phase_name if mode == "on" else f"{phase_name}_thinking_off"
-        results[mode] = _run_evaluate(rcfg, model, d, out_dir, num_gpus, knowledge,
-                                      run_id, phase_name=phase, heal=heal)
-        write_accuracy_json(results[mode], d)
-        if len(modes) > 1:
-            _log.info("thinking mode=%s done -> %s", mode, d)
-    return results
-
-
 def _resolve_model(run_cfg: RunConfig, out_dir: Path, num_gpus: int, knowledge=None,
                    run_id: str = "", heal: HealTally | None = None):
     """Resolve the evaluation target via the configured model provider.
@@ -410,18 +363,15 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path) -> ProcessState:
 
     try:
         # ── optional bf16 baseline evaluation ────────────────────────────────
-        baseline_modes: dict[str, EvalResult] = {}
         if run_cfg.eval.baseline:
             _log.info("== baseline eval (bf16) ==")
             base_dir = out_dir / "baseline"
-            baseline_modes = _run_evaluate_modes(
-                run_cfg, run_cfg.model, base_dir, out_dir, num_gpus, knowledge,
-                run_id, phase_name="baseline", heal=heal)
-            for mode in baseline_modes:
-                d = base_dir if mode == "on" else base_dir.with_name("baseline_thinking_off")
-                _dispatch_sinks(run_cfg, d, RunMeta(
-                    model=run_cfg.model, artifact_name=_artifact_name(run_cfg, "baseline")))
-        baseline = baseline_modes.get("on")
+            baseline = _run_evaluate(run_cfg, run_cfg.model, base_dir, out_dir,
+                                     num_gpus, knowledge, run_id,
+                                     phase_name="baseline", heal=heal)
+            write_accuracy_json(baseline, base_dir)
+            _dispatch_sinks(run_cfg, base_dir, RunMeta(
+                model=run_cfg.model, artifact_name=_artifact_name(run_cfg, "baseline")))
 
         # ── resolve the eval target (provider: pretrained|quantize|endpoint) ──
         resolved = _resolve_model(run_cfg, out_dir, num_gpus, knowledge, run_id,
@@ -430,28 +380,19 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path) -> ProcessState:
 
         # ── evaluation of the (provided) model ───────────────────────────────
         _log.info("== evaluate ==")
-        eval_modes = _run_evaluate_modes(run_cfg, eval_model, eval_dir, out_dir,
-                                         num_gpus, knowledge, run_id, heal=heal)
-        result = eval_modes.get("on") or next(iter(eval_modes.values()))
+        result = _run_evaluate(run_cfg, eval_model, eval_dir, out_dir, num_gpus,
+                               knowledge, run_id, heal=heal)
+        write_accuracy_json(result, eval_dir)
 
-        # ── gate (paired per thinking mode; worst verdict wins) ──────────────
+        # ── gate ─────────────────────────────────────────────────────────────
         gate_verdict: str | None = None
         if run_cfg.gate is not None:
-            rank = {"GO": 0, "INCONCLUSIVE": 1, "NO-GO": 2}
-            per_mode: dict[str, dict] = {}
-            reasons: list[str] = []
-            overall = "GO"
-            for mode, qres in eval_modes.items():
-                dec = evaluate_gate(qres, baseline_modes.get(mode), run_cfg.gate)
-                per_mode[mode] = {"verdict": dec.verdict, "reasons": dec.reasons}
-                reasons.extend(f"[{mode}] {r}" for r in dec.reasons)
-                if rank[dec.verdict] > rank[overall]:
-                    overall = dec.verdict
-            gate_verdict = overall
+            decision = evaluate_gate(result, baseline, run_cfg.gate)
+            gate_verdict = decision.verdict
             (out_dir / "gate.json").write_text(
-                __import__("json").dumps({"verdict": overall, "reasons": reasons,
-                                          "modes": per_mode}, indent=2))
-            _log.info("gate: %s (%s)", overall, "; ".join(reasons))
+                __import__("json").dumps({"verdict": decision.verdict, "reasons": decision.reasons},
+                                         indent=2))
+            _log.info("gate: %s (%s)", decision.verdict, "; ".join(decision.reasons))
 
         results = {n: b.score for n, b in result.benchmarks.items()}
 
@@ -462,9 +403,8 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path) -> ProcessState:
         write_manifest(manifest, out_dir)
 
         _write_terminal_state(out_dir, ProcessState.DONE, run_cfg.model)
-        _sediment_sessions(run_cfg, out_dir, knowledge, run_id)
         _dispatch_sinks(run_cfg, eval_dir, RunMeta(
-            model=_report_model(run_cfg),
+            model=run_cfg.model,
             scheme=run_cfg.quant.scheme if run_cfg.quant else None,
             method=run_cfg.quant.method if run_cfg.quant else None,
             artifact_name=_artifact_name(run_cfg, "quant"),
@@ -484,25 +424,6 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path) -> ProcessState:
                               run_id=run_id, heal=heal)
         _finalize_knowledge(knowledge)
         raise
-
-
-def _sediment_sessions(run_cfg: RunConfig, out_dir: Path, knowledge, run_id: str) -> None:
-    """ATIF-ize this run's agent sessions and push to the dataset's trajectories/.
-
-    Best-effort by design — sedimentation never fails or blocks a run.  Covers
-    fix-loop/optimize sessions (``logs/agent_*/*.events.jsonl``) plus raw
-    backend logs the owner dropped into ``<run_dir>/sessions/``.
-    """
-    if not run_cfg.agent.sediment_sessions:
-        return
-    try:
-        from .agent.session_sediment import sediment_sessions
-
-        staged = sediment_sessions(out_dir, run_id)
-        if staged and knowledge is not None:
-            knowledge.push_sessions(staged[0].parent)
-    except Exception as exc:  # noqa: BLE001
-        _log.warning("session sediment failed (non-fatal): %s", exc)
 
 
 def _finalize_knowledge(knowledge) -> None:
@@ -535,7 +456,6 @@ def _writeback_on_failure(run_cfg: RunConfig, out_dir: Path, eval_dir: Path,
     run_dir = eval_dir if eval_dir.exists() else out_dir
     _log.warning("run failed (%s); writing back partial results + status=%s", reason, status)
     _write_terminal_state(out_dir, ProcessState.FAILED, run_cfg.model)
-    _sediment_sessions(run_cfg, out_dir, knowledge, run_id)
     # A failed run still gets a manifest (empty results) so the attempt is auditable.
     try:
         empty = EvalResult(model=run_cfg.model, backend=run_cfg.eval.backend)
@@ -548,7 +468,7 @@ def _writeback_on_failure(run_cfg: RunConfig, out_dir: Path, eval_dir: Path,
         _log.warning("failure-path manifest error: %s", man_exc)
     try:
         _dispatch_sinks(run_cfg, run_dir, RunMeta(
-            model=_report_model(run_cfg),
+            model=run_cfg.model,
             scheme=run_cfg.quant.scheme if run_cfg.quant else None,
             method=run_cfg.quant.method if run_cfg.quant else None,
             artifact_name=_artifact_name(run_cfg, "quant"),
@@ -630,20 +550,12 @@ def _maybe_upload_model(run_cfg: RunConfig, resolved, result: EvalResult, out_di
         model_card=cfg.model_card,
     )
     meta = RunMeta(
-        model=_report_model(run_cfg),
+        model=run_cfg.model,
         scheme=run_cfg.quant.scheme if run_cfg.quant else None,
         method=run_cfg.quant.method if run_cfg.quant else None,
         artifact_name=cfg.repo_name or _artifact_name(run_cfg, "quant"),
         extra={"results": {n: b.score for n, b in result.benchmarks.items()}},
     )
-    # Feed the card's Reproduce & Environment section from the manifest the run
-    # just wrote (actual quant/eval commands + pinned package versions).
-    try:
-        manifest = json.loads((out_dir / "run_manifest.json").read_text())
-        meta.extra["commands"] = manifest.get("commands") or {}
-        meta.extra["versions"] = (manifest.get("environment") or {}).get("packages") or {}
-    except Exception as exc:  # noqa: BLE001 - card details are best-effort
-        _log.debug("model card details unavailable: %s", exc)
     try:
         url = sink.upload(model_dir, meta)
         _log.info("== model uploaded == %s", url)

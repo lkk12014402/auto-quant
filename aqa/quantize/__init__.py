@@ -41,16 +41,13 @@ def build_autoround_command(
         cmd += ["--rotation-hadamard-type", cfg.hadamard_type]
     if cfg.opt_rtn is not None:
         cmd.append("--enable_opt_rtn" if cfg.opt_rtn else "--disable_opt_rtn")
+    _append_torch_compile(cmd, cfg)
     if cfg.iters is not None:
         cmd += ["--iters", str(cfg.iters)]
     if cfg.nsamples is not None:
         cmd += ["--nsamples", str(cfg.nsamples)]
     if cfg.quant_lm_head:
         cmd.append("--quant_lm_head")
-    if cfg.static_kv_fp8:
-        cmd += ["--static_kv_dtype", "fp8"]
-    if cfg.static_attention_fp8:
-        cmd += ["--static_attention_dtype", "fp8"]
     if cfg.ignore_layers:
         cmd += ["--ignore_layers", cfg.ignore_layers]
     if cfg.layer_config:
@@ -93,6 +90,23 @@ def run_quant_command(cmd: str | list[str], output_dir: Path, *,
     _post_export(_model_name_of(argv), output_dir)
     run_hook_chain("after_quantize", hooks, quant_cfg=None, output_dir=output_dir)
     return out
+
+
+def _append_torch_compile(cmd: list[str], cfg: QuantConfig) -> None:
+    """Append the torch.compile flag, defaulting to disabled for ``model_free``.
+
+    The ``model_free`` path compiles inductor kernels inside spawned shard-worker
+    processes; on many-core CUDA hosts that can abort a worker and surface as
+    ``BrokenProcessPool``. RTN packing does not benefit from compile, so unless
+    the user set ``quant.torch_compile`` (or already passed a flag via
+    ``extra_args``), disable it there. Non-model_free runs keep auto-round's default.
+    """
+    if any(a in ("--enable_torch_compile", "--disable_torch_compile") for a in cfg.extra_args):
+        return
+    if cfg.torch_compile is True:
+        cmd.append("--enable_torch_compile")
+    elif cfg.torch_compile is False or cfg.method == "model_free":
+        cmd.append("--disable_torch_compile")
 
 
 def resolve_device_map(cfg: QuantConfig, num_gpus: int) -> str | None:

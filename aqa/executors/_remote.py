@@ -73,11 +73,7 @@ _SECRET_ALLOWLIST = (
 def make_run_id(run_cfg: RunConfig) -> str:
     """Unique, filesystem-safe per-run id: ``<model>_<scheme>_<ts>_<rand>``."""
     scheme = run_cfg.quant.scheme if run_cfg.quant else "eval"
-    # Prefer the canonical `Org/Model` report id: for eval-only runs driven from a
-    # local export dir, `model` is a filesystem path and would leak the dir name
-    # (e.g. `Qwen3.5-9B-mxfp-w4g32`) into the public run id.
-    name = (run_cfg.output.report_model or run_cfg.model or "model").split("/")[-1]
-    base = f"{name}_{scheme}"
+    base = f"{run_cfg.model.split('/')[-1]}_{scheme}"
     base = "".join(c if (c.isalnum() or c in "-_.") else "-" for c in base)
     return f"{base}_{time.strftime('%Y%m%d-%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
@@ -280,38 +276,17 @@ def container_packages(run_cfg: RunConfig) -> list[str]:
     pkgs: list[str] = []
     if run_cfg.eval.backend == "vllm_omni":
         # Diffusion text-to-image stack: engine + pipeline utils + CLIP scorer deps.
-        # vllm-omni imports `vllm` (e.g. vllm.config.lora) but doesn't pin it as a
-        # dependency, so install vllm explicitly or the diffusion harness fails at
-        # import with a misleading "vllm-omni is not installed".
         pkgs += [
-            "vllm", "vllm-omni", "diffusers", "datasets", "transformers",
+            "vllm-omni", "diffusers", "datasets", "transformers",
             "sentencepiece", "accelerate", "pillow",
         ]
     elif run_cfg.eval.backend in ("vllm", "vllm_xpu") and _accelerator(run_cfg) != "xpu":
         pkgs.append("vllm")
     pkgs += ["auto-round", "lm-eval"]
-    if _needs_evalscope(run_cfg):
-        # evalscope harness serves the model itself with vllm serve.
-        pkgs += ["evalscope"]
-        if "vllm" not in pkgs and _accelerator(run_cfg) != "xpu":
-            pkgs.append("vllm")
     for extra in run_cfg.executor.image.pip_install:
         if extra and extra not in pkgs:
             pkgs.append(extra)
     return pkgs
-
-
-def _needs_evalscope(run_cfg: RunConfig) -> bool:
-    """True when any requested benchmark routes to the evalscope harness."""
-    if run_cfg.eval.harness == "evalscope":
-        return True
-    try:
-        from ..eval.registry import BenchmarkRegistry
-
-        reg = BenchmarkRegistry()
-        return any(reg.get(b).harness == "evalscope" for b in run_cfg.eval.benchmarks)
-    except Exception:  # noqa: BLE001 - missing recipe files must not break env build
-        return False
 
 
 def _agent_enabled(run_cfg: RunConfig) -> bool:
@@ -396,21 +371,14 @@ cd {CONTAINER_REPO}
 
 export PIP_BREAK_SYSTEM_PACKAGES=1 PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Prefer uv (the docker images ship it for exactly this); fall back to pip.
-if command -v uv >/dev/null 2>&1; then
-    _pkg_install() {{ uv pip install --system --break-system-packages "$@"; }}
-else
-    _pkg_install() {{ pip install "$@"; }}
-fi
-
 echo "== container: install aqa (editable) =="
-if ! _pkg_install -e . ; then
+if ! pip install -e . ; then
     echo "[bootstrap] FATAL: failed to install aqa" >&2
     exit 1
 fi
 
 echo "== container: install quant/eval stack: {pkgs} =="
-_pkg_install {pkgs} \\
+pip install {pkgs} \\
     || echo "[bootstrap] WARN: stack install had errors; continuing (agent-fix may repair env)"
 {agent_step}
 echo "== container: environment =="

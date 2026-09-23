@@ -1,0 +1,31 @@
+name: cvtg2k
+harness: diffusion
+type: generative
+# Vendored CVTG-2K prompts (dnkdnk/CVTG-2K, Apache-2.0 -- see NOTICE; 2,000
+# English prompts = CVTG + CVTG-Style, areas 2-5). Resolved relative to the repo
+# root when missing from the cwd.
+dataset: recipes/data/cvtg2k/prompts.jsonl
+prompt_field: prompt
+images_per_prompt: 1   # reference: one generated image per prompt
+scoring:
+  scorer: cvtg2k
+  metric: cvtg2k
+  cvtg2k:
+    # OCR = PaddleOCR lang="en"; CLIPScore = official OpenAI CLIP ViT-L/14
+    # (clip.load). clipscore_x2_5=true (default) reports the CLIPScore-paper
+    # 2.5x scale, which is what the reference and the published anchor use;
+    # set false for the bare 0-1 cosine.
+    ocr_lang: en
+    clip_model: ViT-L/14
+    clipscore_x2_5: true
+    device: auto
+description: >
+  CVTG-2K (TextCrafter, 2025; "C" = Complex, English prompts): multi-region
+  visual text generation on 2,000 prompts. Emits three metrics -- Word Accuracy
+  (word-count weighted exact OCR matches), NED (mean normalized edit distance
+  over ground-truth words) and CLIPScore (official OpenAI CLIP ViT-L/14 on the
+  CLIPScore-paper 2.5x scale); higher is better. OCR uses PaddleOCR lang="en"
+  and NED uses python-Levenshtein semantics (pure-Python fallback when that
+  package is absent), per the TextCrafter reference. Third-party anchor
+  (HunyuanImage-3.0, meituan-longcat/LongCat-Image README): Acc 0.7650 /
+  NED 0.8765 / CLIPScore 0.8121 -- all three on the same scale this recipe uses.

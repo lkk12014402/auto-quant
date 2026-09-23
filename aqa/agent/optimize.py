@@ -204,8 +204,6 @@ def _rel(module_key: str) -> str:
 
 def _hf_config(model_id: str, revision: str, token: str | None,
                filename: str = "config.json") -> dict:
-    if Path(model_id).is_dir():
-        return json.loads((Path(model_id) / filename).read_text())
     from huggingface_hub import hf_hub_download
     path = hf_hub_download(model_id, filename, revision=revision, token=token)
     return json.loads(Path(path).read_text())
@@ -213,8 +211,6 @@ def _hf_config(model_id: str, revision: str, token: str | None,
 
 def _has_model_index(model_id: str, revision: str, token: str | None) -> bool:
     """True when the repo carries a diffusers ``model_index.json`` (diffusion pipeline)."""
-    if Path(model_id).is_dir():
-        return (Path(model_id) / "model_index.json").is_file()
     from huggingface_hub import hf_hub_download
     try:
         from huggingface_hub.utils import EntryNotFoundError
@@ -234,20 +230,6 @@ def _tensor_names(model_id: str, revision: str, token: str | None, *,
                   index_file: str = "model.safetensors.index.json",
                   single_file: str = "model.safetensors") -> list[str]:
     """Tensor names from the safetensors index (no weights); fall back to a header read."""
-    if Path(model_id).is_dir():
-        idx = Path(model_id) / index_file
-        if idx.is_file():
-            return sorted(json.loads(idx.read_text()).get("weight_map", {}).keys())
-        names: list[str] = []
-        for shard in sorted(Path(model_id).glob("*.safetensors")):
-            try:
-                with open(shard, "rb") as fh:
-                    (n,) = struct.unpack("<Q", fh.read(8))
-                    header = json.loads(fh.read(n))
-                names.extend(k for k in header if k != "__metadata__")
-            except Exception:  # noqa: BLE001 - skip unreadable shard
-                continue
-        return sorted(names)
     from huggingface_hub import hf_hub_download
     try:
         from huggingface_hub.utils import EntryNotFoundError
@@ -334,40 +316,26 @@ _RECIPE_KNOWLEDGE_PATH = Path(__file__).resolve().parent / "recipes" / "auto_rou
 _DIFFUSION_KNOWLEDGE_PATH = Path(__file__).resolve().parent / "recipes" / "auto_round_diffusion.md"
 
 
-def load_recipe_knowledge(*, include_diffusion: bool = False,
-                          knowledge_dir: Path | None = None,
-                          use_synced: bool = True) -> str:
+def load_recipe_knowledge(*, include_diffusion: bool = False) -> str:
     """Return the packaged distilled auto_round recipe knowledge (best-effort).
 
-    Freshness order: the synced ``references/`` subtree of the shared knowledge
-    store (maintained by owners as auto-round evolves) wins over the copy
-    packaged with the aqa release; the packaged copy is the offline fallback.
-    ``use_synced=False`` pins consumption to the packaged copies
-    (``agent.knowledge.use_references: false``).
-    Missing/unreadable asset degrades gracefully to an empty string (the flow
-    still works, just less informed).  ``include_diffusion`` appends the
-    distilled diffusion/VLM knowledge; pass it for diffusion pipelines
-    (``ModelAnalysis.is_diffusion``) so DiT-specific constraints reach the prompt.
+    This is the reference corpus that grounds the agent's structured analysis in
+    real-world MXFP4/MoE recipes rather than guesswork.  Missing/unreadable asset
+    degrades gracefully to an empty string (the flow still works, just less informed).
+    ``include_diffusion`` appends the distilled diffusion/VLM knowledge; pass it for
+    diffusion pipelines (``ModelAnalysis.is_diffusion``) so DiT-specific constraints
+    (transformer-only quantization, coco2014 calibration, auto_round export for
+    vllm-omni) reach the prompt without bloating LLM-only runs.
     """
-    from .knowledge import default_local_dir
-
-    refs = (knowledge_dir or default_local_dir()) / "references"
-
-    def _read(name: str) -> str:
-        bases = (refs, _RECIPE_KNOWLEDGE_PATH.parent) if use_synced \
-            else (_RECIPE_KNOWLEDGE_PATH.parent,)
-        for base in bases:
-            try:
-                text = (base / name).read_text(encoding="utf-8")
-                if text.strip():
-                    return text
-            except OSError:
-                continue
-        return ""
-
-    text = _read(_RECIPE_KNOWLEDGE_PATH.name)
+    try:
+        text = _RECIPE_KNOWLEDGE_PATH.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
     if include_diffusion:
-        extra = _read(_DIFFUSION_KNOWLEDGE_PATH.name)
+        try:
+            extra = _DIFFUSION_KNOWLEDGE_PATH.read_text(encoding="utf-8")
+        except OSError:
+            extra = ""
         if extra:
             text = f"{text}\n\n{extra}" if text else extra
     return text
@@ -636,13 +604,6 @@ def build_quant_constraints(quant_cfg: QuantConfig) -> list[QuantConstraint]:
     if "quant_lm_head" in setf and quant_cfg.quant_lm_head:
         cons.append(QuantConstraint(
             "MUST pass `--quant_lm_head`", "--quant_lm_head", "present"))
-    if "static_kv_fp8" in setf and quant_cfg.static_kv_fp8:
-        cons.append(QuantConstraint(
-            "MUST pass `--static_kv_dtype fp8`", "--static_kv_dtype", "value", "fp8"))
-    if "static_attention_fp8" in setf and quant_cfg.static_attention_fp8:
-        cons.append(QuantConstraint(
-            "MUST pass `--static_attention_dtype fp8`",
-            "--static_attention_dtype", "value", "fp8"))
     return cons
 
 
@@ -724,7 +685,6 @@ def run_agent_optimize(
     recipe_knowledge: str | None = None,
     constraints: list[QuantConstraint] | None = None,
     log_dir: Path | None = None,
-    use_synced_references: bool = True,
 ) -> str | None:
     """Analyse the model, ask the agent for a command, validate it; None on any miss."""
     a = analyze_model(model, revision=revision, token=token)
@@ -732,8 +692,7 @@ def run_agent_optimize(
         _log.warning("agent-optimize: analysis failed: %s", a.error)
         return None
     if recipe_knowledge is None:
-        recipe_knowledge = load_recipe_knowledge(include_diffusion=a.is_diffusion,
-                                                 use_synced=use_synced_references)
+        recipe_knowledge = load_recipe_knowledge(include_diffusion=a.is_diffusion)
     prompt = build_optimize_prompt(
         a, scheme=scheme, method=method, export_format=export_format,
         output_dir=output_dir, skill_recipe=skill_recipe, user_context=user_context,

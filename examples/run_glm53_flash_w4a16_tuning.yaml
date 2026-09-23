@@ -1,0 +1,65 @@
+# GLM-5.3-Flash day-0：W4A16 Tuning（真加载 + 校准调优，iters=200）。
+# 与 run_glm53_flash_w4a16_rtn.yaml 同 recipe，差异仅 method/iters + 环境补丁。
+# 经验继承（Qwen3.8-Flash-Next day-0）：
+# - 调优路径真加载模型 → 镜像 transformers 需认 glm5_next → packages 升 5.16.1；
+# - 本地 auto-round wheel（带两个补丁：resolver group_size + Embedding 散布）；
+# - torch<2.13.1 的 compiled backward context 重入 bug → --disable_torch_compile。
+model: /home/kaokaolv/models/GLM-5.3-Flash-BF16
+
+quant:
+  scheme: W4A16
+  method: autoround            # 模型真加载 + 校准调优
+  iters: 200                   # nsamples 用 auto-round 默认 128
+  export_format: auto_round
+  ignore_layers: "lm_head,embed_tokens,visual,hc_,indexer,self_attn,mlp.gate,shared_experts,eh_proj,enorm,hnorm,shared_head,norm,A_log,dt_bias,b_proj,f_a_proj,f_b_proj,g_a_proj,g_b_proj,conv1d,mlp.gate_proj,mlp.up_proj,mlp.down_proj"
+  # compile 保持开启：torch 2.13.0 的 compiled-backward context 重入 bug
+  # （pytorch#185372）用上游修复的一行补丁解决——补丁版 runtime_wrappers.py
+  # 以单文件 bind-mount 盖进容器（见 mounts），不重建镜像。
+  extra_args: []
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: false            # baseline 与 RTN 线共用（同模型同口径），复跑浪费数小时 TP8
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      enable_thinking: false
+      reasoning_parser: glm45
+      max_num_seqs: 256         # 同 RTN 线：KDA/Mamba 缓存块约束，vllm 默认 1024 会炸
+    group: true
+    seed: 42
+
+gate:
+  min_accuracy: 0.85         # 无 baseline 时 max_accuracy_drop 只能 INCONCLUSIVE；参考 bf16 预期量级
+
+agent:
+  optimize: false
+  fix_loop: false
+
+executor:
+  type: local
+  num_gpus: 2                # 调优是逐 block 串行——多卡只解决"装得下"，2 卡足够（工作集 ~90GB/卡）
+  image:
+    gpu: vllm/vllm-openai:glm53-flash-x86_64-cu130
+  env:
+    type: docker
+    packages:
+      - /opt/wheels/auto_round-0.15.0-py3-none-any.whl   # 本地 auto-round 补丁版（容器无 git，源码直装不行）
+      - /opt/wheels/transformers-5.16.1-py3-none-any.whl   # 打补丁的 5.16.1（glm5_next 的 ~mask 反转补 .bool()；镜像自带 5.15.1 不认 glm5_next）
+      - lm-eval
+      - datasets
+      - pillow
+    mounts:
+      - /home/kaokaolv/models:/home/kaokaolv/models
+      - /home/kaokaolv/aqa_gpu_logs/wheels:/opt/wheels:ro
+      # torch compiled-backward 修复（pytorch#186659 的一行）单文件盖入
+      # （装在镜像自带的 torch 上——pip 不动 torch，挂载安全）
+      - /home/kaokaolv/aqa_gpu_logs/patches/runtime_wrappers.py:/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py:ro
+
+output:
+  dir: /home/kaokaolv/aqa_results/glm53_flash_day0/tuning
+  unique_dir: true
+  sinks:
+    - type: local_fs

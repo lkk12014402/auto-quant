@@ -17,6 +17,18 @@ This product includes software adapted from the following Apache-2.0 projects:
   dpg_bench/compute_dpg_bench.py (VQA-judged per-proposition scoring with
   dependency zeroing and category aggregation).
 
+- tyxsspa/AnyText (https://github.com/tyxsspa/AnyText)
+  The Acc/NED text-rendering scoring semantics in aqa/eval/glyphdraw2.py are
+  adapted from eval/eval_dgocr.py (per-line exact-match accuracy and the
+  normalized character edit distance).  GlyphDraw2 ships no runnable scorer, so
+  this public evaluator defines the metric.
+
+- PKU-YuanGroup/WISE (https://github.com/PKU-YuanGroup/WISE)
+  WISE_Verified: the prompts (recipes/data/wise/) are vendored and
+  aqa/eval/wise.py ports the binary judge instruction, score extraction and
+  category-weighted aggregation from vllm_eval.py + calculate_verified.py.
+  (The repository declares no license file; the paper is arXiv:2503.07265.)
+
 This product also includes software adapted from the following MIT projects:
 
 - djghosh13/geneval (https://github.com/djghosh13/geneval)
@@ -25,5 +37,15 @@ This product also includes software adapted from the following MIT projects:
   scoring logic in aqa/eval/geneval.py is a port of
   evaluation/evaluate_images.py + summary_scores.py (with the detector swapped
   from mmdet's Mask2Former to transformers' Mask2FormerForUniversalSegmentation).
+
+- OPPO-Mente-Lab/GlyphDraw2 (https://github.com/OPPO-Mente-Lab/GlyphDraw2)
+  The prompt files (recipes/data/glyphdraw2/) are vendored verbatim.
+
+Additionally, the CVTG-2K prompts (recipes/data/cvtg2k/) are vendored from the
+HuggingFace dataset dnkdnk/CVTG-2K (https://huggingface.co/datasets/dnkdnk/CVTG-2K,
+Apache License 2.0), and aqa/eval/cvtg2k.py ports the Word Accuracy / NED /
+CLIPScore computation from NJU-PCALab/TextCrafter's
+TextCrafter_Eval/unified_metrics_eval.py (arXiv:2503.23461; the repository
+declares no license file).
 
 Each adapted file retains an attribution header pointing to its upstream source.

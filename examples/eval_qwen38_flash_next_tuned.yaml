@@ -1,0 +1,42 @@
+# 对 run6 调优版量化产物（iters=200, W4A16）的纯评估——量化已完成（48/48 block，
+# 10.5 小时），不走 provider.quantize 重跑。评估口径与 run13（RTN 版）逐项对齐，
+# 结果直接对比：baseline 0.8825 / RTN 0.8819 / 本 run 待出。
+model: /home/kaokaolv/aqa_results/qwen38_flash_next_w4a16_tuning/20260827-081504/20260827-151547/quantized/Qwen3.8-Flash-Next-w4g128
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: false              # baseline 已有（run13 同机同口径 mean 0.8825）
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      enable_thinking: false
+      reasoning_parser: qwen3
+    group: true
+    seed: 42
+
+gate:
+  min_accuracy: 0.87           # baseline 0.8825 - 0.0125 余量
+
+agent:
+  optimize: false
+  fix_loop: false
+
+executor:
+  type: local
+  num_gpus: 4
+  image:
+    gpu: vllm/vllm-openai:qwen38-flash-next   # 官方定制镜像（其 vllm 原生支持 qwen4_exp 推理，run13 已验证）
+  env:
+    type: docker
+    packages: [lm-eval, datasets, pillow]     # 不要 vllm/auto-round（镜像自带定制 vllm；纯评估不需要量化栈）
+    mounts:
+      - /home/kaokaolv/models:/home/kaokaolv/models
+      - /home/kaokaolv/aqa_results:/home/kaokaolv/aqa_results   # 量化产物目录进容器
+
+output:
+  dir: /home/kaokaolv/aqa_results/qwen38_flash_next_tuning_eval
+  unique_dir: true
+  sinks:
+    - type: local_fs

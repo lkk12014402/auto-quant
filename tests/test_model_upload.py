@@ -125,20 +125,3 @@ def test_build_model_card_contents():
     assert "AutoRound" in card  # method link resolved
     assert "| piqa | 0.7800 |" in card
     assert "hellaswag" in card
-
-
-def test_build_model_card_local_path_model_omits_base_model():
-    # eval/quant runs driven from a local checkpoint dir must not emit
-    # `base_model:` (HF rejects the whole README as invalid metadata), and the
-    # body must not render a broken https://huggingface.co/<local path> link.
-    card = build_model_card(
-        _meta(model="/models/Qwen3.5-9B"), repo_name="Qwen3.5-9B-w4a16",
-    )
-    assert "base_model:" not in card
-    assert "https://huggingface.co//models" not in card
-    assert "https://huggingface.co/models" not in card
-    assert "`/models/Qwen3.5-9B`" in card
-    # repo-id form keeps the old behavior
-    card2 = build_model_card(_meta(), repo_name="x")
-    assert "base_model:" in card2
-    assert "[org/Base](https://huggingface.co/org/Base)" in card2

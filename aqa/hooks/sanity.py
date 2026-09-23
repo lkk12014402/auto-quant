@@ -47,12 +47,7 @@ def _claiming_dirs(output_dir: Path, quant_cfg) -> list[Path]:
 
 
 def _has_packed_weights(d: Path) -> bool | None:
-    """True when any safetensors shard in ``d`` holds a quantized weight tensor.
-
-    Recognises both packing conventions auto-round emits:
-    * int-packed formats (W4A16 / GPTQ-style) -> ``*.qweight`` tensors;
-    * FP8 / MXFP8 / MXFP4 / NVFP4 -> an FP8/low-bit ``*.weight`` accompanied by a
-      ``*.weight_scale`` (and friends) companion tensor.
+    """True when any safetensors shard in ``d`` holds a packed qweight tensor.
 
     ``None`` when the check cannot be performed (safetensors missing or an
     unreadable shard) -- the hook then passes rather than guessing.  Header-only
@@ -66,12 +61,11 @@ def _has_packed_weights(d: Path) -> bool | None:
     shards = sorted(d.glob("*.safetensors"))
     if not shards:
         return False
-    _packed_markers = ("qweight", "weight_scale", "weight_packed", "weight_global_scale")
     for shard in shards:
         try:
             with safe_open(str(shard), framework="numpy") as fh:
                 keys = fh.keys()
-            if any(any(m in key for m in _packed_markers) for key in keys):
+            if any("qweight" in key for key in keys):
                 return True
         except Exception as exc:  # noqa: BLE001 - corrupt/partial shard
             _log.warning("quant_sanity: could not read %s: %s", shard, exc)

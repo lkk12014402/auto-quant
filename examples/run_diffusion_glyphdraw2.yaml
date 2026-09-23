@@ -1,0 +1,17 @@
+# GlyphDraw2 (text-rendering Acc/NED) eval-only template.
+# NOTE: `model` is a placeholder -- replace with a local DiT checkpoint dir.
+model: example/diffusion-model
+eval:
+  benchmarks: [glyphdraw2]   # emits glyphdraw2.acc / glyphdraw2.ned
+  backend: vllm_omni
+  harness: diffusion
+  diffusion:
+    num_inference_steps: 8
+    guidance_scale: 0.0
+    height: 1024
+    width: 1024
+    seed: 42
+output:
+  dir: ./results/glyphdraw2
+  sinks:
+    - type: local_fs

@@ -36,7 +36,6 @@ _BUILTINS: dict[str, dict[str, str]] = {
         "native": "aqa.eval.harness.native:NativeHarness",
         "lm_eval": "aqa.eval.harness.lm_eval:LmEvalHarness",
         "diffusion": "aqa.eval.harness.diffusion:DiffusionHarness",
-        "evalscope": "aqa.eval.harness.evalscope:EvalScopeHarness",
     },
     "aqa.backends": {
         "hf": "aqa.backends.hf:HfBackend",

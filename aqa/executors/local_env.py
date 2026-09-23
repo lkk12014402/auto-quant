@@ -97,47 +97,6 @@ def _final_state(out_dir: Path) -> ProcessState:
 
 
 # ── venv ─────────────────────────────────────────────────────────────────────
-def _create_venv(venv: Path, log_path: Path) -> None:
-    """Create a fresh python env at ``venv`` — conda when available, else venv.
-
-    Both layouts put the interpreter at ``<venv>/bin/python``, so every
-    downstream consumer (provision, agent provision, inner run) is agnostic.
-    """
-    from ..proc import stream_subprocess
-
-    import shutil
-    conda = shutil.which("conda")
-    if conda:
-        rc = stream_subprocess(
-            [conda, "create", "-y", "-p", str(venv), "python=3.12"], log_path)
-        if rc == 0:
-            return
-        _log.warning("conda create failed (rc=%s); falling back to python venv", rc)
-    rc = stream_subprocess(["python3", "-m", "venv", str(venv)], log_path)
-    if rc != 0:
-        raise AqaError(f"python3 -m venv {venv} failed (rc={rc}); see {log_path}")
-
-
-def _install_into_venv(venv: Path, pkgs: list[str], log_path: Path) -> None:
-    """Install aqa (editable) + ``pkgs`` — via uv when on PATH, else pip."""
-    from ..proc import stream_subprocess
-
-    import shutil
-    _log.info("[venv] install -e %s + %s", repo_root(), " ".join(pkgs) or "(no packages)")
-    uv = shutil.which("uv")
-    if uv:
-        rc = stream_subprocess(
-            [uv, "pip", "install", "--python", str(venv / "bin" / "python"),
-             "-e", str(repo_root()), *pkgs], log_path)
-        if rc == 0:
-            return
-        _log.warning("uv pip install failed (rc=%s); falling back to pip", rc)
-    pip = str(venv / "bin" / "pip")
-    rc = stream_subprocess([pip, "install", "-e", str(repo_root()), *pkgs], log_path)
-    if rc != 0:
-        raise AqaError(f"venv provisioning failed (rc={rc}); see {log_path}" + _log_tail(log_path))
-
-
 def provision_venv(run_cfg: RunConfig, venv: Path, log_path: Path) -> None:
     """Create ``venv`` and install aqa (editable) + the package set into it.
 
@@ -146,10 +105,18 @@ def provision_venv(run_cfg: RunConfig, venv: Path, log_path: Path) -> None:
     verbatim.  Only called when the venv is missing -- an existing venv is
     reused as-is (idempotent).
     """
+    from ..proc import stream_subprocess
+
     env_cfg = run_cfg.executor.env
     pkgs = container_packages(run_cfg) if env_cfg.packages == "auto" else list(env_cfg.packages)
-    _create_venv(venv, log_path)
-    _install_into_venv(venv, pkgs, log_path)
+    rc = stream_subprocess(["python3", "-m", "venv", str(venv)], log_path)
+    if rc != 0:
+        raise AqaError(f"python3 -m venv {venv} failed (rc={rc}); see {log_path}")
+    _log.info("[venv] pip install -e %s + %s", repo_root(), " ".join(pkgs) or "(no packages)")
+    pip = str(venv / "bin" / "pip")
+    rc = stream_subprocess([pip, "install", "-e", str(repo_root()), *pkgs], log_path)
+    if rc != 0:
+        raise AqaError(f"venv provisioning failed (rc={rc}); see {log_path}" + _log_tail(log_path))
 
 
 def run_venv(run_cfg: RunConfig, out_dir: Path, *, dry_run: bool = False) -> RunResult:

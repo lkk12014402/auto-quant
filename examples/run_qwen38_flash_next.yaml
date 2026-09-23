@@ -1,0 +1,47 @@
+# Qwen3.8-Flash-Next（125B MoE + GDN/QSA 混合注意力 + 51B N-gram 嵌入表，Qwen4 架构预览）
+# 本地 W4A16 量化 + 评估。推理依赖 vllm 未合并 PR #53896（qwen4_exp 架构），
+# 走 executor.env 派发到专用 venv（~/.venv-qwen38next，vllm 从 PR 分支源码构建）。
+#
+# 注意：
+# - 本机未配 agent CLI（openclaw/copilot），fix_loop/optimize 关闭——报错由人工处理。
+# - baseline 开（TP4，GPU 3/4/5/7）；量化侧 W4A16 约 140GB+，2 卡可推理。
+# - model_free W4A16：125B 免整模加载的分片量化路径（auto-round 支持清单内）。
+model: /home/kaokaolv/models/Qwen3.8-Flash-Next
+
+quant:
+  scheme: W4A16
+  method: model_free
+  export_format: llm_compressor   # compressed-tensors；vllm 量化加载走 CT 路径
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: true                 # bf16 baseline 走 TP4（GPU 3,4,5,7，dev 冒烟让出 3 后）
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      enable_thinking: false
+      reasoning_parser: qwen3
+    group: true
+    seed: 42
+
+gate:
+  max_accuracy_drop: 0.01        # 有 baseline：W4A16 vs bf16 降幅超 1% 即 NO-GO
+
+agent:
+  optimize: false                # 本机无 agent 后端
+  fix_loop: false                # 同上；失败人工介入
+
+executor:
+  type: local
+  num_gpus: 4                    # GPU 3,4,5,7（启动时 CUDA_VISIBLE_DEVICES=3,4,5,7）
+  env:
+    type: venv
+    path: /home/kaokaolv/.venv-qwen38next
+    create: false                # 该 venv 由构建脚本 provisioning，不在此重建
+
+output:
+  dir: /home/kaokaolv/aqa_results/qwen38_flash_next_w4a16
+  sinks:
+    - type: local_fs

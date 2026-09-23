@@ -1,5 +1,5 @@
 name: piqa
 harness: lm_eval
 type: loglikelihood
-scoring: { metric: "acc,none", prefer: ["acc,none", "acc_norm,none"] }
+scoring: { metric: "acc,none", prefer: ["acc_norm,none", "acc,none"] }
 description: Physical commonsense QA (loglikelihood multiple-choice).
