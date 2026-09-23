@@ -1,0 +1,71 @@
+# Qwen3.5-9B — MXFP4 v2（autoround iters=0 + FP8 KV cache）
+# owner 任务书 owner_tasks/qwen3-5-9b.md 变体矩阵；由 owner 用同一模板生成，
+# 六档之间只差 scheme / method / static_* / eval.kv_cache_dtype / ignore_layers。
+#
+# 环境要点（详见 results/qwen3_5_9b_explore/OWNER_JOURNAL.md）：
+#   - 本机 B300(sm_103a) 必须用 /models/miniforge3/envs/muse_new
+#     （flashinfer-python + flashinfer-cubin 0.6.18，免 JIT）。
+#   - 工作区 executor.env 是死配置，启动前必须
+#     export PATH=/models/miniforge3/envs/muse_new/bin:$PATH
+#   - 共享卡会打断 vLLM init profiling，export VLLM_ENABLE_V1_MULTIPROCESSING=0
+#     并把 aqa run 包在"仅对 Error in memory profiling 重试"的循环里。
+#   - thinking 显式关（对齐 08-21 参考 run 与页面 BF16 行的 non-thinking 口径）。
+model: /models/auto-quant/results/qwen3_5_9b/_diag_nolowmem/quantized/Qwen3.5-9B-mxfp-w4g32
+
+quant:
+  scheme: MXFP4
+  method: autoround
+  iters: 0
+  export_format: llm_compressor
+  # 【诊断】meta/disk-stream 骨架 from_config 建模 -> 无 _weight_conversions ->
+  # PrefixChange 被丢弃 -> 前缀重复。真加载权重应可避免（见 OWNER_JOURNAL §15b）。
+  extra_args: ["--disable_low_cpu_mem_usage"]
+
+  static_kv_fp8: true
+  ignore_layers: 'lm_head,embed_tokens,model\.visual,mtp,linear_attn,self_attn'
+provider:
+  type: quantize
+  upload:
+    repo: INCModel3
+    token_env: LOCAL_RESULTS_HF_TOKEN
+    model_card: true
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k]
+  limit: 2                      # 只验装载，不追精度
+  batch_size: "64"
+  baseline: false
+  thinking: "off"
+  lm_eval:
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.35
+      enable_thinking: false
+      reasoning_parser: qwen3
+      kv_cache_dtype: fp8
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_9b/_diag_load_fixed
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-9B
+  sinks:
+    - type: local_fs
+
+
+agent:
+  fix_loop: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

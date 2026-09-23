@@ -1,0 +1,62 @@
+# Qwen3.5-9B — MXFP4 ignore 探索（保守/激进两档）
+# 结构分析：dense omni 模型，32 层，含 linear_attn + self_attn(每4层) + mlp + visual + mtp
+# 保守档：页面 mxfp8 ignore + self_attn
+# 激进档：只保 lm_head,embed_tokens,mlp.gate
+model: /models/Qwen3.5-9B
+
+quant:
+  scheme: MXFP4
+  method: model_free
+  export_format: llm_compressor
+  recipe_sweep: true
+  recipe_sweep_candidates:
+    - name: conservative
+      description: 保守档：页面 ignore + self_attn
+      scheme: MXFP4
+      method: model_free
+      ignore_layers: "lm_head,embed_tokens,visual,in_proj_a,in_proj_b,conv1d,gate,self_attn"
+    - name: aggressive
+      description: 激进档：只保 lm_head,embed_tokens,mlp.gate
+      scheme: MXFP4
+      method: model_free
+      ignore_layers: "lm_head,embed_tokens,mlp.gate"
+
+provider:
+  type: quantize
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag]
+  batch_size: "64"
+  baseline: false
+  thinking: auto
+  lm_eval:
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.6
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: auto
+
+output:
+  dir: ./results/qwen3_5_9b_mxfp4_explore
+  unique_dir: true
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

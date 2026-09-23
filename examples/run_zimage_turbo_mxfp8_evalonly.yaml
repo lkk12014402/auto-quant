@@ -1,0 +1,49 @@
+# Z-Image-Turbo MXFP8 v1 — eval-only（复用已量化 checkpoint + 已测 bf16 baseline）
+# 背景：run_zimage_turbo_mxfp8.yaml 的 baseline(bf16) 与 quantize 均已完成且正确，
+# 但 quant_sanity 校验器旧代码把 MXFP8(F8_E4M3+weight_scale，无 qweight) 误判为
+# "0 packed layers"（patches/quantize/quant_sanity_fp8_packed.*，已修）。为避免重跑
+# ~20min baseline + 重量化，这里只对已量化 checkpoint 跑 quant eval（baseline:false，
+# bf16 参考用已测：clip 31.7693 / clip_iqa 70.3335 / imagereward 1.0094 / geneval 0.7584）。
+#
+# 运行：source env.sh && CUDA_VISIBLE_DEVICES=3 aqa run examples/run_zimage_turbo_mxfp8_evalonly.yaml
+
+model: /models/auto-quant/results/zimage-turbo-mxfp8/20260909-130532/20260909-130532/quantized
+
+eval:
+  benchmarks: [drawbench_metrics, geneval]
+  backend: vllm_omni
+  harness: diffusion
+  baseline: false
+  diffusion:
+    num_inference_steps: 8
+    guidance_scale: 0.0
+    height: 1024
+    width: 1024
+    seed: 42
+    scorer_model: openai/clip-vit-base-patch32
+
+agent:
+  fix_loop: false
+  optimize: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/.venv-zimage
+    create: true
+
+output:
+  dir: ./results/zimage-turbo-mxfp8-evalonly
+  unique_dir: true
+  report_model: Tongyi-MAI/Z-Image-Turbo
+  artifact_name: Z-Image-Turbo-MXFP8-CT-AutoRound-RTN
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN

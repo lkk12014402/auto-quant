@@ -66,26 +66,8 @@ class JudgeSpec(BaseModel):
     max_tokens: int = 512
 
 
-class GenevalSpec(BaseModel):
-    """Config for the ``geneval`` scorer (diffusion harness detection scoring).
-
-    Model ids default to the official GenEval stack (Mask2Former swin COCO
-    instance segmentation + CLIP ViT-L/14), run via transformers.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    detector_model: str = "facebook/mask2former-swin-small-coco-instance"
-    clip_model: str = "openai/clip-vit-large-patch14"
-
-
 class DpgBenchSpec(BaseModel):
-    """Config for the ``dpgbench`` scorer (dense-prompt-following via VQA judge).
-
-    Defaults follow the official DPG-Bench protocol (mPLUG VQA via modelscope;
-    ``resolution`` should match the generation size -- with pic_num=1 the
-    top-left resolution-sized crop is judged).
-    """
+    """Config for the ``dpgbench`` scorer (mPLUG VQA judge)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -94,21 +76,23 @@ class DpgBenchSpec(BaseModel):
     device: str = "auto"
 
 
-class ImageMetricSpec(BaseModel):
-    """Config for the ``image_metrics`` scorer (multi-metric DrawBench suite).
-
-    One recipe emits one BenchmarkResult per requested metric
-    (``<recipe>.clip`` / ``.clip_iqa`` / ``.imagereward``).  ``clip`` and
-    ``clip_iqa`` share one CLIP checkpoint (transformers, in-process);
-    ``imagereward`` runs in an isolated transformers-v4 subprocess env (see
-    ``aqa.eval.image_metrics`` for the pinned combination and rationale).
-    """
+class ImageMetricsSpec(BaseModel):
+    """Config for the ``image_metrics`` scorer (DrawBench CLIP/CLIP-IQA/ImageReward)."""
 
     model_config = ConfigDict(extra="forbid")
 
     metrics: list[str] = Field(default_factory=lambda: ["clip"])
-    clip_model: str = "openai/clip-vit-base-patch32"
-    imagereward_model: str = "ImageReward-v1.0"
+    clip_model: str | None = None
+    imagereward_model: str | None = None
+
+
+class GenevalSpec(BaseModel):
+    """Config for the ``geneval`` scorer (Mask2Former + CLIP object/color checks)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    detector_model: str | None = None
+    clip_model: str | None = None
 
 
 class ScoringSpec(BaseModel):
@@ -123,12 +107,12 @@ class ScoringSpec(BaseModel):
     judge: JudgeSpec | None = None
     # Config for scorer == "code_exec" (ignored otherwise).
     code_exec: CodeExecSpec | None = None
-    # Config for scorer == "geneval" (ignored otherwise).
-    geneval: GenevalSpec | None = None
-    # Config for scorer == "dpgbench" (ignored otherwise).
+    # Config for scorer == "dpgbench" (mPLUG VQA judge; ignored otherwise).
     dpgbench: DpgBenchSpec | None = None
-    # Config for scorer == "image_metrics" (ignored otherwise).
-    image_metrics: ImageMetricSpec | None = None
+    # Config for scorer == "image_metrics" (DrawBench CLIP/CLIP-IQA/ImageReward).
+    image_metrics: ImageMetricsSpec | None = None
+    # Config for scorer == "geneval" (Mask2Former + CLIP object/color checks).
+    geneval: GenevalSpec | None = None
 
 
 class BenchmarkRecipe(BaseModel):
@@ -150,12 +134,9 @@ class BenchmarkRecipe(BaseModel):
     dataset: str | None = None  # e.g. hf://openai/gsm8k?split=test
     prompt: str | None = None  # e.g. "{question}"
     target_field: str | None = None
-
-    # diffusion harness routing: prompt column in `dataset` (HF uri or local file).
-    prompt_field: str = "Prompts"
-    # diffusion harness: images generated per prompt (GenEval officially uses 4;
-    # the default keeps the one-image-per-prompt layout unchanged elsewhere).
-    images_per_prompt: int = Field(default=1, ge=1)
+    # diffusion harness routing.
+    prompt_field: str | None = None  # dataset column holding the prompt
+    images_per_prompt: int = 1
 
     scoring: ScoringSpec = Field(default_factory=ScoringSpec)
     description: str = ""
@@ -206,11 +187,13 @@ class EvalResult:
     commands: list[str] = field(default_factory=list)  # exact eval commands executed
     healed: list[str] = field(default_factory=list)     # self-heal mutations applied
 
-    def add(self, result: BenchmarkResult) -> None:
-        self.benchmarks[result.name] = result
-        cmd = getattr(result, "command", "")
-        if cmd and cmd not in self.commands:
-            self.commands.append(cmd)
+    def add(self, result: BenchmarkResult | list[BenchmarkResult]) -> None:
+        results = result if isinstance(result, list) else [result]
+        for r in results:
+            self.benchmarks[r.name] = r
+            cmd = getattr(r, "command", "")
+            if cmd and cmd not in self.commands:
+                self.commands.append(cmd)
 
     def mean_score(self) -> float:
         if not self.benchmarks:

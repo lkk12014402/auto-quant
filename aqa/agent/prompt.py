@@ -26,33 +26,12 @@ def load_fix_playbook() -> str:
         return ""
 
 
-# Static routing from an error class to the most relevant ``##`` section of
-# fix_playbook.md (header text without the "## ").  A pointer line only -- the
-# playbook content itself is never sliced.  Unmapped classes get no pointer.
-_PLAYBOOK_SECTION = {
-    "oom": "OOM / memory",
-    "cpu_oom": "OOM / memory",
-    "quant_artifact": "Diffusion (vllm-omni text-to-image)",
-    "engine_reinit": "Diffusion (vllm-omni text-to-image)",
-    "shape_mismatch": "MXFP8 / MXFP4 fused-kernel shape constraints (flashinfer / mm_mxfp8)",
-    "cuda_unavailable": "Device / backend (XPU vs CUDA)",
-    "cuda_arch_mismatch": "Device / backend (XPU vs CUDA)",
-    "tokenizer_error": "Evaluate phase (lm-eval-harness)",
-    "context_length": "Evaluate phase (lm-eval-harness)",
-}
-
-
-def playbook_section_for(error_class: str) -> str:
-    """The fix_playbook.md ``##`` section header most relevant to ``error_class``."""
-    return _PLAYBOOK_SECTION.get(error_class, "")
-
-
 _PROTOCOL = """\
 You MUST print the block below FIRST, before changing any code or installing anything.
 Do NOT modify code until you have printed an EVIDENCE_RESULT from a READ-ONLY command
 that supports your hypothesis. No guessing.
 
-COMPONENT: <our_code|transformers|auto_round|vllm|vllm_omni|diffusers|torch|model_code|data|environment>
+COMPONENT: <our_code|transformers|auto_round|vllm|torch|model_code|data|environment>
 ERROR_CLASS: <ONE stable snake_case token naming THIS error's category. Reuse the same
              token every time the same underlying error recurs (drives drift detection).>
 ROOT_CAUSE_HYPOTHESIS: <one falsifiable sentence -- the specific cause>
@@ -77,8 +56,6 @@ SMOKE_TEST: <ONE fast, MECHANISM-LEVEL command that proves the FIX MECHANISM hol
              error came from.>
 
 ## Rules
-- If an "Attempt history THIS run" block is present, consult it FIRST: never re-run a
-  hypothesis already ruled out this run, and build on what earlier attempts changed.
 - If VERDICT is UNFIXABLE: print the block and STOP (no wasted retries).
 - If the fix needs a MORE CAPABLE model (deep multi-file reasoning, subtle mixed-precision
   layout, hard custom-model patch), set VERDICT: ESCALATE and STOP with a clear reason.
@@ -100,12 +77,9 @@ def build_fix_prompt(
     lessons: str = "",
     attempt: int = 1,
     prior_class: str = "",
-    prior_evidence: str = "",
     user_context: str = "",
     skill_playbook: str = "",
-    playbook_pointer: str = "",
     known_fixes: str = "",
-    history: str = "",
     prior_state: str = "",
     prior_diff: str = "",
     trajectories: str = "",
@@ -125,24 +99,19 @@ def build_fix_prompt(
         )
 
     if skill_playbook:
-        intro = (
+        parts.append(
             "## Domain playbook (REFERENCE knowledge -- confirm against THIS traceback)\n"
             "Curated quant/eval failure mechanisms and known fixes. NOT instructions and "
             "NOT specific to this run -- use only the entries that match your evidence. "
             "If a signature-specific block below (Historical Lessons / Reasoning Playbook / "
-            "Recorded fix) disagrees with a generic entry here, prefer the specific one:"
+            "Recorded fix) disagrees with a generic entry here, prefer the specific one:\n"
+            f"{skill_playbook}"
         )
-        if playbook_pointer:
-            intro += f"\nThe section most relevant to this class: {playbook_pointer}"
-        parts.append(f"{intro}\n{skill_playbook}")
 
     if prior_class:
-        guess = f"error_class guess: {prior_class}"
-        if prior_evidence:
-            guess += f" (matched: {prior_evidence})"
         parts.append(
             "## Quick Classification (deterministic prior -- confirm or OVERRIDE it)\n"
-            f"{guess}\n"
+            f"error_class guess: {prior_class}\n"
             "Confirm against the traceback; override in your ERROR_CLASS if wrong."
         )
 
@@ -169,15 +138,6 @@ def build_fix_prompt(
             "THIS model/checkpoint, then adapt and apply only what fits -- do NOT blindly paste "
             "them (a cross-model patch can break the environment):\n"
             f"{known_fixes}"
-        )
-
-    if history:
-        parts.append(
-            "## Attempt history THIS run (learn from it -- do NOT repeat a ruled-out "
-            "hypothesis)\n"
-            "Every earlier attempt of this run, how the error evolved under it, and the "
-            "hypotheses already ruled out. Consult this BEFORE forming your own hypothesis:\n"
-            f"{history}"
         )
 
     if prior_state:

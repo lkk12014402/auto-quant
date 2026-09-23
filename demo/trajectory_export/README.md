@@ -6,11 +6,8 @@
 
 ```
 demo/trajectory_export/
-├── kimi_7f851d8a/            # Kimi Code CLI 主会话（本机长任务会话，4604 步、
-│   │                         # 876 轮用户交互，含 aqa 全部 feature 建设、
-│   │                         # INC-Quantization-Recipes 回刷方案与 12 份 owner
-│   │                         # 任务书、远程 k8s llm-server 的 owner 修复 review
-│   │                         # 与 merge；agent-0..27 子代理轨迹 ×28）
+├── kimi_7f851d8a/            # Kimi Code CLI 会话（本机 GLM day-0 工作会话，
+│   │                         # 2778 步，含 archive/ 发布包 + knowledge 299 条）
 │   ├── trajectories.jsonl    # ATIF 轨迹
 │   ├── sft.jsonl / rl.jsonl / sharegpt.jsonl
 │   ├── archive/              # 分层发布包（trajectories/<sid>/ 三件套 + manifest）
@@ -21,9 +18,6 @@ demo/trajectory_export/
 ├── kimi_fe4af318_agent-*/    # 同会话的子代理轨迹 ×23（适配器给子代理的
 │                             # session_id 加代理名后缀消歧，否则归档目录撞名）
 ├── kimi_8df5de67*/
-├── kimi_800407d2/            # kimi 会话（wd_my_commit 工作区，253 步、53 轮，
-│                             # copilot 自定义 API 配置任务；脱敏实证：会话里贴的
-│                             # Access Token 已被规则正确掩码）
 ├── copilot_<id8>/            # GitHub Copilot CLI 会话 ×10（来自容器 lkk-ki 的
 │                             # ~/.copilot/session-state/*/events.jsonl）
 ├── copilot_a397b109/         # muse_support 迁移工作会话完整版（B300 整机
@@ -60,20 +54,6 @@ aqa traces distill --path <out_dir> --knowledge-root <out_dir>/knowledge
 
 # 4. 分层发布包（去 --stage-only 加 --repo org/name 即推 HF dataset）
 aqa traces publish --path <dir1> --path <dir2> ... --stage-only --stage-dir archive
-```
-
-## 固化脚本（批量沉淀 + 知识归集）
-
-| 脚本 | 用途 |
-|---|---|
-| `batch_export.sh` | 批量走 convert→export→distill 全管线（kimi 7f851d8a + milan_copilot 全部 session） |
-| `batch_export_2.sh` | 通用化版：按 session 目录批量处理（kimi 7f851d8a + 4f880e4d，含各自子代理），用法见文件头 |
-| `curate_knowledge.py` | **知识归集**：sync_down 共享 store → 合并本目录全部机械 distill（signature 去重）→ 写入人工提炼的 curated lessons → push_up 到 HF dataset。幂等可重复跑；`--no-push` 只写本地。新增经验在 `CURATED` 里追加（error_context 用真实报错原文，决定 fix-loop 日后能否命中） |
-
-```bash
-source env.sh   # LOCAL_RESULTS_DATASET / LOCAL_RESULTS_HF_TOKEN
-python demo/trajectory_export/curate_knowledge.py            # 全流程（含 push）
-python demo/trajectory_export/curate_knowledge.py --no-push  # 只写本地 store
 ```
 
 ## 说明

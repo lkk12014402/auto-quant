@@ -1,0 +1,114 @@
+# Qwen3.5-35B-A3B — MXFP8 V2（autoround iters=0 + FP8 KV）
+# 任务书 owner_tasks/qwen3-5-35b-a3b.md。模型 Qwen/Qwen3.5-35B-A3B：
+#   Qwen3_5MoeForConditionalGeneration / qwen3_5_moe，40 层，hidden 2048，
+#   MoE num_experts=256 top-8，moe_intermediate 512 + shared_expert(512)，
+#   路由专家为**融合 3D 张量** mlp.experts.{gate_up_proj,down_proj}，
+#   30 linear_attn + 10 self_attn(full_attention_interval=4)，visual 27 blocks，1 层 MTP(自带 256 专家)，
+#   71.9 GB bf16 / 1811 张量。
+#
+# 【ignore 写法两条硬规则，均来自 9B 的实证教训（见 results/qwen3_5_9b_explore/OWNER_JOURNAL.md）】
+#   1) 禁用反斜杠：model-load 会把 ignore 序列化成 `re:.*<pat>.*` 并二次转义，
+#      `x\.y` 变成永不匹配 -> 本该保留的模块被静默量化。
+#   2) 禁用裸 `gate`：本模型 `gate` 同时命中 mlp.gate(路由器,40)、
+#      mlp.experts.gate_up_proj(融合路由专家,40 个 ≈43 GB=60% 参数!)、
+#      mlp.shared_expert.gate_proj(40)、mtp...experts.N.gate_proj(768)。
+#      写 `gate` = 把整个专家层留在 bf16，等于没量化。
+#
+# 【融合组必须同进同出】vLLM qwen3_5.py: gate_up_proj<-{gate,up},
+#   in_proj_qkvz<-{in_proj_qkv,in_proj_z}, in_proj_ba<-{in_proj_b,in_proj_a}；
+#   本模型 experts 已预融合为单张量，无拆分风险。
+model: /models/Qwen3.5-35B-A3B
+
+quant:
+  scheme: MXFP8
+  method: autoround
+  iters: 0
+  export_format: llm_compressor
+  # 【必需】model-load 路径默认 low_cpu_mem_usage=True 会用 from_config 造 meta 骨架，
+  # 无 _weight_conversions ⇒ 保存时 PrefixChange 被丢弃、键名前缀翻倍，量化结果挂在
+  # 伪前缀下而正确前缀只剩 bf16（9B 实测：1646 键/538 伪前缀/44 GB）。见 9B journal §15b/§18。
+  extra_args: ["--disable_low_cpu_mem_usage"]
+  static_kv_fp8: true
+  # 【owner 偏离页面清单，必要修正】比 V1 多保留 shared_expert_gate：
+  # model-load 路径会量化 mlp.shared_expert_gate（形状 (1,2048)，out_features=1），
+  # 而 vLLM 侧该模块是透传的未量化属性，多出的 weight_scale 无处映射，直接报
+  #   ValueError: There is no module or parameter named
+  #             'layers.0.mlp.shared_expert_gate.weight_scale' in Qwen3_5...
+  # V1 走 model_free 不量化它，所以无此问题；保留代价仅 40×1×2048×2 B ≈ 164 KB，
+  # 不影响与 V1 的可比性。
+  # 补充说明（本文件注释曾把理由写错，现按源码与日志更正，见 35B journal §36）：
+  #   mlp.gate / conv1d 写在下面只是把意图显式落进导出配置，**并非必需**：
+  #     mlp.gate — model-load 也自动保留：compressors/base.py:991 调
+  #                special_model_handler.py:1189 的 MoE 兜底（name.endswith(".gate")），
+  #                本 run 日志实证 "Using predefined ignore_layers:
+  #                model.language_model.layers.[0-39].mlp.gate"。
+  #     conv1d   — 不在 SUPPORTED_LAYER_TYPES 里，日志报 "does not match any supported
+  #                layers"（与 embed_tokens 同款警告），本来就不会被量化。
+  #   真正只有 model_free 会自动保护、model-load 会漏掉的，就是上面那条
+  #   shared_expert_gate：model_free 用子串表（model_free_utils.py:42 含
+  #   "shared_expert_gate."），model-load 用 endswith(".gate")，而该名字以 "_gate"
+  #   结尾 ⇒ 不命中。补上后 resolver 实测列出 40 项全命中。
+  ignore_layers: 'lm_head,embed_tokens,visual,in_proj_a,in_proj_b,conv1d,shared_expert_gate,mlp.gate'
+
+provider:
+  type: quantize
+  upload:
+    repo: INCModel3
+    token_env: LOCAL_RESULTS_HF_TOKEN
+    model_card: true
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag]
+  batch_size: "64"
+  baseline: false
+  thinking: "off"
+  lm_eval:
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      # 显存策略（共卡 GPU1，实测调出，详见 OWNER_JOURNAL §20）：
+      #   gpu_memory_utilization 是相对**总显存**的目标占用，须同时覆盖 权重+激活+KV+graph。
+      #   0.19 会装下 35.2 GiB 权重但给 KV 剩 0（报 No available memory for the cache
+      #   blocks）；抬到 0.30 在租户占 ~220 GB 时又变 CUDA OOM。正解是压激活峰值：
+      #   max_num_batched_tokens 32768->8192、max_num_seqs 128->64、enforce_eager 免掉
+      #   graph 预留，预算取 0.22（≈59 GiB）。实测 KV = 1,407,534 tokens。
+      # prefetch 必开：checkpoint 在 CEPH 上，vLLM 默认对 CEPH 关预取，
+      # 实测权重装载 2227 s -> 53 s（vLLM 日志自己给的解法）。
+      gpu_memory_utilization: 0.30
+      enable_thinking: false
+      reasoning_parser: qwen3
+      # checkpoint 在 CEPH 上、且 model_free 把融合专家拆成 61440 个小张量，
+      # vLLM 默认对 CEPH 关闭预取 ⇒ 实测权重装载 2227 s（历史 run 仅 590 s）。
+      safetensors_load_strategy: prefetch
+      kv_cache_dtype: fp8
+
+executor:
+  type: local
+  # 评估用 TP=1：36 GB checkpoint 在单张 275 GB B300 上余量充足（任务书允许 TP1-2）。
+  # 选 TP=1 的关键原因是 TP=2 的 WorkerProc 拆机会残留 semaphore/shared-memory
+  # （日志见 "leaked semaphores / leaked shared memory"），导致同 run 的第二次
+  # lm_eval engine init 直接失败：WorkerProc initialization failed。
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_35b_a3b/mxfp8_v2
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-35B-A3B
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

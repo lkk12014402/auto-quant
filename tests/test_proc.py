@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import sys
 
-import pytest
-
 from aqa.proc import stream_subprocess
 
 
@@ -85,19 +83,3 @@ def test_stream_no_timeout_completes_normally(tmp_path):
     rc = stream_subprocess([sys.executable, "-c", "print('done')"], log, timeout=30)
     assert rc == 0
     assert "done" in log.read_text()
-
-
-def test_pty_gets_real_winsize_so_tqdm_renders(tmp_path):
-    """A fresh pty defaults to 0x0 and tqdm renders nothing against it; the
-    runner must set a real winsize so progress bars land in the log."""
-    pytest.importorskip("tqdm")
-    log = tmp_path / "run.log"
-    child = (
-        "import tqdm, time\n"
-        "for _ in tqdm.tqdm(range(3), desc='barprobe'):\n"
-        "    time.sleep(0.05)\n"
-    )
-    rc = stream_subprocess([sys.executable, "-c", child], log)
-    assert rc == 0
-    assert "barprobe" in log.read_text()
-

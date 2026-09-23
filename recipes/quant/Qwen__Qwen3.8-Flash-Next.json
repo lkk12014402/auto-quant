@@ -21,8 +21,80 @@
         "yaml": "examples/run_qwen38_flash_next_tuning.yaml",
         "caveats": "torch<2.13.1 需 --disable_torch_compile（pytorch#185372）；导出后需 config 结构恢复 + PLE 分片检查（aqa 已自动做前者）"
       }
+    },
+    "MXFP4-Mixed": {
+      "model_free_rtn": {
+        "command": "auto-round --model_name <model> --model_free --scheme MXFP8 --layer_config '{\"mlp.experts\":{\"bits\":4,\"data_type\":\"mx_fp\"}}' --ignore_layers visual,lm_head,embed_tokens,mlp.gate,mlp.shared_expert_gate,in_proj_a,in_proj_b,block_inject_weight,ple,mtp,hyper_connection --format llm_compressor --device_map auto --output_dir <out>",
+        "expected_allocation": "W4A4 120.796B/73728 层(experts) + W8A8 2.929B/312 层(attention,shared_expert,indexer) + BF16 56.270B/2257 层；产物 ≈180 GB",
+        "cross_check": "预测的 73728 个 4-bit 层与 HF 参考产物 quantization_config.group_0.targets 数量完全一致；ignore 集合逐项对齐（2295 项）",
+        "note": "--layer_config 只给 bits/data_type 时 llm_compressor 按有效 weight bits 重建整组 preset → W4A4（激活也 4bit），与参考产物一致，别补 act_bits:8",
+        "vllm_status": "预计可用（experts 走 MXFP4 MoE 路径，绕开 MXFP8 MoE swizzle bug）；待实跑确认"
+      }
+    },
+    "MXFP8": {
+      "model_free_rtn": {
+        "command": "同 MXFP4-Mixed，去掉 --layer_config，--scheme MXFP8",
+        "expected_allocation": "W8A8 123.725B/74040 层 + BF16 56.270B/2257 层；产物 ≈240 GB",
+        "vllm_status": "BLOCKED on this stack: TP>1 加载崩（见 runtime_blockers.MXFP8_TP_gt_1_load_crash）"
+      }
+    },
+    "MXFP4_full": {
+      "verdict": "不推荐",
+      "reason": "产物 ≈178 GB，只比 MXFP4-Mixed 省 1.5 GB（量化区非 experts 部分仅 2.9B），却把 attention/indexer/shared_expert 压到 4bit，精度风险纯亏"
     }
   },
-  "ignore_layers_rationale": "MoE 保护：shared_expert 必保（每 token 都过）；linear_attn/self_attn/indexer/hyper_connection/ple/mtp 为引擎侧融合或结构性模块，量化后 vllm 不加载；in_proj_a/b 是 group_size 不整除的小投影",
-  "evidence": "docs/day0_quantization_recipe.md 附录 A；aqa_results/qwen38_flash_next_w4a16_{docker,tuning,tuning_eval}/"
+  "ignore_layers_rationale": "MoE 保护：shared_expert 必保（每 token 都过）；linear_attn/self_attn/indexer/hyper_connection/ple/mtp 为引擎侧融合或结构性模块，量化后 vllm 不加载；in_proj_a/b 是小投影",
+  "corrections": [
+    "旧注把 in_proj_a/b 的保护原因写成『group_size 不整除』——实际 K=2560 能被 32 整除；真正原因是 out_features=48，vLLM 把 in_proj_b+in_proj_a 融合成 in_proj_ba (N=96)，而 MXFP8 的 FlashInfer CuTe-DSL kernel 断言 N>=128（Qwen3.8-27B 上实测引擎启动即崩：mm_mxfp8 requires N >= 128, got N=96）",
+    "W4A16 线 ignore 掉整个 linear_attn/self_attn/shared_expert/indexer；MX 系（MXFP8/MXFP4-Mixed）把这些留在 MXFP8 即可，两者不要互相抄清单"
+  ],
+  "scripts_and_docs": [
+    "/models/lkk/cri_models/Qwen3.8-Flash-Next-quantization-recipe.md",
+    "/models/lkk/cri_models/quant_Qwen3.8-Flash-Next-mxfp.sh",
+    "/models/lkk/cri_models/audit_precision_plan.py（已支持 fused 3D experts 展开与 shard_N 归并）"
+  ],
+  "evidence": "docs/day0_quantization_recipe.md 附录 A；aqa_results/qwen38_flash_next_w4a16_{docker,tuning,tuning_eval}/；HF INCModel3/Qwen3.8-Flash-Next-MXFP4-Mixed-CT-AutoRound/quantization_config.json",
+  "mx_note": "2026-09-21 实跑更新：MXFP8 档（experts 走 W8A8）在本机 vLLM 上 TP>1 加载必崩，详见 runtime_blockers；MXFP4-Mixed 档不受影响，是实际可跑的 FP4 方案。",
+  "structure_mx": {
+    "total_params_B": 180.0,
+    "bf16_GB": 360.0,
+    "routed_experts": "120.796B (67.11%) — fused 3D [512,1280,2560] gate_up_proj + [512,2560,640] down_proj，auto-round 拆成 73728 个 per-expert 层",
+    "ple_ngram_table": "51.200B (28.44%) — 128 shard [2500012,160]，embedding 查表，MX 不可量化 → 压缩比封顶 ~2.0x",
+    "mtp_experts": "2.517B (1.40%)",
+    "gdn_linear_attn": "2.087B (1.16%)",
+    "hyper_connection": "0.660B (0.37%)",
+    "embed_tokens_lm_head": "0.636B + 0.636B",
+    "full_self_attn_incl_indexer": "0.617B (0.34%)",
+    "active_params_per_token_B": 6.7
+  },
+  "runtime_blockers": {
+    "MXFP8_TP_gt_1_load_crash": {
+      "symptom": "RuntimeError: shape '[512, 2560, 10]' is invalid for input of size 15728640",
+      "where": "vllm/model_executor/layers/quantization/utils/flashinfer_utils.py:459-460 _shuffle_mxfp8_moe_weights -> torch.stack(...).reshape(w2_scale.shape)",
+      "root_cause": "MXFP8 MoE 走 FlashInfer TRTLLM 后端，scale 做 128x4 swizzle 时把列数向上补到 4 的倍数（CPU 实测 shuffle_matrix_sf_a((2560,10))->30720、((2560,20))->51200 不补），之后却按补前的形状 reshape → 元素数不匹配。每卡 scale 列数=moe_intermediate/(TP*32)=20/TP：TP=1->20 安全，TP=2->10 崩，TP=4->5 崩。",
+      "not_a_product_bug": "产物侧合规：experts down_proj = F8_E4M3 (2560,640) + U8 scale (2560,20)，check_quant_export 通过；dense 的 Qwen3.8-27B MXFP8 走的是 MXFP8 Linear 核，不经过此函数",
+      "workarounds": [
+        "改走 MXFP4-Mixed：experts 走 CutlassExpertsMxfp4，其 swizzle 显式按 padded_N 还原，无此 bug；同机实证 /models/lkk/server_Qwen3.5-397B-A17B_mxfp4_fp8kv.log（TP=4 startup complete）",
+        "换 MoE 后端 --kernel-config '{\"moe_backend\":\"marlin\"}'（deep_gemm/humming 本机未装；triton 实测在 CUDA 上被拒：No supported MXFP8 expert class for TRITON_MXFP8）",
+        "TP=1 只能规避 swizzle bug（cols=20 不被 pad）但过不了显存：219.94 GiB 权重 + 95.37 GiB PLE 表整份拷贝 > 268.6 GiB；TP>=2 时该表按 vocab 切分，峰值 47.68 GiB/卡"
+      ],
+      "upstream_status": "未查上游是否已修；属 vLLM 侧 bug，值得单独提 issue/PR",
+      "evidence": "/models/lkk/cri_models/eval_Qwen3.8-Flash-Next-MXFP8-AutoRound.log:213-224",
+      "marlin_backend_probe": "moe_backend=marlin 实测：过了 process_weights_after_loading（权重 111.49 GiB/253s）与 Initial profiling/warmup 58.15s（FlashInfer 通路上这两步都到不了），之后进入 CUDA graph 捕获。注：期间 'No available shared memory broadcast block found in 60 seconds' + GPU util 0% 是 vLLM keepalive INFO 而非错误（512-expert MoE 捕获 83 个 shape 本就要数分钟），不应据此判 hang、也不需要换 enforce_eager。端到端结果以重跑日志为准。",
+      "triton_backend_probe": "ValueError: No supported MXFP8 expert class for TRITON_MXFP8: kernel does not support current device cuda",
+      "verdict": "M1 在本机的正解 = TP>=2 + moe_backend=marlin（已端到端 SMOKE OK）；TP=1 不可行（原因不是 swizzle bug，而是 PLE n-gram 表需整份第二份拷贝 95.37 GiB → OOM，与 max_num_batched_tokens 无关：16384/2048 两次申请量完全相同）",
+      "also_note": "marlin/TP=2 期间的 'No available shared memory broadcast block found in 60 seconds' 是 vLLM keepalive INFO 非错误；512-expert MoE 捕获 83 个 shape 本就要数分钟，勿据此杀进程或改 enforce_eager",
+      "verified_run_MXFP8_TP2_marlin": {
+        "cmd": "MOE_BACKEND=marlin python smoke_vllm_ckpt.py <M1产物> 2  (等价 lm_eval kernel_config={\"moe_backend\":\"marlin\"})",
+        "timeline": "Using 'MARLIN' MxFp8 MoE backend → Model loading 111.49 GiB/rank → Available KV cache memory 109.69 GiB → warmup 8.94s → CUDA graph PIECEWISE+FULL 100% → SMOKE OK",
+        "quality": "3 条确定性生成语义正确（Paris/Berlin/Rome；4+4=8 递增链；可运行 quicksort）",
+        "log": "/models/lkk/cri_models/smoke_fn_mxfp8_marlin.log",
+        "caveat": "marlin 是 W8A16 混合精度回退，非 MXFP8 原生 GEMM；性能要单独测。上游修好 _shuffle_mxfp8_moe_weights 后可回到 flashinfer_trtllm"
+      }
+    }
+  },
+  "observed_deviations": [
+    "本机 auto-round 0.16 落盘时把 mlp.shared_expert.{gate,up,down}_proj 共 144 层列入 ignore（BF16），而 _PatternMatcher 对这些层返回 quant/bits=8、HF 参考产物也把 shared_expert 放在 W8A8 组。实测产物量化层 73896 vs 预测 74040（差 144），体积 +0.12 GB。对 vLLM 更保险，但使本机产物与参考产物非字节同构。"
+  ],
+  "backend_autoselection_rule": "eval 脚本按 cols = moe_intermediate_size/TP/32 判定：expert_bits==8 且 (cols 非整数或 cols%4!=0) → 按 deep_gemm>marlin>humming 用 importlib.find_spec 现探可用后端并注入 kernel_config；expert_bits==4 或 cols%4==0 → 交给 vLLM 自动选型。TP==1 且产物含 ngram_embedding → 直接拒绝（PLE 整份拷贝必 OOM），FORCE_TP1=1 可强行试；MOE_BACKEND=<name> 显式覆盖永远优先。"
 }

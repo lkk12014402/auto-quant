@@ -26,9 +26,9 @@ from typing import TYPE_CHECKING
 from ..logging_util import get_logger
 from ..proc import TIMEOUT_RC
 from .backends import DEFAULT_TIMEOUT, AgentUnavailable, run_agent_fix
-from .drift import classify_error, classify_error_detail, extract_progress, logs_similarity
+from .drift import classify_error, extract_progress, logs_similarity
 from .lessons import LessonStore
-from .prompt import build_fix_prompt, load_fix_playbook, playbook_section_for
+from .prompt import build_fix_prompt, load_fix_playbook
 from .tiers import Tier, resolve_tiers
 from .trajectories import build_summary
 from .verdict import AgentAnalysis, Verdict
@@ -120,7 +120,6 @@ class PriorAttempt:
     actual_class: str = ""       # error class of that re-run (if still failing)
     truncated: bool = False      # attempt was wall-clock-killed (edits may be half-done)
     diff: str = ""               # cumulative on-disk edits so far
-    evidence: str = ""           # its probe: EVIDENCE_CMD + EVIDENCE_RESULT (~500 chars)
 
 
 def default_agent_runner(timeout: int) -> AgentRunner:
@@ -262,14 +261,6 @@ class FixLoop:
                 diff = self.patch_capture.combined_diff()
             except Exception as exc:  # noqa: BLE001 - diff is best-effort
                 _log.debug("prior-state diff failed: %s", exc)
-        evidence = ""
-        if analysis is not None:
-            probe = []
-            if analysis.evidence_cmd:
-                probe.append(f"$ {analysis.evidence_cmd}")
-            if analysis.evidence_result:
-                probe.append(analysis.evidence_result)
-            evidence = "\n".join(probe)[:500]
         return PriorAttempt(
             attempt=attempt,
             agent_verdict=(analysis.verdict.name if analysis.verdict else ""),
@@ -278,7 +269,6 @@ class FixLoop:
             actual_class=classify_error(result.log_text),
             truncated=outcome.timed_out,
             diff=diff,
-            evidence=evidence,
         )
 
     def _prior_attempt_files(self, attempt: int) -> list[str]:
@@ -313,46 +303,10 @@ class FixLoop:
         if prior.truncated:
             lines.append("- timed out / truncated: YES -- edits may be HALF-APPLIED; reconcile "
                          "against the diff below before continuing (do not blindly redo them)")
-        if prior.evidence:
-            lines.append("- what the probe showed (its EVIDENCE_CMD + EVIDENCE_RESULT):\n"
-                         + prior.evidence)
         files = self._prior_attempt_files(prior.attempt)
         if files:
             lines.append("- full record of that attempt (READ these if you need its reasoning / "
                          "tool calls / evidence): " + ", ".join(files))
-        return "\n".join(lines)
-
-    def _format_history(self, history: list[dict], rejected_trail: list[str],
-                        cur_class: str) -> str:
-        """Render the in-run attempt history: table + error evolution + dead ends.
-
-        Unlike ``_format_prior_state`` (only the immediately preceding attempt),
-        this covers EVERY attempt of the run, so a later tier can see the whole
-        path -- including which hypotheses were already ruled out (the rejected
-        trail is otherwise only persisted to the trajectory store on success).
-        """
-        if not history:
-            return ""
-        lines = [
-            "| # | tier | error before | progress | agent verdict | summary |",
-            "|---|------|--------------|----------|---------------|---------|",
-        ]
-        for h in history[-6:]:  # keep the block bounded
-            lines.append(
-                f"| {h['attempt']} | {h['tier']} | {h['error_class'] or '?'} "
-                f"| {h['progress']} | {h['verdict'] or '-'} | {h['summary'] or '-'} |"
-            )
-        seq = " → ".join([h["error_class"] or "?" for h in history] + [cur_class or "?"])
-        evolution = f"error evolution: {seq}"
-        depths = [h["progress"] for h in history]
-        if any(d > 0 for d in depths):
-            advanced = depths[-1] > depths[0]
-            evolution += (f" -- quantize progress depth {depths[0]} → {depths[-1]} "
-                          f"({'advanced' if advanced else 'NOT advanced'})")
-        lines.append(evolution)
-        if rejected_trail:
-            lines.append("hypotheses already ruled out this run (do NOT retry these):")
-            lines.extend(f"- {t}" for t in rejected_trail[-6:])
         return "\n".join(lines)
 
     def _accrue_tokens(self, agent_output: str) -> None:
@@ -479,9 +433,6 @@ class FixLoop:
         # Distilled record of hypotheses tried on the way to a fix; on success the
         # entries before the winner become the trajectory's "dead ends".
         rejected_trail: list[str] = []
-        # In-run attempt history (attempt/tier/class-before/progress/verdict/
-        # summary), rendered into each prompt so later attempts see the whole path.
-        history: list[dict] = []
         prev_text = ""
         prior: PriorAttempt | None = None  # distilled state of the previous attempt
 
@@ -521,8 +472,7 @@ class FixLoop:
             tier = self.tiers[tier_idx]
             err_text = result.log_text
             cur_progress = result.depth()
-            detail = classify_error_detail(err_text)
-            prior_class = detail.class_name
+            prior_class = classify_error(err_text)
             _log.info("attempt %d/%d %s tier=%s (%d/%d) prior=%s progress=%d",
                       attempt, max_attempts, self.phase_name, tier.name,
                       attempts_on_tier, cfg.tier_attempt_budget, prior_class, cur_progress)
@@ -532,12 +482,9 @@ class FixLoop:
             known_fixes = self._replay_reference(err_text)
             prompt = build_fix_prompt(
                 self.phase_name, err_text, lessons=lessons, attempt=attempt,
-                prior_class=prior_class, prior_evidence=detail.evidence,
-                user_context=cfg.user_context,
+                prior_class=prior_class, user_context=cfg.user_context,
                 skill_playbook=load_fix_playbook(),
-                playbook_pointer=playbook_section_for(prior_class),
                 trajectories=playbook, known_fixes=known_fixes,
-                history=self._format_history(history, rejected_trail, prior_class),
                 prior_diff=prior.diff if prior else "",
                 prior_state=self._format_prior_state(prior),
             )
@@ -553,14 +500,6 @@ class FixLoop:
             self._accrue_tokens(output)
             analysis = AgentAnalysis.parse(output)
             self._trail_append(rejected_trail, analysis)
-            history.append({
-                "attempt": attempt,
-                "tier": tier.name,
-                "error_class": prior_class,
-                "progress": cur_progress,
-                "verdict": analysis.verdict.name if analysis.verdict else "",
-                "summary": (analysis.root_cause or analysis.fix_plan or "").strip()[:120],
-            })
             # Snapshot this attempt for the NEXT one. On the punt/escalate paths below
             # `result` is still the pre-attempt failure (correct: nothing was fixed);
             # the re-run paths refresh it and re-snapshot before looping.

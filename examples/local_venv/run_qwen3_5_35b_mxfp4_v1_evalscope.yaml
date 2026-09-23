@@ -1,0 +1,62 @@
+# Qwen3.5-35B-A3B — MXFP4 V1（清单 A）的 evalscope 补测（aime25 + gpqa_diamond，avg@5）
+#
+# 为什么要补：任务书/README 的评估矩阵是每个变体 6 项（lm_eval 4 + evalscope 2），
+# 且 §41 的配对检验已证明 lm_eval 分辨不了 ≤0.5pp 的小效应 —— 没有推理基准，
+# "MXFP4 99.53%" 这个推荐就只站在 lm_eval 上。9B 兄弟页的 MXFP4 是有这两项的。
+#
+# 三条已验证经验直接写进配置（见 OWNER_JOURNAL §43/§44 与 9B 教训）：
+#   1) eval-only 走 pretrained provider，不经过 resolve_export_dir ⇒ model 必须指向
+#      **真实导出目录**。本档是 model_free，导出是**平铺**的 quantized/（不是嵌套子目录）。
+#      本档权重 = mxfp4_explore_A 那次 run 的产物（清单 A 与 mxfp4_v1 配置逐字段相同，
+#      见 run_qwen3_5_35b_mxfp4_v1.yaml 头部说明）。
+#   2) port 逐档错开（EvalScopeHarness 默认 8801，并行必撞）；这里用 8808。
+#   3) artifact_name 显式指定，否则 eval-only 无 quant 块会被命名成 -BF16-Baseline，
+#      在 dataset 上造出重复目录。
+# thinking：本工作区的 evalscope harness **不处理 thinking 双模式**（journal §43），
+# 所以这一档是单模式 = 思考链开启（由 output_tokens 均值定量确认，非猜测）。
+model: /models/auto-quant/results/qwen3_5_35b_a3b/mxfp4_explore_A/quantized
+
+eval:
+  backend: vllm
+  benchmarks: [aime25, gpqa_diamond]
+  baseline: false
+  thinking: "auto"
+  evalscope:
+    repeats: 5
+    port: 8808
+    eval_batch_size: 32
+    server_args:
+      # 卡在本档独占（B300 275GB）：MXFP4 权重 21.47 GiB，util 0.30（≈82.5 GiB）
+      # 已给到 KV 1,899,054 tokens（lm_eval 档实测），足够 avg@5 的思考链长序列。
+      # 吞吐参数与 MXFP8 各档保持一致（32768 / 128 / 保留 CUDA graph），
+      # 否则不同档之间的耗时数字不可比。
+      # prefetch 必开：checkpoint 在 CEPH 上，vLLM 默认对 CEPH 关预取
+      # （实测权重装载 2227 s -> 45~86 s）。
+      gpu_memory_utilization: 0.30
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      max_model_len: 40960
+      safetensors_load_strategy: prefetch
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_35b_a3b/mxfp4_v1_evalscope
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-35B-A3B
+  artifact_name: Qwen3.5-35B-A3B-MXFP4-CT-RTN-AutoRound
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false

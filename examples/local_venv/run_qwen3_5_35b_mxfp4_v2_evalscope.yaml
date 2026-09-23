@@ -1,0 +1,59 @@
+# Qwen3.5-35B-A3B — MXFP4 V2（清单 A + 静态 FP8 KV）的 evalscope 补测
+#
+# 与 mxfp4_v1_evalscope 的唯一差别是**服务端开 FP8 KV**（kv_cache_dtype: fp8），
+# 这才是"FP8 KV 对推理任务有没有影响"的直接对照；两边权重同为清单 A。
+# 注意 9B 那条已验证经验：V1→V2 在推理基准上的落差**不能全记在 FP8 KV 头上**，
+# 因为 V1 走 model_free(optimized RTN)、V2 走 model-load(plain RTN)，后端也变了
+# （9B 上 FP8 KV 纯对照档显示净效应中性）。本档与 mxfp4_v1 同权重来源时才可归因到 KV，
+# 所以这里 model 指向 **mxfp4_v2 自己的导出**，读表时要连着 lm_eval 的 V1 vs V2 一起看。
+#
+# 三条配置纪律同 mxfp4_v1_evalscope：
+#   1) eval-only 走 pretrained provider、不经过 resolve_export_dir ⇒ model 必须写
+#      **真实导出目录**。本档是 model-load（autoround），导出**嵌套**在
+#      quantized/Qwen3.5-35B-A3B-mxfp-w4g32/。
+#   2) port 与其余档错开（这里 8809）。
+#   3) artifact_name 显式指定（否则会被命名成 -BF16-Baseline 造成重复目录）。
+model: /models/auto-quant/results/qwen3_5_35b_a3b/mxfp4_v2/quantized/Qwen3.5-35B-A3B-mxfp-w4g32
+
+eval:
+  backend: vllm
+  benchmarks: [aime25, gpqa_diamond]
+  baseline: false
+  thinking: "auto"
+  evalscope:
+    repeats: 5
+    port: 8809
+    eval_batch_size: 32
+    server_args:
+      # V2 口径：serve 时 --kv-cache-dtype fp8。
+      # 权重 21.5 GiB；FP8 KV 下 util 0.30 实测 KV 容量 2,985,398 tokens（比 bf16 KV
+      # 的 1,886,394 多 58%），够 avg@5 的思考链长序列。
+      gpu_memory_utilization: 0.30
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      max_model_len: 40960
+      kv_cache_dtype: fp8
+      safetensors_load_strategy: prefetch
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_35b_a3b/mxfp4_v2_evalscope
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-35B-A3B
+  artifact_name: Qwen3.5-35B-A3B-MXFP4-FP8KV-CT-RTN-AutoRound
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false

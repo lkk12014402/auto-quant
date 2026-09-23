@@ -1,0 +1,56 @@
+# Qwen3.5-35B-A3B — mxfp8_v1 的 evalscope 补测（aime25 + gpqa_diamond，avg@5）
+# 独立 eval-only run。35B 的三条已验证经验直接写进配置，避免重演 9B 的坑：
+#   1) eval-only 走 pretrained provider，不经过 resolve_export_dir ⇒ model 必须指向
+#      **真实导出目录**（autoround 会嵌套 quantized/<model>-mxfp-wNg32/）。
+#   2) port 逐档错开（EvalScopeHarness 默认 8801，并行必撞）。
+#   3) artifact_name 显式指定，否则 eval-only 无 quant 块会被命名成 -BF16-Baseline，
+#      在 dataset 上造出重复目录。
+# thinking 走 evalscope 默认（开思考链），与 lm_eval 的 non-thinking 分表呈现，不跨表算 Ratio。
+model: /models/auto-quant/results/qwen3_5_35b_a3b/mxfp8_v1/quantized
+
+eval:
+  backend: vllm
+  benchmarks: [aime25, gpqa_diamond]
+  baseline: false
+  thinking: "auto"
+  evalscope:
+    repeats: 5
+    port: 8806
+    eval_batch_size: 32
+    server_args:
+      # 显存策略（共卡 GPU1，实测调出，详见 OWNER_JOURNAL §20）：
+      #   gpu_memory_utilization 是相对**总显存**的目标占用，须同时覆盖 权重+激活+KV+graph。
+      #   0.19 会装下 35.2 GiB 权重但给 KV 剩 0（报 No available memory for the cache
+      #   blocks）；抬到 0.30 在租户占 ~220 GB 时又变 CUDA OOM。正解是压激活峰值：
+      #   max_num_batched_tokens 32768->8192、max_num_seqs 128->64、enforce_eager 免掉
+      #   graph 预留，预算取 0.22（≈59 GiB）。实测 KV = 1,407,534 tokens。
+      # prefetch 必开：checkpoint 在 CEPH 上，vLLM 默认对 CEPH 关预取，
+      # 实测权重装载 2227 s -> 53 s（vLLM 日志自己给的解法）。
+      gpu_memory_utilization: 0.30
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      max_model_len: 40960
+      safetensors_load_strategy: prefetch
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_35b_a3b/mxfp8_v1_evalscope
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-35B-A3B
+  artifact_name: Qwen3.5-35B-A3B-MXFP8-CT-RTN-AutoRound
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false

@@ -28,44 +28,6 @@ Four ideas shape the architecture:
    change as a reviewable patch. The kernel stays deterministic and unit-testable;
    only in-container command execution is shell.
 
-```mermaid
-flowchart LR
-    subgraph IN["声明式入口"]
-        Y["run.yaml<br/>(_base_ 继承 · ${VAR} 展开 · *_env secrets)"]
-    end
-
-    subgraph PIPE["流水线内核（aqa/ · 纯 Python 状态机）"]
-        P["provider<br/>pretrained │ quantize │ endpoint"]
-        Q["quantize<br/>auto-round builder"]
-        E["evaluate<br/>harness × backend"]
-        G["gate<br/>accuracy-drop / min-accuracy"]
-        S["sinks<br/>local_fs │ hf_dataset │ hf model repo"]
-        P --> Q --> E --> G --> S
-    end
-
-    subgraph AGENT["Agent 自愈（agent/）"]
-        F["fix-loop<br/>tier 升降级 · 知识回放 · patch 捕获"]
-        K["knowledge store<br/>按错误签名回放"]
-        F <--> K
-    end
-
-    subgraph TRAJ["轨迹数据化（agent/ + agent_eval/）"]
-        A["adapters<br/>openclaw │ copilot │ claude │ codex"]
-        T["ATIF 统一中间格式"]
-        D["双视图数据集<br/>SFT（Nemotron 风格）│ RL（NeMo-Gym 风格）"]
-        KN["knowledge 提取<br/>错误→修复模式"]
-        H["HF 分层归档<br/>trajectories/&lt;session_id&gt;/…"]
-        A --> T --> D --> H
-        T --> KN
-    end
-
-    Y --> PIPE
-    E -.失败.-> F
-    F -.修复后重试.-> E
-    E --> TRAJ
-    KN -.回喂.-> K
-```
-
 ```
 run.yaml ─▶ provider (pretrained│quantize│endpoint)
               │ produces / serves the model-under-eval
@@ -77,19 +39,6 @@ run.yaml ─▶ provider (pretrained│quantize│endpoint)
               ▼
            sinks (local_fs │ hf_dataset) + captured patches
 ```
-
-**Feature map**（模块 → 文档）：
-
-| 能力 | 入口 | 文档 |
-|---|---|---|
-| 量化（scheme/算法链/model_free/tuning） | `provider: quantize` | `docs/usage/quantize.md` |
-| 评估（lm_eval/native/diffusion harness，scorer 插件） | `eval:` | `docs/usage/evaluate.md` |
-| 派发（local current/venv/docker，ssh，多卡/XPU） | `executor:` | `docs/usage/dispatch.md` |
-| Diffusion 文生图量化+评估（DrawBench 三指标/GenEval/DPG） | `backend: vllm_omni` | `docs/usage/diffusion.md` |
-| Day-0 新架构量化 | — | `docs/usage/day0.md` |
-| Agent 自愈（fix-loop/知识回放/patch 捕获） | `agent.fix_loop` | `docs/usage/self_heal.md` |
-| 轨迹数据化（多后端 → ATIF → SFT/RL → 知识 → HF 归档） | `aqa traces …` | `docs/usage/trajectories.md` |
-| 设计总览与决策依据 | — | `docs/design.md` |
 
 ## Install
 
@@ -162,7 +111,7 @@ provider: { type: endpoint, base_url: http://host:8000/v1, served_model: org/m,
 **Backward compatible.** Older quant-centric configs that put `quant:` at the top
 level keep working unchanged — the loader folds a top-level `quant:` into
 `provider: {type: quantize, quant: {...}}`, and `run_cfg.quant` still returns the
-quantize provider's config. `examples/ssh_docker/run_5000.yaml` runs as before. Add your own
+quantize provider's config. `examples/run_5000.yaml` runs as before. Add your own
 provider via the `aqa.providers` entry-point group.
 
 ### Customizing the quantization algorithm
@@ -232,51 +181,12 @@ executor:
 - **xpu** → `vllm/vllm-openai-xpu` base + `/dev/dri` passthrough, `--privileged`,
   `ZE_AFFINITY_MASK=<ids>`, `VLLM_WORKER_MULTIPROC_METHOD=spawn`. The base image
   already ships `vllm-xpu`, so aqa does **not** reinstall CUDA `vllm` (only
-  `auto-round` + `lm-eval` on top). See `examples/ssh_docker/run_b60_xpu.yaml`.
+  `auto-round` + `lm-eval` on top). See `examples/run_b60_xpu.yaml`.
 
 `image.dockerfile: local` builds the accelerator-appropriate shipped Dockerfile —
 `docker/gpu.dockerfile` (NGC) for CUDA, `docker/xpu.dockerfile` (Intel base) for
 XPU — each adding tooling + Node + OpenClaw for the fix-loop. Omit `dockerfile` to
 run the base image directly (Node/OpenClaw are then installed at runtime).
-
-### Local environments
-
-`executor.type: local` defaults to running the pipeline in-process. The `env`
-block makes the *local* environment declarative too — the same staged inner-run
-trick as the ssh executor (a derived run.yaml with a plain `type: local`
-executor, so no recursion), without leaving the machine:
-
-```yaml
-executor:
-  type: local
-  env:
-    type: current        # DEFAULT: in-process, exactly the historical behavior
-    # type: venv         # run the pipeline inside a (possibly provisioned) venv
-    # path: ~/.venv-aqa-gpu
-    # packages: auto     # "auto" = derive from run config; or an explicit list
-    # create: true       # provision <path> (python3 -m venv + pip install) if missing
-    # type: docker       # build/run a local container (image config: executor.image)
-    # mounts: [/data:/data]   # docker: extra bind mounts
-  required_env: [HF_TOKEN]   # fast-fail preflight for ALL modes (empty default)
-```
-
-- **venv** — provisions `<path>` when missing (`python3 -m venv` +
-  `pip install -e <repo>` + the `packages` set; `auto` derives the same stack as
-  the container bootstrap), then streams `<path>/bin/aqa run <inner.yaml>`.
-  Same filesystem, so `output.dir` is used as-is; an existing venv is reused
-  untouched (idempotent).
-- **docker** — local `docker build` of `executor.image.dockerfile`
-  (`local`/`default` → the repo's `docker/gpu.dockerfile`; a path → that
-  Dockerfile; empty → pull the base image directly), then `docker run --rm
-  --gpus "device=<CUDA_VISIBLE_DEVICES or all>"` with the repo bind-mounted at
-  `/workspace/aqa`, the real output dir at its *same absolute path*, and the HF
-  cache at `/root/.cache/huggingface`. Secrets travel via `--env-file` (never
-  the yaml). Requires a local docker daemon + the NVIDIA container toolkit.
-
-`required_env` names variables that must be set before *any* work starts (all
-three modes) — the run fails fast listing every missing variable. GPU count for
-the inner run: `executor.num_gpus`, else the number of ids in
-`CUDA_VISIBLE_DEVICES`, else 1. Logs stream to `<output.dir>/logs/executor_*.log`.
 
 ## Evaluation: harnesses, task grouping, and model_args
 
@@ -322,19 +232,6 @@ instruct/base suite — `gpqa_diamond`, `mmlu_pro`, `ifeval`,
 `bbh`, `truthfulqa`, `winogrande`, `openbookqa` (alongside `mmlu`, `gsm8k`,
 `hellaswag`, `arc_challenge`, `piqa`). Add one file to onboard the next task; you
 never reimplement the benchmark.
-
-**Phase hooks: where cross-cutting capabilities plug in.** Validation, failure
-taxonomy, trajectory capture and similar *mechanism* capabilities register as
-**phase hooks** (`aqa/hooks/`, entry-point group `aqa.hooks`) rather than
-pipeline surgery: a hook implements `after_quantize` / `after_benchmark`, may
-raise `AqaError` to fail the phase on purpose (validator semantics — the error
-feeds the fix-loop's signature), and any other hook exception is logged and
-never crashes the run. Seed hooks: `quant_sanity` (an export that claims
-auto-round but contains no packed `qweight` tensors fails the quantize phase)
-and `eval_sanity` (a benchmark scoring exactly 0 fails the evaluate phase).
-The chain is configurable per run: `hooks: [quant_sanity]` selects exactly
-those, `hooks: []` disables all, and omitting `hooks` uses the built-in
-defaults. (Judgment capabilities stay in the skill packages — `skills/`.)
 
 **LLM-as-judge scoring** (`scorer: llm_judge`) covers the open-ended / rubric
 family (rubric-graded QA, pairwise preference). The judge is
@@ -459,18 +356,16 @@ aqa/
     runner.py      orchestrate benchmarks across harnesses/backends
     harness/       native | lm_eval  (evalscope via optional plugin)
   backends/        hf | vllm  (vllm_xpu via plugin)
-  executors/       local (env: current | venv | docker) | ssh  (intel_reserve via plugin)
+  executors/       local | ssh  (intel_reserve via plugin)
   report/          sinks (local_fs | hf_dataset) + gate/compare
   quantize/        auto-round command builder + runner
-  hooks/           phase-hook capability components (quant_sanity | eval_sanity)
-  agent/           fix-loop / patch / knowledge (replay) / optimize / traces export (SFT)
-  agent_eval/      E0-E3: client / endpoint / solver / ReAct / environment / ATIF export
+  agent/           fix-loop / patch / knowledge (replay) / optimize (Python orchestration)
+  agent_eval/      E0-E3: client / endpoint / solver / ReAct / environment
   sandbox/         local | docker  (tool-use / terminal execution)
   terminal_bench/  E4 self-contained terminal tasks (YAML + verifier)
   swebench/        SWE-bench Verified adapter (dataset/spec/env/report/run)
 recipes/           benchmarks/*.yaml, schemes/*.yaml, quant/*.json (pinned)
 skills/            quantize / evaluate / fix-and-patch  (SKILL.md for agents)
-docs/              design docs + source-verified auto-round references
 ```
 
 ### Extension points (add a plugin = pip package, no fork)
@@ -484,7 +379,6 @@ docs/              design docs + source-verified auto-round references
 | `aqa.sinks`         | result destination (e.g. `s3`, `wandb`) |
 | `aqa.recipe_stores` | recipe source/sink |
 | `aqa.scorers`       | scoring function |
-| `aqa.hooks`         | phase-hook capability component (validation, taxonomy, …) |
 
 New benchmark = drop a `recipes/benchmarks/<name>.yaml` (+ a `.py` scorer only
 when correct scoring needs code: math equivalence, code sandbox, judge).
@@ -552,61 +446,6 @@ the container by default:
 Auth is env-only: export `MINIMAX_API_KEY` (openclaw / minimax BYOK) and/or
 `COPILOT_GITHUB_TOKEN` (opus/sonnet) before `aqa run`; they are forwarded into the
 container. A tier whose CLI or token is missing is skipped and the loop escalates.
-
-### Trajectory datafication (ATIF → SFT/RL datasets → knowledge → HF archive)
-
-aqa turns agent trajectories into training assets, end to end — Harbor
-[`traces export`](https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md)
-parity and beyond. Full design + research record: `docs/trajectory_data_plan.md`.
-
-- **ATIF dump**: agentic runs (e.g. `aqa swebench`) write `trajectories.jsonl`
-  into the run's output dir — one **ATIF-v1.7** dict per task (Harbor's Agent
-  Trajectory Interchange Format). ATIF files can be consumed directly by the
-  Harbor toolchain (viewer, validators, its own `traces export`).
-- **Multi-backend adapters** (`aqa/agent/adapters/`): raw session logs from
-  **openclaw / copilot-cli / claude-code / codex** convert to ATIF with one
-  line — `aqa.agent.adapters.convert(path)` (auto-detects the backend,
-  validates the ATIF). kimi-code produces no ATIF (resume-only upstream) and
-  gets a clean "unsupported" error.
-- **Dual-view datasets** (`aqa/agent/traces_export.py`): `--view sft` gives
-  Nemotron-Agentic-style rows (`messages` with native `tool_calls` +
-  `role:"tool"` results, `reasoning_content` kept separate, top-level `tools`,
-  per-row `uuid`); `--view rl` gives NeMo-Gym-style task rows
-  (`responses_create_params` task definition + verifier materials carrying the
-  trajectory outcome — reward itself is never baked in, per NeMo-RL's rule).
-  ShareGPT column stays available.
-- **Knowledge distillation** (`aqa/agent/knowledge_extract.py`): rule-based
-  error→fix pattern extraction from trajectories back into the shared
-  knowledge store (an optional agent summarizer refines entries; the
-  rule-based floor never blocks), so the next fix-loop replays it.
-- **Layered HF archive** (`aqa/agent/traces_publish.py`): per-session
-  directory upload — `trajectories/<session_id>/{trajectory.json,
-  dataset_sft.jsonl, dataset_rl.jsonl}` — stage-first (reviewable), then push.
-
-```bash
-# export an agent_eval run dir (auto-detected) to JSONL, successes only
-aqa traces export --path results/swebench --out traces.jsonl
-
-# RL view of the same trajectories
-aqa traces export --path results/swebench --view rl --out traces_rl.jsonl
-
-# convert a copilot/claude/codex/openclaw session log to ATIF
-python -c "from aqa.agent.adapters import convert; import json; \
-           print(json.dumps(convert('~/.claude/projects/-app/<uuid>.jsonl'), indent=2))"
-
-# distill fix knowledge into the shared store
-aqa traces distill --path results/swebench
-
-# stage + publish the layered archive to a HF dataset
-aqa traces publish --path results/swebench --repo org/aqa-traces
-```
-
-`--source agent_eval|fixloop|auto` selects the reader per path (default
-`auto`: a dir with `trajectories.jsonl` is an agent_eval run; a knowledge root
-with `trajectories/`+`patches/` is fixloop). `--filter success` keeps
-solved/`reward>0` trajectories. `--parquet`/`--push` need the optional
-`datasets` package; `--stage-only` builds the archive locally without
-uploading.
 
 ## Agentic / terminal evaluation (endpoint-centric, E0 base)
 

@@ -1,0 +1,88 @@
+# Qwen3-235B-A22B — 混合量化：MXFP8 主体 + 路由专家 MXFP4（model_free）
+# recipe 复刻 examples/local_venv/run_qwen3_30b_mixed.yaml，按 /models/Qwen3-235B-A22B
+# 的结构分析确认适配：
+#   - 架构 Qwen3MoeForCausalLM，94 层，128 路由专家（num_experts_per_tok=8），无 shared_expert。
+#   - 专家张量为 per-expert 非融合（mlp.experts.N.{gate,up,down}_proj）→ 无 fused-MoE 拆解坑。
+#   - 路由器 mlp.gate.weight（ignore "mlp.gate" 只命中路由器；专家是 mlp.experts.N.gate_proj，
+#     不含 "mlp.gate" 子串，不会误伤）。
+#   - tie_word_embeddings=false → lm_head 单独，ignore。
+#   - 量化主力=路由专家（~97% 参数）走 MXFP4；attention/router/embedding/lm_head 走 MXFP8/保留。
+#
+# 运行（local venv + owner agent 驱动）：
+#   source env.sh
+#   export AR_MODEL_FREE_SHARD_PARALLELISM=1
+#   aqa validate examples/local_venv/run_qwen3_235b_mixed.yaml
+#   aqa run examples/local_venv/run_qwen3_235b_mixed.yaml --dry-run
+#   aqa run examples/local_venv/run_qwen3_235b_mixed.yaml
+
+model: /models/Qwen3-235B-A22B
+
+quant:
+  scheme: MXFP8
+  method: model_free
+  export_format: llm_compressor
+  ignore_layers: "lm_head,embed_tokens,mlp.gate"
+  layer_config: {mlp.experts: {bits: 4, data_type: mx_fp}}
+
+provider:
+  type: quantize
+  # 量化权重回传到 HF model repo（§6.5）：repo=org，repo_name=仓库名，token 取自 env.sh
+  upload:
+    repo: lvkaokao
+    repo_name: Qwen3-235B-A22B-MXFP4-Mixed-CT-RTN-AutoRound
+    token_env: LOCAL_RESULTS_HF_TOKEN
+
+eval:
+  backend: vllm
+  # lm_eval 任务 + evalscope 推理任务（aime26/gpqa_diamond 经 recipe 自动路由到 evalscope harness）
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag, aime26, gpqa_diamond]
+  batch_size: "64"
+  baseline: false
+  # Qwen3-235B-A22B 是 thinking 模型（chat template 带 enable_thinking）；
+  # 推理类 benchmark（gsm8k/aime26/gpqa_diamond）在 thinking 开启下才有意义，
+  # 故固定单模式 on（避免 auto 双测把 235B 的评估成本翻倍）。
+  thinking: "on"
+  gen_max_toks: 4096
+  lm_eval:
+    # gsm8k 不套 chat template / 不 multiturn（用户实证套了掉点）→ 经典 5-shot 补全。
+    apply_chat_template: false
+    fewshot_as_multiturn: false
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.85
+  # evalscope harness（自持 vllm serve，TP=executor.num_gpus）参数透传
+  evalscope:
+    repeats: 1
+    eval_batch_size: 32
+    server_args:
+      max_model_len: 32768
+      gpu_memory_utilization: 0.9
+    generation_config:
+      max_tokens: 30000
+      temperature: 0.6
+      top_p: 0.95
+      top_k: 20
+      stream: true
+      timeout: 60000
+
+executor:
+  type: local
+  num_gpus: 4
+  env:
+    type: venv
+    path: ~/.venv-qwen235b
+    create: true
+    packages: auto            # auto-round + lm-eval + vllm + evalscope（因含 evalscope 任务自动加装）
+
+output:
+  dir: ./results/qwen3_235b_a22b/mixed_mxfp4e_mxfp8
+  unique_dir: true
+  report_model: Qwen/Qwen3-235B-A22B   # 数据集 org=Qwen；artifact 由 quant 块推导为 Qwen3-235B-A22B-MXFP4-Mixed-CT-RTN-AutoRound
+  sinks:
+    - type: local_fs
+    # 结果回传 HF dataset（§6.3）：repo/token 取自 env.sh 的 LOCAL_RESULTS_* 变量
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN

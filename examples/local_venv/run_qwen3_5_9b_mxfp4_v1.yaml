@@ -1,0 +1,66 @@
+# Qwen3.5-9B — MXFP4 v1（RTN/model_free，无校准）
+# owner 任务书 owner_tasks/qwen3-5-9b.md 变体矩阵；由 owner 用同一模板生成，
+# 六档之间只差 scheme / method / static_* / eval.kv_cache_dtype / ignore_layers。
+#
+# 环境要点（详见 results/qwen3_5_9b_explore/OWNER_JOURNAL.md）：
+#   - 本机 B300(sm_103a) 必须用 /models/miniforge3/envs/muse_new
+#     （flashinfer-python + flashinfer-cubin 0.6.18，免 JIT）。
+#   - 工作区 executor.env 是死配置，启动前必须
+#     export PATH=/models/miniforge3/envs/muse_new/bin:$PATH
+#   - 共享卡会打断 vLLM init profiling，export VLLM_ENABLE_V1_MULTIPROCESSING=0
+#     并把 aqa run 包在"仅对 Error in memory profiling 重试"的循环里。
+#   - thinking 显式关（对齐 08-21 参考 run 与页面 BF16 行的 non-thinking 口径）。
+model: /models/Qwen3.5-9B
+
+quant:
+  scheme: MXFP4
+  method: model_free
+  export_format: llm_compressor
+
+  ignore_layers: 'lm_head,embed_tokens,model\.visual,mtp,linear_attn,self_attn'
+provider:
+  type: quantize
+  upload:
+    repo: INCModel3
+    token_env: LOCAL_RESULTS_HF_TOKEN
+    model_card: true
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag]
+  batch_size: "64"
+  baseline: false
+  thinking: "off"
+  lm_eval:
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.35
+      enable_thinking: false
+      reasoning_parser: qwen3
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_9b/mxfp4_v1
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-9B
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

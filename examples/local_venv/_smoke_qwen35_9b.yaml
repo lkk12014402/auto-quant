@@ -1,0 +1,77 @@
+# Qwen3.5-9B — MXFP4 ignore 探索【保守档】：只量 dense MLP
+# owner 任务书：owner_tasks/qwen3-5-9b.md（mxfp4 无 recipe 页，禁止照抄 mxfp8 清单）
+#
+# 结构分析（免下载：config.json + index.json，19.31 GB bf16 / 775 tensors）
+#   Qwen3_5ForConditionalGeneration，dense（无 MoE），混合注意力 full_attention_interval=4
+#   mlp.{gate,up,down}_proj x32   9.66 GB  50%  <- 本档唯一量化目标
+#   embed_tokens + lm_head        4.07 GB  21%  保 bf16
+#   linear_attn (qkv/z/out/a/b)   3.24 GB  17%  本档全保
+#   self_attn x8                  0.94 GB   5%  本档全保
+#   visual x27                    0.79 GB   4%  保 bf16
+#   mtp                           0.44 GB   2%  保 bf16
+#   A_log(32,)/linear_attn.norm(128,) 是 F32 裸参数，非 Linear 自动跳过、不降级
+#
+# ignore_layers 语义：aqa 原样透传给 auto-round，按 re.search 匹配**全模块名**
+# （auto_round/utils/model.py find_matching_blocks）。因此：
+#   - 页面 mxfp8 清单里的裸 `gate` 会命中 32 个 mlp.gate_proj（本模型无 router，
+#     `gate` 不是 router 而是 SwiGLU 门控）= 悄悄漏量 1/3 MLP。本文件不这么写。
+#   - 逗号是 aqa 的分隔符，所以正则里只能用 `|` 不能用 `,`。
+# 保守档 = 只留 mlp.{gate,up,down}_proj 进 MXFP4，其余敏感族全 bf16（精度下限基线）。
+model: /models/Qwen3.5-9B
+
+quant:
+  scheme: MXFP4
+  method: model_free
+  export_format: llm_compressor
+  ignore_layers: 'lm_head,embed_tokens,model\.visual,mtp,linear_attn,self_attn'
+
+provider:
+  type: quantize
+  # 探索档不外发权重（避免污染 org）；选定的清单进正式变体时再配 provider.upload。
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag]
+  batch_size: "64"
+  baseline: false
+  limit: 8          # BF16 参考行用 recipe 页 accuracy-result.md
+  # 本工作区的 pipeline.py 丢了 thinking 双模式接线（见 OWNER_JOURNAL），
+  # 所以显式用 model_args 关思考链；页面 BF16 参考数字是 non-thinking 口径。
+  thinking: "off"
+  lm_eval:
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.35
+      enable_thinking: false
+      reasoning_parser: qwen3
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    # 用户指定的参考环境；本机 B300(sm_103a) 唯一已验证可 serve 的 LLM 栈：
+    #   vllm 0.28.1rc1.dev312（注册 Qwen3_5ForConditionalGeneration）
+    #   flashinfer-python + flashinfer-cubin 0.6.18（预编译核，免 JIT）
+    #   lm-eval 0.4.12 / evalscope 1.11.1 / auto-round 0.15.0.dev84
+    # 上一手用 flashinfer 0.6.17 的 venv 在 eval 阶段 Ninja 编译 trtllm-gen FMHA 失败
+    # （patches/evaluate/flashinfer_0.6.18_sm103a.md）。
+    path: /models/miniforge3/envs/muse_new
+    create: false          # 复用既有 conda env；create:false 时 aqa 完全不装包，
+    packages: []           # 不会用 PyPI vllm 冲掉这里的 custom build（AGENTS.md §9.3）
+
+output:
+  dir: ./results/qwen3_5_9b_explore/_smoke
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-9B     # 不写 -> dataset 落 results/unknown/（已核实）
+  sinks:
+    - type: local_fs
+
+
+agent:
+  fix_loop: false          # 未配置 agent 后端，owner 亲自把关
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

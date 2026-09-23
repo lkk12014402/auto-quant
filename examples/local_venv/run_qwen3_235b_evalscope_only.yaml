@@ -1,0 +1,51 @@
+# Qwen3-235B-A22B 混合量化模型 —— evalscope-only（aime26 + gpqa_diamond）
+# lm_eval 四项已在 run_qwen3_235b_eval_only.yaml 跑出（gsm8k/piqa/mmlu/hellaswag），
+# 本 yaml 只补 evalscope 两项，避免重跑 lm_eval。
+#
+# 依赖两处修复：
+#   - flashinfer 0.6.18（venv 已镜像；vllm serve 默认 FLASHINFER trtllm decode 需要）
+#   - evalscope harness 的 localhost no_proxy 修复（patches/evaluate/evalscope_localhost_no_proxy.*）：
+#     env.sh 配了公司代理，health check 与 evalscope→本地 server 的请求会经代理返回 403 而挂起；
+#     harness 现对 127.0.0.1/localhost 绕过代理，同时保留代理供数据集下载。
+#
+# 运行：source env.sh && aqa run examples/local_venv/run_qwen3_235b_evalscope_only.yaml
+
+model: /models/auto-quant/results/qwen3_235b_a22b/mixed_mxfp4e_mxfp8/20260909-064235/20260909-064409/quantized
+
+eval:
+  backend: vllm
+  benchmarks: [aime26, gpqa_diamond]
+  baseline: false
+  thinking: "on"                 # 推理 benchmark 开思考（Qwen3 默认模板即思考）
+  evalscope:
+    repeats: 1
+    eval_batch_size: 32
+    server_args:
+      max_model_len: 32768
+      gpu_memory_utilization: 0.8   # 与他人 job 共卡，留余量
+    generation_config:
+      max_tokens: 30000
+      temperature: 0.6
+      top_p: 0.95
+      top_k: 20
+      stream: true
+      timeout: 60000
+
+executor:
+  type: local
+  num_gpus: 2
+  env:
+    type: venv
+    path: ~/.venv-qwen235b
+    create: false
+
+output:
+  dir: ./results/qwen3_235b_a22b/evalscope_only
+  unique_dir: true
+  report_model: Qwen/Qwen3-235B-A22B
+  artifact_name: Qwen3-235B-A22B-MXFP4-Mixed-CT-RTN-AutoRound
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN

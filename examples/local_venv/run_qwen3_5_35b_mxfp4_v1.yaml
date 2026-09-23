@@ -1,0 +1,81 @@
+# Qwen3.5-35B-A3B — MXFP4 V1（model_free + 探索选定清单）
+# 【清单待确认】下面 ignore_layers 暂用探索档 A（只量路由专家）。
+# 等 mxfp4_explore_A / _C 的完整四项出来后，由 owner 依精度选定入页清单；
+# 若最终选 C，只需把 ignore_layers 换成 C 的那份，其余不动。
+#
+# 【本档不单独跑】本 yaml 的 quant+eval 段与 run_qwen3_5_35b_mxfp4_explore_A.yaml
+# 完全相同（同 scheme/method/ignore/四项 benchmark/thinking off），只差输出目录，
+# 跑两遍是同一实验重复一次（约 1.5 GPU-小时）。探索 A/C 里胜出的一方**就是页面的
+# MXFP4 V1 行**，其权重仓库名同样是 canonical 的
+# Qwen3.5-35B-A3B-MXFP4-CT-RTN-AutoRound（两档同名，只推胜出那份；push_models.py
+# 的判重已改为按文件字节，见 journal §35(c)）。本文件保留作清单模板与页面命令出处。
+
+model: /models/Qwen3.5-35B-A3B
+
+quant:
+  scheme: MXFP4
+  method: model_free
+  export_format: llm_compressor
+  ignore_layers: 'lm_head,embed_tokens,visual,mtp,in_proj_a,in_proj_b,conv1d,shared_expert,shared_expert_gate,linear_attn,self_attn'
+
+provider:
+  type: quantize
+  upload:
+    repo: INCModel3
+    token_env: LOCAL_RESULTS_HF_TOKEN
+    model_card: true
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag]
+  batch_size: "64"
+  baseline: false
+  thinking: "off"
+  lm_eval:
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      # 显存策略（共卡 GPU1，实测调出，详见 OWNER_JOURNAL §20）：
+      #   gpu_memory_utilization 是相对**总显存**的目标占用，须同时覆盖 权重+激活+KV+graph。
+      #   0.19 会装下 35.2 GiB 权重但给 KV 剩 0（报 No available memory for the cache
+      #   blocks）；抬到 0.30 在租户占 ~220 GB 时又变 CUDA OOM。正解是压激活峰值：
+      #   max_num_batched_tokens 32768->8192、max_num_seqs 128->64、enforce_eager 免掉
+      #   graph 预留，预算取 0.22（≈59 GiB）。实测 KV = 1,407,534 tokens。
+      # prefetch 必开：checkpoint 在 CEPH 上，vLLM 默认对 CEPH 关预取，
+      # 实测权重装载 2227 s -> 53 s（vLLM 日志自己给的解法）。
+      gpu_memory_utilization: 0.30
+      enable_thinking: false
+      reasoning_parser: qwen3
+      # checkpoint 在 CEPH 上、且 model_free 把融合专家拆成 61440 个小张量，
+      # vLLM 默认对 CEPH 关闭预取 ⇒ 实测权重装载 2227 s（历史 run 仅 590 s）。
+      safetensors_load_strategy: prefetch
+
+executor:
+  type: local
+  # 评估用 TP=1：36 GB checkpoint 在单张 275 GB B300 上余量充足（任务书允许 TP1-2）。
+  # 选 TP=1 的关键原因是 TP=2 的 WorkerProc 拆机会残留 semaphore/shared-memory
+  # （日志见 "leaked semaphores / leaked shared memory"），导致同 run 的第二次
+  # lm_eval engine init 直接失败：WorkerProc initialization failed。
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_35b_a3b/mxfp4_v1
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-35B-A3B
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

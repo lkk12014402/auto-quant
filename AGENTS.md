@@ -44,11 +44,6 @@
   所有 fix/patch，都要落盘（推荐落进 run 的 `output.dir` 或 aqa_results 工作目录），
   并随结果回传（见 §6）。可参照本仓库 `docs/day0_quantization_recipe.md` 与
   `docs/RUN_JOURNAL.md` 的记录粒度。
-  **任务结束必须沉淀 session，journal 不算沉淀**：aqa 自己的 agent session
-  由 pipeline 自动沉淀；**你自己的 session aqa 碰不到**（在 copilot/kimi 的
-  目录里）——任务收尾把它拷进 `<run_dir>/sessions/`（步骤与各 CLI 的
-  session 文件位置见 `skills/session-sediment/SKILL.md`），统一转 ATIF、
-  脱敏、推到 dataset `trajectories/`。
 - **确定性优先，agent 兜底。** 能用确定性探针（读 config、查注册表、看版本）
   回答的问题，不要让 agent 猜。
 - **owner 保持灵活性，但偏离必须可复现。** 鼓励主动查证与实验：查 GitHub
@@ -67,8 +62,8 @@
 ```
 ① 模型架构判定（day-0?）→ ② 选定运行环境 → ③ 写运行 yaml → ④ aqa run
 → ⑤ 把关 fix-loop（如开启）→ ⑥ gate/结果核对 → ⑦ 落盘与回传
-→ ⑧ 收尾三步：补丁处置（publish-patch）+ session 沉淀（session-sediment，
-   非可选）+ recipe 站回写（recipe-page，按需）
+→ ⑧（可选）补丁处置（publish-patch）+ session 沉淀（session-sediment）
+   + recipe 站回写（recipe-page）
 ```
 
 ```bash

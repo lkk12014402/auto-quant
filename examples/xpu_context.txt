@@ -1,0 +1,23 @@
+This run executes on Intel GPUs (B60 / XPU), inside the Intel container
+`intel/llm-scaler-vllm:0.21.0-b1` (torch 2.11+xpu, vLLM 0.21 with XPU support).
+The base image is run directly -- there is NO custom Dockerfile build.
+
+Environment conventions for the quantize + evaluate phases:
+- Use the container's preinstalled torch-xpu + vllm-xpu stack. Do NOT create a
+  new venv/conda env, and do NOT `pip install torch`/`vllm` -- the image ships a
+  matched torch-xpu + vLLM-XPU build, and a CUDA wheel will clobber it and break
+  device enumeration. Only `auto-round` and `lm-eval` are installed on top.
+- This is XPU, not CUDA: `torch.cuda.is_available()` is False by design. Use
+  `torch.xpu.is_available()` / `device='xpu'` / `.to('xpu')`. Any code path that
+  asserts CUDA must be routed to XPU instead.
+- Select cards with `ZE_AFFINITY_MASK` (the container re-indexes the requested
+  physical cards to 0..N-1); do NOT rely on `CUDA_VISIBLE_DEVICES`.
+- vLLM auto-detects the XPU device. For multi-card tensor parallel, set
+  `tensor_parallel_size` and prefer `enforce_eager=True` + `dtype=bfloat16`.
+- For MXFP4/MXFP8 export via llm_compressor, verify the produced checkpoint loads
+  back under vLLM-XPU before declaring the quantize phase successful.
+
+When a phase fails, root-cause from the captured logs (a common failure is code
+assuming CUDA, or a dependency reinstalling a CUDA torch/vllm that disables the
+XPU backend so `device_count()==0`). Apply the minimal fix and retry. If the fix
+belongs in the auto-round tool itself, capture it as a patch.

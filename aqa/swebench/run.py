@@ -85,7 +85,6 @@ async def run_swebench_async(
     exec_timeout: float = 900.0,
     test_timeout: float = 1800.0,
     out_dir: str | Path | None = None,
-    dump_trajectories: bool = True,
 ) -> tuple[AgentEvalResult, SWEBenchRunReport]:
     """Evaluate ``client`` on ``instances``; return (agent result, SWE report)."""
     factory = sandbox_factory or default_sandbox_factory()
@@ -135,21 +134,6 @@ async def run_swebench_async(
         out = Path(out_dir)
         write_predictions(out / "predictions.jsonl", results, model_name)
         write_report(out / "report.json", results, model_name)
-        if dump_trajectories:
-            # ATIF export for the Harbor toolchain / SFT datasets; a failure
-            # here must never fail the run itself.
-            try:
-                from ..agent_eval.atif import dump_trajectories_jsonl
-
-                tpath = dump_trajectories_jsonl(
-                    agent_result, out, tasks=tasks, agent_name=scaffold,
-                    model_name=model_name,
-                    system_prompt=getattr(agent, "system_prompt", ""),
-                )
-                if tpath is not None:
-                    _log.info("swebench: trajectories (ATIF) -> %s", tpath)
-            except Exception as exc:  # noqa: BLE001 - export is best-effort
-                _log.warning("swebench: trajectory export failed: %s", exc)
         _log.info("swebench: resolved %d/%d (%.1f%%) -> %s",
                   sum(r.resolved for r in results), len(results),
                   100 * run_report.resolved_rate, out)

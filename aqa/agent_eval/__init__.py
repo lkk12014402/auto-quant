@@ -15,7 +15,6 @@ these primitives.
 
 from __future__ import annotations
 
-from .atif import dump_trajectories_jsonl, trajectory_to_atif, validate_atif
 from .client import ModelClient, Transport
 from .endpoint import VllmEndpoint
 from .environment import Environment, Observation, SandboxEnvironment
@@ -91,7 +90,6 @@ __all__ = [
     "VllmEndpoint",
     "available_scaffolds",
     "coerce_verdict",
-    "dump_trajectories_jsonl",
     "parse_action",
     "ray_shard_endpoints",
     "register_scaffold",
@@ -101,7 +99,5 @@ __all__ = [
     "run_tool_use_eval",
     "serve_and_eval",
     "split_gpu_shards",
-    "trajectory_to_atif",
-    "validate_atif",
     "verdict_from_exception",
 ]

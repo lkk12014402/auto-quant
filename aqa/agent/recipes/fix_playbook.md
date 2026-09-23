@@ -21,6 +21,20 @@ acting; the deterministic classifier and your own EVIDENCE_CMD always win over t
 - MX matmul kernels require the fused output dim N to meet a minimum (commonly N >= 128).
 - vLLM fuses sibling projections: e.g. Mamba/linear-attn `in_proj_a` + `in_proj_b`
   (out=32 each) fuse to `in_proj_ba` (N=64) which is < 128 -> the engine aborts on load.
+- **MXFP8 MoE has a separate shape bug at TP>1** (vLLM
+  `.../quantization/utils/flashinfer_utils.py` `_shuffle_mxfp8_moe_weights`): the FlashInfer
+  TRTLLM scale swizzle pads the SF **column count up to a multiple of 4**, then the code
+  `.reshape(w2_scale.shape)`s back to the UNPADDED shape ->
+  `RuntimeError: shape '[512, 2560, 10]' is invalid for input of size 15728640`.
+  Deterministic predicate: `cols = moe_intermediate_size / TP / 32`; crashes iff
+  `cols % 4 != 0` (Qwen3.8-Flash-Next: 20/TP -> TP=1 ok, TP=2/4 crash). Verify on CPU with
+  `flashinfer.shuffle_matrix_sf_a(torch.zeros(2560, 10, dtype=uint8).cuda(), 128)` ->
+  numel 30720 (=2560*12), while `(2560,20)` -> 51200 (no pad).
+  Fixes, in order of preference: quantize experts to MXFP4 instead (the W4A4 MoE path swizzles
+  to `padded_N` explicitly and is not affected); else keep W8A8 and override the MoE backend
+  (`LLM(kernel_config={"moe_backend":"marlin"})`) — probe which alternates are actually
+  installed (`deep_gemm`, `humming_kernels` often are NOT; `triton` is rejected on CUDA for
+  MXFP8 MoE), don't hardcode a backend name.
 - Fix mechanism: keep such small fused projections in FP16, e.g.
   `--ignore_layers "linear_attn.in_proj_a,linear_attn.in_proj_b"` (add to, don't replace,
   the model_free auto-ignore set). Confirm the offending N in the error, then assert the
@@ -46,6 +60,13 @@ acting; the deterministic classifier and your own EVIDENCE_CMD always win over t
 - Large-model load OOM: prefer `--device_map auto`; for model_free memory pressure,
   `AR_MODEL_FREE_SHARD_PARALLELISM=1` shards the pack. Lower `batch_size` before touching
   precision.
+- **Some giant tensors impose a minimum TP, independent of weights.** Qwen3.8-Flash-Next's PLE
+  n-gram table (51.2B params = 95.37 GiB bf16) needs a SECOND full copy at TP=1 during
+  first-forward/compile -> OOM even at `gpu_memory_utilization=0.95` (weights alone DO fit:
+  219.94 GiB of 268.6 GiB). At TP>=2 it is vocab-sharded (`PLEVocabParallelEmbedding`), so the
+  peak halves. Diagnostic: the OOM alloc size equals the tensor's byte size exactly
+  (95.37 GiB = 51_200.25M x 2B), and it does NOT shrink when `max_num_batched_tokens` drops
+  (measured identical at 16384 and 2048) — so don't "fix" it by lowering the batch.
 
 ## Evaluate phase (lm-eval-harness)
 - `acc == 0` across tasks usually means a broken load (dtype/format mismatch, wrong
@@ -53,47 +74,17 @@ acting; the deterministic classifier and your own EVIDENCE_CMD always win over t
   FAILURE and root-cause the load, don't accept the number.
 - Prefer a tiny `--limit` smoke over a full task suite while iterating; the harness re-runs
   the full evaluation authoritatively after you return.
+- **`--model_args` forms are version-dependent and one is a trap.** Current lm_eval
+  (`_cli/utils.py` `MergeDictAction`) tries `json.loads` on the FIRST token and, if the string
+  contains `{`, raises `Invalid JSON: ...` instead of falling back to `k=v` parsing. So a
+  comma-joined `k=v` string that embeds any dict value (e.g.
+  `...,kernel_config={"moe_backend":"marlin"}`) fails, while the same string without braces works.
+  Pass the whole thing as ONE JSON object to be safe — it also fixes types for free
+  (ints/bools/nested dicts). Validate cheaply without booting vLLM:
+  `from lm_eval._cli.utils import try_parse_json; try_parse_json(s)`.
 
 ## Smoke-test discipline (see PROTOCOL)
 - Verify the SPECIFIC mechanism you changed at ~30s: import the edited module, read the
   quantization_config JSON, read a safetensors HEADER (not a full load), or call just the
   failing kernel once on a dummy tensor of the offending shape. Do not re-quantize or boot
   the whole engine as smoke.
-
-## Diffusion (vllm-omni text-to-image)
-- vllm-omni loads an auto_round DiT checkpoint only when the transformer's `config.json`
-  carries `quantization_config` with `quant_method="auto-round"` AND `block_name_to_quantize`
-  (e.g. "transformer_blocks,single_transformer_blocks"); if auto-round's diffusion export
-  did not write it, post-process the JSON to add it (verify by re-reading the JSON).
-- MXFP4 DiT checkpoints load on vllm-omni upstream main (PR #5544 merged 2026-08-25);
-  older local checkouts predating the merge still reject them -> use W4A16/MXFP8 there
-  instead of patching the loader.
-- auto-round forces `batch_size=1` for diffusion calibration; do not try to raise it.
-- Generation failing at engine boot: confirm vllm-omni is actually installed and that the
-  model's `model_index.json` names a pipeline class vllm-omni supports.
-- **RTN auto-routes to model_free**: `--iters 0 --disable_opt_rtn` triggers auto-round's
-  model-free path ("Auto-routing to model-free quantization"). For diffusion models that
-  path can SILENTLY QUANTIZE 0 LAYERS (transformer config lacks `model_type` for layer
-  detection; shard prefetch 404s at repo root) while still stamping a quantization_config
-  — the exported checkpoint is then unquantized weights + a quantizer config (vllm-omni
-  will fail to load it). ALWAYS pass `--disable_model_free` for diffusion RTN, and verify
-  `Quantized layers (N)` with N>0 in the log before trusting the checkpoint.
-- **`FileNotFoundError: '<model-id>/model_index.json'`** on diffusion quantize: the
-  regular diffusion loader only accepts a LOCAL directory (`utils/model.py` opens
-  `<path>/model_index.json` directly, no hub resolution). Download first
-  (`hf download <id> --local-dir ...`) and pass the local path as `model`.
-- **vllm-omni `no module or parameter named 'text_encoder.embed_tokens'`**: auto-round
-  re-saves non-quantized components itself and can mangle them — Z-Image's Qwen3 text
-  encoder loses the inner `model.` prefix on every weight (source `model.layers.N.*`
-  → exported `layers.N.*`). aqa's post-export repair (`repair_diffusion_export`)
-  auto-restores mismatched components from the source model and writes
-  `aqa_export_repair.json`; if you see this error outside aqa, copy the pristine
-  `text_encoder/` (and any mismatched component) from the source model into the export.
-- **vllm-omni `KeyError: '<block>.N.adaLN_modulation.0.qweight'`（或类似小层键名）**:
-  vllm-omni 刻意把某些小型 DiT 层保持全精度（模型文件里 `quant_config=None`，如
-  Z-Image 的 `adaLN_modulation` 与 `t_embedder.mlp`，注释 "precision-sensitive"）。
-  auto-round 会把它们连同所在 block 一起量化 → checkpoint 是打包的 qweight，引擎端
-  却要明文 weight（或反向）。量化时排除：`--ignore_layers adaLN_modulation`（去
-  vllm-omni 对应模型文件里搜 `quant_config=None`，忽略清单与它们对齐）。
-- Full source-verified reference (quantization architecture, per-model verdicts,
-  vllm-omni scheme matrix): `docs/autoround_diffusion_reference.md` in this repo.

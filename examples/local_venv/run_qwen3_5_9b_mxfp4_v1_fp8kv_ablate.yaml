@@ -1,0 +1,53 @@
+# Qwen3.5-9B — 【对照】mxfp4 V1 checkpoint + FP8 KV（隔离 FP8 KV 的单一变量）
+# 为什么要这一档：V1→V2 同时改了两个东西（量化后端 model_free→autoround，
+# 以及 evalscope 侧新增 --kv-cache-dtype fp8）。V2 的 aime25 从 0.5200 掉到 0.4200、
+# gpqa 从 0.7101 掉到 0.6727，看起来是 FP8 KV 造成的，但混了后端变量。
+# 本档用**与 V1 完全相同的 checkpoint**，只加 --kv-cache-dtype fp8，
+# 于是 (本档 − V1) = FP8 KV 的净效应。
+# 独立 eval-only run：六个变体的 lm_eval 已完成，不重量化/不重测 lm_eval。
+# 产物落到该变体**已存在的 dataset artifact 目录**下（显式 artifact_name），
+# 避免 eval-only 无 quant 块时 _artifact_name 退化成 `-BF16-Baseline` 造成重复命名。
+# 端口显式错开：EvalScopeHarness 默认 port=8801，并行会撞。
+# thinking 保持默认（模板决定，即开思考）——与 lm_eval 那六行的 non-thinking 口径**不同**，
+# 所以页面里 evalscope 是独立表，不与 lm_eval 混比。
+model: /models/auto-quant/results/qwen3_5_9b/mxfp4_v1/quantized
+
+eval:
+  backend: vllm
+  benchmarks: [aime25, gpqa_diamond]
+  baseline: false
+  thinking: "auto"
+  evalscope:
+    repeats: 5
+    port: 8806
+    eval_batch_size: 32
+    server_args:
+      gpu_memory_utilization: 0.35
+      max_model_len: 40960
+      kv_cache_dtype: fp8
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_9b/mxfp4_v1_fp8kv_ablate
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-9B
+  artifact_name: Qwen3.5-9B-AutoRound-MXFP4-model_free   # 归到 V1 同一 artifact 下
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

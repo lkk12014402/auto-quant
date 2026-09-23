@@ -120,43 +120,6 @@ auto-round --model_name <MODEL> --scheme MXFP4 --iters 200 \\
 ```
 """
 
-# Diffusion (DiT) CLI exemplars, used when the model is a diffusion pipeline
-# (``ModelAnalysis.is_diffusion``). Key differences from the LLM examples:
-# ``--format auto_round`` is mandatory for vllm-omni deployment, calibration
-# defaults to coco2014, and ``--num_inference_steps/--guidance_scale`` follow
-# the model's inference convention (distilled models: few steps, no CFG).
-DIT_CLI_EXAMPLES = """### Example DiT-A -- distilled DiT (Z-Image-Turbo / FLUX.2-klein), W4A16 RTN
-```bash
-auto-round --model_name <LOCAL_PATH> --scheme W4A16 --iters 0 --disable_opt_rtn \\
-  --disable_model_free --dataset coco2014 --num_inference_steps 8 --guidance_scale 0.0 \\
-  --format auto_round --output_dir <OUT>
-```
-
-### Example DiT-B -- FLUX.1-dev, W4A16 with tuning (calibration cost is real)
-```bash
-auto-round --model_name <LOCAL_PATH> --scheme W4A16 --iters 200 --nsamples 128 \\
-  --dataset coco2014 --num_inference_steps 28 --guidance_scale 3.5 \\
-  --format auto_round --output_dir <OUT>
-```
-# NOTE: iters>0 runs the FULL pipeline nsamples x num_inference_steps times for
-# calibration. auto-round ships dual-output block registrations only for FLUX.1
-# (FluxTransformerBlock / FluxSingleTransformerBlock); other architectures (e.g.
-# Flux2TransformerBlock) need register_diffusion_output() first -- verify before
-# enabling tuning there. Pure RTN (iters 0) skips calibration entirely and is
-# always the safe first run.
-# NOTE 2: <LOCAL_PATH> not a hub id -- the regular diffusion loader opens
-# <path>/model_index.json directly (no hub resolution); download first. And
-# ALWAYS pass --disable_model_free with --iters 0 --disable_opt_rtn: the
-# model-free auto-route silently quantizes 0 layers for diffusion models.
-
-### Example DiT-C -- MXFP8 RTN (vllm-omni supports MXFP8 since PR #3782)
-```bash
-auto-round --model_name <LOCAL_PATH> --scheme MXFP8 --iters 0 --disable_opt_rtn \\
-  --disable_model_free --dataset coco2014 --num_inference_steps 8 --guidance_scale 0.0 \\
-  --format auto_round --output_dir <OUT>
-```
-"""
-
 MOE_CONFIG_KEYS = (
     "num_experts_per_tok", "n_routed_experts", "num_local_experts",
     "num_experts", "moe_num_experts",
@@ -185,7 +148,6 @@ class ModelAnalysis:
     has_self_attn: bool = False
     has_vision: bool = False
     has_mla: bool = False
-    is_diffusion: bool = False
     router_names: list[str] = field(default_factory=list)
     sample_modules: list[str] = field(default_factory=list)
 
@@ -202,66 +164,29 @@ def _rel(module_key: str) -> str:
     return ".".join(parts[-3:])
 
 
-def _hf_config(model_id: str, revision: str, token: str | None,
-               filename: str = "config.json") -> dict:
-    if Path(model_id).is_dir():
-        return json.loads((Path(model_id) / filename).read_text())
+def _hf_config(model_id: str, revision: str, token: str | None) -> dict:
     from huggingface_hub import hf_hub_download
-    path = hf_hub_download(model_id, filename, revision=revision, token=token)
+    path = hf_hub_download(model_id, "config.json", revision=revision, token=token)
     return json.loads(Path(path).read_text())
 
 
-def _has_model_index(model_id: str, revision: str, token: str | None) -> bool:
-    """True when the repo carries a diffusers ``model_index.json`` (diffusion pipeline)."""
-    if Path(model_id).is_dir():
-        return (Path(model_id) / "model_index.json").is_file()
-    from huggingface_hub import hf_hub_download
-    try:
-        from huggingface_hub.utils import EntryNotFoundError
-    except Exception:  # noqa: BLE001
-        EntryNotFoundError = Exception  # type: ignore[assignment,misc]
-    try:
-        hf_hub_download(model_id, "model_index.json", revision=revision, token=token)
-        return True
-    except EntryNotFoundError:
-        return False
-    except Exception as exc:  # noqa: BLE001
-        _log.debug("model_index.json probe failed: %s", exc)
-        return False
-
-
-def _tensor_names(model_id: str, revision: str, token: str | None, *,
-                  index_file: str = "model.safetensors.index.json",
-                  single_file: str = "model.safetensors") -> list[str]:
+def _tensor_names(model_id: str, revision: str, token: str | None) -> list[str]:
     """Tensor names from the safetensors index (no weights); fall back to a header read."""
-    if Path(model_id).is_dir():
-        idx = Path(model_id) / index_file
-        if idx.is_file():
-            return sorted(json.loads(idx.read_text()).get("weight_map", {}).keys())
-        names: list[str] = []
-        for shard in sorted(Path(model_id).glob("*.safetensors")):
-            try:
-                with open(shard, "rb") as fh:
-                    (n,) = struct.unpack("<Q", fh.read(8))
-                    header = json.loads(fh.read(n))
-                names.extend(k for k in header if k != "__metadata__")
-            except Exception:  # noqa: BLE001 - skip unreadable shard
-                continue
-        return sorted(names)
     from huggingface_hub import hf_hub_download
     try:
         from huggingface_hub.utils import EntryNotFoundError
     except Exception:  # noqa: BLE001
         EntryNotFoundError = Exception  # type: ignore[assignment,misc]
     try:
-        idx = hf_hub_download(model_id, index_file, revision=revision, token=token)
+        idx = hf_hub_download(model_id, "model.safetensors.index.json",
+                              revision=revision, token=token)
         return sorted(json.loads(Path(idx).read_text()).get("weight_map", {}).keys())
     except EntryNotFoundError:
         pass
     except Exception as exc:  # noqa: BLE001
         _log.debug("index read failed, trying header: %s", exc)
     try:
-        path = hf_hub_download(model_id, single_file, revision=revision, token=token)
+        path = hf_hub_download(model_id, "model.safetensors", revision=revision, token=token)
         with open(path, "rb") as fh:
             (n,) = struct.unpack("<Q", fh.read(8))
             header = json.loads(fh.read(n))
@@ -274,26 +199,12 @@ def analyze_model(model_id: str, *, revision: str = "main",
                   token: str | None = None) -> ModelAnalysis:
     """Download-free structural analysis of a HF model (config + index names only)."""
     res = ModelAnalysis(model_id=model_id)
-    index_file, single_file = "model.safetensors.index.json", "model.safetensors"
     try:
         cfg = _hf_config(model_id, revision, token)
     except Exception as exc:  # noqa: BLE001
-        # Diffusion pipelines carry no root config.json; the quantization target
-        # (transformer/unet) has its own config in a subfolder.
-        if not _has_model_index(model_id, revision, token):
-            res.ok = False
-            res.error = f"config.json unavailable: {exc}"
-            return res
-        res.is_diffusion = True
-        try:
-            cfg = _hf_config(model_id, revision, token,
-                             filename="transformer/config.json")
-        except Exception as exc2:  # noqa: BLE001
-            res.ok = False
-            res.error = f"transformer/config.json unavailable: {exc2}"
-            return res
-        index_file = "transformer/diffusion_pytorch_model.safetensors.index.json"
-        single_file = "transformer/diffusion_pytorch_model.safetensors"
+        res.ok = False
+        res.error = f"config.json unavailable: {exc}"
+        return res
 
     res.architectures = list(cfg.get("architectures", []) or [])
     res.model_type = cfg.get("model_type", "") or ""
@@ -309,8 +220,7 @@ def analyze_model(model_id: str, *, revision: str = "main",
     if any(cfg.get(k) for k in ("kv_lora_rank", "q_lora_rank", "qk_rope_head_dim")):
         res.has_mla = True
 
-    norm = sorted({_normalize(n) for n in _tensor_names(
-        model_id, revision, token, index_file=index_file, single_file=single_file)})
+    norm = sorted({_normalize(n) for n in _tensor_names(model_id, revision, token)})
     res.sample_modules = norm[:60]
     routers: set[str] = set()
     for m in norm:
@@ -331,46 +241,19 @@ def analyze_model(model_id: str, *, revision: str = "main",
 
 
 _RECIPE_KNOWLEDGE_PATH = Path(__file__).resolve().parent / "recipes" / "auto_round_recipe.md"
-_DIFFUSION_KNOWLEDGE_PATH = Path(__file__).resolve().parent / "recipes" / "auto_round_diffusion.md"
 
 
-def load_recipe_knowledge(*, include_diffusion: bool = False,
-                          knowledge_dir: Path | None = None,
-                          use_synced: bool = True) -> str:
+def load_recipe_knowledge() -> str:
     """Return the packaged distilled auto_round recipe knowledge (best-effort).
 
-    Freshness order: the synced ``references/`` subtree of the shared knowledge
-    store (maintained by owners as auto-round evolves) wins over the copy
-    packaged with the aqa release; the packaged copy is the offline fallback.
-    ``use_synced=False`` pins consumption to the packaged copies
-    (``agent.knowledge.use_references: false``).
-    Missing/unreadable asset degrades gracefully to an empty string (the flow
-    still works, just less informed).  ``include_diffusion`` appends the
-    distilled diffusion/VLM knowledge; pass it for diffusion pipelines
-    (``ModelAnalysis.is_diffusion``) so DiT-specific constraints reach the prompt.
+    This is the reference corpus that grounds the agent's structured analysis in
+    real-world MXFP4/MoE recipes rather than guesswork.  Missing/unreadable asset
+    degrades gracefully to an empty string (the flow still works, just less informed).
     """
-    from .knowledge import default_local_dir
-
-    refs = (knowledge_dir or default_local_dir()) / "references"
-
-    def _read(name: str) -> str:
-        bases = (refs, _RECIPE_KNOWLEDGE_PATH.parent) if use_synced \
-            else (_RECIPE_KNOWLEDGE_PATH.parent,)
-        for base in bases:
-            try:
-                text = (base / name).read_text(encoding="utf-8")
-                if text.strip():
-                    return text
-            except OSError:
-                continue
+    try:
+        return _RECIPE_KNOWLEDGE_PATH.read_text(encoding="utf-8")
+    except OSError:
         return ""
-
-    text = _read(_RECIPE_KNOWLEDGE_PATH.name)
-    if include_diffusion:
-        extra = _read(_DIFFUSION_KNOWLEDGE_PATH.name)
-        if extra:
-            text = f"{text}\n\n{extra}" if text else extra
-    return text
 
 
 def build_optimize_prompt(a: ModelAnalysis, *, scheme: str, method: str,
@@ -388,22 +271,12 @@ def build_optimize_prompt(a: ModelAnalysis, *, scheme: str, method: str,
         f"has_router: {a.has_router} routers={a.router_names}",
         f"has_shared_experts: {a.has_shared_experts}",
         f"has_mla: {a.has_mla}  has_vision: {a.has_vision}",
-        f"is_diffusion: {a.is_diffusion}",
     ]
-    kind = "diffusion (DiT) pipeline" if a.is_diffusion else "LLM"
-    intro = (
-        "You are a senior model-quantization engineer.  Produce a **quantization "
-        f"recipe document** (Markdown) for the {kind} `{a.model_id}` at scheme {scheme} "
-        f"(method {method}): analyse the structure, justify each decision, and end "
-        "with ONE ready-to-run `auto-round` CLI command."
-    )
-    if a.is_diffusion:
-        intro += (
-            "  Only the transformer/unet is quantized (auto-round handles this "
-            "automatically); text encoders and the VAE stay untouched."
-        )
     parts = [
-        intro,
+        ("You are a senior LLM-quantization engineer.  Produce a **quantization "
+         f"recipe document** (Markdown) for `{a.model_id}` at scheme {scheme} "
+         f"(method {method}): analyse the structure, justify each decision, and end "
+         "with ONE ready-to-run `auto-round` CLI command."),
         "## Model structure (download-free analysis)\n" + "\n".join(facts),
         "## Sample module names (normalized)\n" + "\n".join(a.sample_modules[:40]),
     ]
@@ -425,32 +298,17 @@ def build_optimize_prompt(a: ModelAnalysis, *, scheme: str, method: str,
         parts.append("## Recipe knowledge (auto_quant skill)\n" + skill_recipe)
     if user_context:
         parts.append("## Operator context (HIGH PRIORITY)\n" + user_context)
-    parts.append(
-        "## auto-round diffusion CLI examples\n" + DIT_CLI_EXAMPLES
-        if a.is_diffusion else
-        "## auto-round CLI examples\n" + CLI_EXAMPLES
-    )
+    parts.append("## auto-round CLI examples\n" + CLI_EXAMPLES)
     parts.append("## Recipe document structure (follow this exactly)\n" + RECIPE_DOC_TEMPLATE)
-    hard = (
+    parts.append(
         "## Hard requirements for your command\n"
         f"- MUST include `--output_dir {output_dir}` exactly.\n"
         f"- MUST include `--format {export_format}` and `--model_name {a.model_id}`.\n"
         "- For MoE models: FP-protect the ROUTER/GATE only (never the routed experts).\n"
         "  Only put experts back at low bits via an explicit `--layer_config`.\n"
         "- Do not invent flags; use only real auto-round options.\n"
-        "- Prefer the simplest command that is correct.\n"
-    )
-    if a.is_diffusion:
-        hard += (
-            "- Diffusion: `--format auto_round` is mandatory for vllm-omni deployment; "
-            "MXFP4 checkpoints are loadable on vllm-omni main (PR #5544 merged "
-            "2026-08-25; use main or a release carrying it, older installs reject "
-            "MXFP4); calibration runs the full pipeline per sample x step, "
-            "so start at `--iters 0` unless dual-output block registration for this "
-            "architecture is confirmed in auto-round.\n"
-        )
-    parts.append(
-        hard + "\n## Output format (strict)\n"
+        "- Prefer the simplest command that is correct.\n\n"
+        "## Output format (strict)\n"
         "- The whole output IS the Markdown recipe document (no chit-chat).\n"
         "- In section 6, give the final command inside **exactly one** ```autoround-cmd\n"
         "  fenced block, on a single line, starting with `auto-round`."
@@ -636,13 +494,6 @@ def build_quant_constraints(quant_cfg: QuantConfig) -> list[QuantConstraint]:
     if "quant_lm_head" in setf and quant_cfg.quant_lm_head:
         cons.append(QuantConstraint(
             "MUST pass `--quant_lm_head`", "--quant_lm_head", "present"))
-    if "static_kv_fp8" in setf and quant_cfg.static_kv_fp8:
-        cons.append(QuantConstraint(
-            "MUST pass `--static_kv_dtype fp8`", "--static_kv_dtype", "value", "fp8"))
-    if "static_attention_fp8" in setf and quant_cfg.static_attention_fp8:
-        cons.append(QuantConstraint(
-            "MUST pass `--static_attention_dtype fp8`",
-            "--static_attention_dtype", "value", "fp8"))
     return cons
 
 
@@ -724,7 +575,6 @@ def run_agent_optimize(
     recipe_knowledge: str | None = None,
     constraints: list[QuantConstraint] | None = None,
     log_dir: Path | None = None,
-    use_synced_references: bool = True,
 ) -> str | None:
     """Analyse the model, ask the agent for a command, validate it; None on any miss."""
     a = analyze_model(model, revision=revision, token=token)
@@ -732,8 +582,7 @@ def run_agent_optimize(
         _log.warning("agent-optimize: analysis failed: %s", a.error)
         return None
     if recipe_knowledge is None:
-        recipe_knowledge = load_recipe_knowledge(include_diffusion=a.is_diffusion,
-                                                 use_synced=use_synced_references)
+        recipe_knowledge = load_recipe_knowledge()
     prompt = build_optimize_prompt(
         a, scheme=scheme, method=method, export_format=export_format,
         output_dir=output_dir, skill_recipe=skill_recipe, user_context=user_context,

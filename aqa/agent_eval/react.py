@@ -255,7 +255,6 @@ async def run_tool_use_eval(
     """Run any trajectory agent over ``tasks`` and aggregate rewards (bounded pool)."""
     sem = asyncio.Semaphore(max(1, concurrency))
     outcomes: list[TaskOutcome | None] = [None] * len(tasks)
-    trajs: list[Trajectory | None] = [None] * len(tasks)
 
     async def _one(idx: int, task: Task) -> None:
         async with sem:
@@ -267,7 +266,6 @@ async def run_tool_use_eval(
                     task.id, "", 0.0, error=str(exc),
                     verdict=verdict_from_exception(exc))
                 return
-            trajs[idx] = traj  # kept for ATIF export (even when scoring fails)
             try:
                 if score_fn is None:
                     score, verdict = traj.reward, traj.verdict
@@ -286,7 +284,6 @@ async def run_tool_use_eval(
 
     await asyncio.gather(*(_one(i, t) for i, t in enumerate(tasks)))
     result = AgentEvalResult(name=name, outcomes=[o for o in outcomes if o is not None])
-    result.trajectories = [t for t in trajs if t is not None]
     _log.info("tool-use eval %s: %d tasks, mean=%.4f, errors=%d",
               name, result.num_tasks, result.mean_score(),
               sum(1 for o in result.outcomes if o.error))

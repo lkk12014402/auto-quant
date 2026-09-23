@@ -1,0 +1,103 @@
+{
+  "model": "Qwen/Qwen3.8-27B",
+  "local_path": "/models/lkk/cri_models/Qwen3.8-27B",
+  "architecture": "qwen3_5 (Qwen3_5ForConditionalGeneration, VL, DENSE — 无 MoE)",
+  "validated_on": "2026-09-21",
+  "status": {
+    "structure_analysis": "verified（只读 config.json + safetensors header 实测，27.781B 参数）",
+    "mxfp8_model_free": "VERIFIED 2026-09-21 08:40：85.36s / 400 层量化 / 266 项 ignore / 30GB；check_quant_export OK；vLLM 冒烟 PASS（profile_run 过了旧的 N>=128 崩溃点，3 条生成语义正确）；基准分数待跑",
+    "mxfp4_plans": "量化前审计通过（ignore/layer_config 命中表 + vLLM kernel 维度校验），尚未实跑",
+    "replay_ready": true
+  },
+  "environment": {
+    "autoround": "0.16.0 (editable @ /models/lkk/auto-round, git v0.14.0-155-g51003909)",
+    "conda_env": "/models/miniforge3/envs/muse_verify",
+    "transformers_for_tuning": "5.16.1（已注册 qwen3_5 / qwen3_5_text，调优路径可用）",
+    "vllm": "/models/lkk/muse_support/vllm v0.28.1rc1.dev312+g41848caa6（定制构建，非 PyPI）",
+    "calibration_dataset": "NeelNanda/pile-10k（已在 HF_HOME=/models/huggingface 缓存，调优路径离线可用）",
+    "gpu": "4x NVIDIA B300 SXM6 AC (sm_100+, 275GB)；MXFP8 走 FlashInfer CuTe-DSL kernel",
+    "env_vars": "AR_MODEL_FREE_SHARD_PARALLELISM=1（控制 model_free host RAM 峰值）"
+  },
+  "structure": {
+    "total_params_B": 27.781,
+    "bf16_size_GB": 55.56,
+    "text_tower": {
+      "num_hidden_layers": 64,
+      "hidden_size": 5120,
+      "intermediate_size": 17408,
+      "vocab_size": 248320,
+      "layer_types": "48x linear_attention (GDN) + 16x full_attention（每 4 层一个：3,7,...,63）",
+      "moe": false
+    },
+    "param_share": {
+      "lm_mlp": "17112.8M (61.60%)",
+      "lm_linear_attn_gdn": "5562.1M (20.02%)",
+      "lm_self_attn_full": "1677.7M (6.04%)",
+      "embed_tokens": "1271.4M (4.58%)",
+      "lm_head": "1271.4M (4.58%)",
+      "vision_tower": "460.7M (1.66%)",
+      "mtp": "424.7M (1.53%)",
+      "lm_norms_other": "0.7M (0.00%)"
+    }
+  },
+  "blocker_fixed": {
+    "symptom": "AssertionError('mm_mxfp8 requires N >= 128, got N=96. out_features is too small for mm_mxfp8.') at EngineCore profile_run",
+    "evidence": "/models/lkk/cri_models/mxp8-Qwen3.8-27B.log:62-63",
+    "root_cause": "linear_attn.in_proj_a / in_proj_b 各 out_features=48；vLLM qwen3_5.py:224-225 融合成 in_proj_ba (N=96)，FlashInferCutedslMxfp8LinearKernel (kernels/linear/mxfp8/flashinfer.py:148-158) 断言 N>=128",
+    "fix": "把 in_proj_a,in_proj_b 加进 --ignore_layers（合计仅 23.6M / 0.085% 参数）",
+    "bad_artifact": "/models/lkk/cri_models/qwen3.8-27B-MXFP8-model-free",
+    "verified_artifact": "/models/lkk/cri_models/Qwen3.8-27B-MXFP8-AutoRound（ignore 266 项含 in_proj_a/b×96，冒烟通过）"
+  },
+  "ignore_layers": "visual,lm_head,embed_tokens,mtp,in_proj_a,in_proj_b",
+  "ignore_layers_rationale": "dense 模型无 router，但 lm_head/embed_tokens(各 1.27B) 保高精度；visual(460.7M) 文本评测不走且无量化 kernel；mtp(424.7M) 投机解码模块主路径不受益；in_proj_a/b 是 vLLM 侧融合后 N=96 的小投影，MXFP8 kernel 直接拒。禁止写 mlp.gate —— 子串会误伤 mlp.gate_proj（5.7B）。",
+  "schemes": {
+    "MXFP8": {
+      "model_free_rtn": {
+        "command": "auto-round --model_name /models/lkk/cri_models/Qwen3.8-27B --model_free --scheme MXFP8 --ignore_layers visual,lm_head,embed_tokens,mtp,in_proj_a,in_proj_b --format llm_compressor --device_map auto --output_dir /models/lkk/cri_models/Qwen3.8-27B-MXFP8-AutoRound",
+        "expected": "W8A8 g32 覆盖 24.327B (87.6% of Linear)，明文 3.450B；≈32.0 GB，1.74x，平均 8.99 bit",
+        "gate": "max_accuracy_drop 0.01（同栈 gemma-4-31B MXFP8 实测近无损：mmlu 0.8113->0.8130, gsm8k 0.8666->0.8688）",
+        "runtime": "model_free 实测约 10 分钟量级（55GB 读 + 32GB 写）"
+      }
+    },
+    "MXFP4-Mixed": {
+      "model_free_rtn": {
+        "command": "auto-round --model_name /models/lkk/cri_models/Qwen3.8-27B --model_free --scheme MXFP4 --layer_config '{\"self_attn\":{\"bits\":8,\"data_type\":\"mx_fp\",\"group_size\":32,\"act_bits\":8,\"act_data_type\":\"mx_fp\",\"act_group_size\":32},\"linear_attn\":{\"bits\":8,\"data_type\":\"mx_fp\",\"group_size\":32,\"act_bits\":8,\"act_data_type\":\"mx_fp\",\"act_group_size\":32}}' --ignore_layers visual,lm_head,embed_tokens,mtp,in_proj_a,in_proj_b --format llm_compressor --device_map auto --output_dir /models/lkk/cri_models/Qwen3.8-27B-MXFP4-Mixed-AutoRound",
+        "expected": "MLP(17.113B)=MXFP4 + attention(7.214B)=MXFP8 + 明文 3.450B；≈23.4 GB，2.37x，平均 6.53 bit；导出应为 format=mixed-precision + 两个 config_groups（同 Qwen3.5-35B-A3B-MXFP4-Mixed 的形状）",
+        "gate": "预期掉点 0.4~2pp（参照 Qwen3.5-35B-A3B MXFP4-Mixed mmlu 0.8280->0.8244）",
+        "note": "ignore 优先于 layer_config 的正则键，所以 mtp.*.self_attn.* 与 in_proj_a/b 仍是 BF16（审计表已验证）"
+      }
+    },
+    "MXFP4": {
+      "model_free_rtn": {
+        "command": "auto-round --model_name /models/lkk/cri_models/Qwen3.8-27B --model_free --scheme MXFP4 --ignore_layers visual,lm_head,embed_tokens,mtp,in_proj_a,in_proj_b --format llm_compressor --device_map auto --output_dir /models/lkk/cri_models/Qwen3.8-27B-MXFP4-AutoRound",
+        "expected": "W4A4 覆盖 24.327B (87.6%)；≈19.8 GB，2.80x，平均 5.49 bit",
+        "risk": "纯 model_free MXFP4 在 gemma-4-26B-A4B(MoE) 上出过随机分产物；本模型是 dense 无 fused-expert 路径风险更低，但必须先冒烟 + LIMIT=16 小样本再过全量"
+      }
+    },
+    "MXFP4-Mixed-tuning": {
+      "command": "把上面任一命令的 --model_free 换成 --iters 200 --nsamples 128 --seqlen 2048 --enable_alg_ext --gradient_accumulate_steps 8 --batch_size 1 --low_gpu_mem_usage",
+      "when": "仅在 1~3 档掉点超 gate 时付费跑；Flash-Next 实证 RTN 近无损时调优无收益（mmlu -0.95pp）",
+      "caveats": "torch<2.13.1 撞 pytorch#185372 时加 --disable_torch_compile；导出后须核对 config 结构未漂移"
+    }
+  },
+  "verification": {
+    "pre_flight": "python /models/lkk/cri_models/audit_precision_plan.py --model /models/lkk/cri_models/Qwen3.8-27B --scheme <S> --ignore_layers <I> [--layer_config <J>]  # 逐张量精度分配 + vLLM kernel 维度校验",
+    "post_export": "python /models/lkk/cri_models/check_quant_export.py <OUT>  # 明文层 vs ignore、量化层 vs config_groups 自洽性",
+    "load_smoke": "./eval_Qwen3.8-27B-quant.sh <OUT>  # 先 vLLM 加载+生成冒烟（kernel 维度问题在此暴露），再 gsm8k / piqa,mmlu,hellaswag",
+    "eval_parity": "language_model_only=True, enable_thinking=False, reasoning_parser=qwen3, seed=42, gsm8k 用 --apply_chat_template --fewshot_as_multiturn"
+  },
+  "artifacts": [
+    "/models/lkk/cri_models/Qwen3.8-27B-quantization-recipe.md（人类可读全量分析）",
+    "/models/lkk/cri_models/quant_Qwen3.8-27B-mxfp.sh",
+    "/models/lkk/cri_models/eval_Qwen3.8-27B-quant.sh",
+    "/models/lkk/cri_models/audit_precision_plan.py",
+    "/models/lkk/cri_models/check_quant_export.py",
+    "/models/lkk/cri_models/smoke_vllm_ckpt.py"
+  ],
+  "evidence": [
+    "/models/lkk/cri_models/mxp8-Qwen3.8-27B.log",
+    "/models/lkk/cri_models/qwen3.8-27B-MXFP8-model-free/quantization_config.json",
+    "/models/lkk/cri_models/lm_eval_results/（gemma-4-31B / gemma-4-26B-A4B / Qwen3.5-35B-A3B 的 bf16 vs MXFP8 vs MXFP4-Mixed 对照）",
+    "/models/auto-quant/recipes/quant/Qwen__Qwen3.8-Flash-Next.json（同族 day-0 先例：in_proj_a/b 与 mtp 的 ignore 依据）"
+  ]
+}

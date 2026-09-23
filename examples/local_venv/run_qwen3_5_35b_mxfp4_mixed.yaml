@@ -1,0 +1,77 @@
+# Qwen3.5-35b-A3B — MXFP4 **Mixed**（owner 建议的激进档：路由专家 MXFP4 + 其余 MXFP8）
+#
+# 与已有四档的关系（这是本模型精度/体积曲线上的第 5 个点）：
+#   MXFP8 V1  全部 8bit                        avg 0.8087  99.94%  35.88 GiB
+#   MXFP4 A   仅路由专家 4bit，其余留 bf16        avg 0.8054  99.53%  22.91 GiB   ← 当前入页清单
+#   MXFP4 C   专家+shared_expert+attn 全 4bit    avg 0.7888  97.48%  20.99 GiB
+#   **Mixed** 路由专家 4bit，shared_expert/attn/稠密 **8bit**，MTP 8bit
+#
+# 立论：C 掉 2.05pp 的原因是那 250 个非专家模块被压到 **4bit**（mmlu −2.52pp、
+# piqa −1.90pp），不是"它们被量化"本身。本档把同一批模块只降到 8bit，
+# 预期精度贴近 V1、体积贴近 A（专家占 90% 参数，4bit 才是体积主力）。
+#
+# 表达方式是本仓库既有的 mixed 惯例（run_qwen3_235b_mixed.yaml、
+# run_qwen3_30b_a3b_sweep.yaml 同形）：**基座 scheme 用 MXFP8**，
+# 用 layer_config 把 mlp.experts 覆盖成 {bits:4, data_type:mx_fp}。
+# layer_config 与 ignore 一样按 `named_modules()` 的模块名做子串匹配，
+# 所以 `mlp.experts` 同时命中主层 40 个融合专家模块与 `mtp.layers.0.mlp.experts`。
+#
+# ignore 沿用 MXFP8 页那份（不加 shared_expert/linear_attn/self_attn/mtp——本档要量它们），
+# 但 in_proj_a/in_proj_b 必须留（形状 (32,2048)，低于 MXFP 核 N>=128 下限）。
+model: /models/Qwen3.5-35B-A3B
+
+quant:
+  scheme: MXFP8
+  method: model_free
+  export_format: llm_compressor
+  ignore_layers: 'lm_head,embed_tokens,visual,in_proj_a,in_proj_b'
+  layer_config: {mlp.experts: {bits: 4, data_type: mx_fp}}
+
+provider:
+  type: quantize
+  # 【刻意不配 upload】与 §39 的教训一致：先出精度数据，入不入页由 owner 选定后再推。
+  # 本档仓库名（canonical）与任何已有档都不冲突：
+  #   Qwen3.5-35B-A3B-MXFP4-Mixed-CT-RTN-AutoRound（Mixed=有 layer_config，前导取最低比特）
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag]
+  batch_size: "64"
+  baseline: false
+  thinking: "off"
+  lm_eval:
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.30
+      enable_thinking: false
+      reasoning_parser: qwen3
+      # CEPH 上必开预取（实测 2227 s -> 45~86 s）；model_free 会把融合专家拆成
+      # 6 万个小张量，默认策略下装载极慢。
+      safetensors_load_strategy: prefetch
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_35b_a3b/mxfp4_mixed
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-35B-A3B
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

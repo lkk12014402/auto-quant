@@ -1,0 +1,61 @@
+# Qwen3.5-9B — MXFP4 ignore 探索【激进档】：MLP + self_attn + linear_attn 大投影全进 4bit
+# 与 conservative 档唯一差异是 ignore 清单（结构分析见 conservative 文件头）。
+#
+# 量化范围：mlp.* 9.66 GB + linear_attn.{in_proj_qkv,in_proj_z,out_proj} 3.22 GB
+#           + self_attn.{q,k,v,o}_proj 0.94 GB  = 13.8 GB / 71% 参数
+# 仍保留：embed_tokens/lm_head(21%)、visual(4%)、mtp(2%)
+# 仍 ignore 的硬约束：linear_attn.in_proj_a / in_proj_b 是 (32, 4096)，out_features=32，
+#   低于 MXFP8/MXFP4 融合核的 N>=128 下限（mm_mxfp8 requires N >= 128），必须排除；
+#   conv1d (8192,1,4) 非 Linear。
+# 正则里用 `|` 不用 `,`（逗号是 aqa ignore_layers 的分隔符）。
+model: /models/Qwen3.5-9B
+
+quant:
+  scheme: MXFP4
+  method: model_free
+  export_format: llm_compressor
+  ignore_layers: 'lm_head,embed_tokens,model\.visual,mtp,linear_attn\.(in_proj_a|in_proj_b|conv1d)'
+
+provider:
+  type: quantize
+  # 探索档不外发权重。
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag]
+  batch_size: "64"
+  baseline: false
+  thinking: "off"          # pipeline 缺 thinking 接线，显式走 model_args（见 conservative）
+  lm_eval:
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.35
+      enable_thinking: false
+      reasoning_parser: qwen3
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_9b_explore/aggressive
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-9B
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

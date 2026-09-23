@@ -1,0 +1,47 @@
+# Qwen3.5-9B — mxfp8_v1 的 evalscope 补测（aime25 + gpqa_diamond，avg@5）
+# 独立 eval-only run：六个变体的 lm_eval 已完成，不重量化/不重测 lm_eval。
+# 产物落到该变体**已存在的 dataset artifact 目录**下（显式 artifact_name），
+# 避免 eval-only 无 quant 块时 _artifact_name 退化成 `-BF16-Baseline` 造成重复命名。
+# 端口显式错开：EvalScopeHarness 默认 port=8801，并行会撞。
+# thinking 保持默认（模板决定，即开思考）——与 lm_eval 那六行的 non-thinking 口径**不同**，
+# 所以页面里 evalscope 是独立表，不与 lm_eval 混比。
+model: /models/auto-quant/results/qwen3_5_9b/mxfp8_v1/quantized
+
+eval:
+  backend: vllm
+  benchmarks: [aime25, gpqa_diamond]
+  baseline: false
+  thinking: "auto"
+  evalscope:
+    repeats: 5
+    port: 8802
+    eval_batch_size: 32
+    server_args:
+      gpu_memory_utilization: 0.35
+      max_model_len: 40960
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_9b/mxfp8_v1_evalscope
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-9B
+  artifact_name: Qwen3.5-9B-AutoRound-MXFP8-model_free
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

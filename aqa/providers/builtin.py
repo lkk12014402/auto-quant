@@ -40,6 +40,7 @@ class QuantizeProvider:
         quant = run_cfg.provider.quant
         _log.info("== quantize (%s / %s) ==", quant.scheme, quant.method)
         ctx.quantize_fn(quant_dir)
+        # model-load (autoround) nests the export one level down; model_free is flat.
         model_dir = resolve_export_dir(quant_dir)
         return ResolvedModel(model=str(model_dir), kind="path",
                              metadata={"scheme": quant.scheme, "method": quant.method})

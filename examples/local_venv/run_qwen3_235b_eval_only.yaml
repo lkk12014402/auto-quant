@@ -1,0 +1,64 @@
+# Qwen3-235B-A22B 混合量化模型 —— eval-only（复用已量化 checkpoint，不重量化）
+# 背景：run_qwen3_235b_mixed.yaml 已产出 122GB 量化权重；eval 阶段撞上
+# flashinfer 0.6.16.post3 在 B300(sm_103a) JIT 编译失败（见
+# patches/evaluate/flashinfer_0.6.18_sm103a.md）。已把 ~/.venv-qwen235b 的
+# flashinfer 镜像为 muse_new 的 0.6.18+cubin。本 yaml env.create:false 复用该 venv
+# （不再 provision，保住 flashinfer 0.6.18），仅对已量化 checkpoint 跑评估。
+#
+# 运行：
+#   source env.sh
+#   aqa run examples/local_venv/run_qwen3_235b_eval_only.yaml
+
+model: /models/auto-quant/results/qwen3_235b_a22b/mixed_mxfp4e_mxfp8/20260909-064235/20260909-064409/quantized
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag, aime26, gpqa_diamond]
+  batch_size: "64"
+  baseline: false
+  thinking: "on"
+  gen_max_toks: 4096
+  lm_eval:
+    # Qwen3-235B gsm8k：不套 chat template、不 fewshot_as_multiturn（用户实证：
+    # 套了 chat_template/multiturn 反而掉点）→ 用经典 5-shot 补全格式。
+    # 仅影响生成类 lm_eval 任务（本 run 中即 gsm8k）；piqa/mmlu/hellaswag 是
+    # loglikelihood，本就不套模板，不受影响。
+    apply_chat_template: false
+    fewshot_as_multiturn: false
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.55
+  evalscope:
+    repeats: 1
+    eval_batch_size: 32
+    server_args:
+      max_model_len: 32768
+      gpu_memory_utilization: 0.55
+    generation_config:
+      max_tokens: 30000
+      temperature: 0.6
+      top_p: 0.95
+      top_k: 20
+      stream: true
+      timeout: 60000
+
+executor:
+  type: local
+  num_gpus: 4
+  env:
+    type: venv
+    path: ~/.venv-qwen235b
+    create: false            # 复用已修好的 venv（flashinfer 0.6.18），不重装
+
+output:
+  dir: ./results/qwen3_235b_a22b/eval_only
+  unique_dir: true
+  report_model: Qwen/Qwen3-235B-A22B
+  artifact_name: Qwen3-235B-A22B-MXFP4-Mixed-CT-RTN-AutoRound   # eval-only 无 quant 块，显式指定
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN

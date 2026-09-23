@@ -1,0 +1,66 @@
+# FLUX.2-klein-9B (BFL 蒸馏紧凑版) — MXFP4 v1（autoround RTN，iters 0）
+# owner 任务书：owner_tasks/flux2-klein-9b.md
+# 推理参数以模型卡为准：4 步、guidance 1.0
+model: /models/FLUX.2-klein-9B
+
+quant:
+  scheme: MXFP4
+  method: autoround
+  export_format: auto_round
+  iters: 0
+  extra_args:
+    - --disable_opt_rtn
+    - --disable_model_free
+    - --dataset
+    - coco2014
+    - --num_inference_steps
+    - "4"
+    - --guidance_scale
+    - "1.0"
+
+eval:
+  benchmarks: [drawbench_metrics, geneval]
+  backend: vllm_omni
+  harness: diffusion
+  baseline: true
+  diffusion:
+    num_inference_steps: 4
+    guidance_scale: 1.0
+    height: 1024
+    width: 1024
+    seed: 42
+    scorer_model: openai/clip-vit-base-patch32
+
+agent:
+  fix_loop: false
+  optimize: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/.venv-zimage
+    create: false
+    packages: auto
+
+output:
+  dir: ./results/flux2-klein-9b-mxfp4
+  unique_dir: true
+  report_model: black-forest-labs/FLUX.2-klein-9B
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+provider:
+  type: quantize
+  upload:
+    repo: INCModel3
+    repo_name: FLUX.2-klein-9B-MXFP4-RTN-AutoRound
+    token_env: LOCAL_RESULTS_HF_TOKEN
+    model_card: false

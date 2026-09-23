@@ -1,0 +1,50 @@
+# 【诊断用，非正式变体】检验 method:autoround 导出的**嵌套目录**能否被 vLLM 装载
+#
+# 背景：mxfp4_v2 失败在
+#   Invalid repository ID or local directory specified: '.../mxfp4_v2/quantized'
+# 因为 model-load 路径把权重写到 quantized/Qwen3.5-9B-mxfp-w4g32/ 里，
+# quantized/ 顶层没有模型文件（问题①：aqa 侧布局，可解）。
+# 但该导出还多出一整套 538 个 `model.language_model.language_model.*` 伪前缀张量
+# （问题②：auto-round 侧，体积翻倍）。本 run 只回答一个问题：**问题②是否致命**。
+#
+# 判读：
+#   - 若 Model loading took ... 出现且 gsm8k 出分 → 伪键被忽略，v2/v3 可用
+#     （但必须先解决布局 + 体积，且不可直接 provider.upload 那份 44G 权重）
+#   - 若报 Unexpected key / size mismatch / 装载异常 → v2/v3 在当前 auto-round 下不可用，
+#     按任务书如实记 blocked + 根因，禁止编造数字
+model: /models/auto-quant/results/qwen3_5_9b/mxfp4_v2/quantized/Qwen3.5-9B-mxfp-w4g32
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k]
+  batch_size: "64"
+  baseline: false
+  limit: 8                     # 只验装载，不追精度
+  thinking: "off"
+  lm_eval:
+    model_args:
+      max_model_len: 4096
+      gpu_memory_utilization: 0.3
+      enable_thinking: false
+      reasoning_parser: qwen3
+      kv_cache_dtype: fp8      # v2 的评估口径，一并验证该参数在本栈可用
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_9b/_diag_autoround_load
+  unique_dir: false
+  report_model: Qwen/Qwen3.5-9B
+  artifact_name: Qwen3.5-9B-DIAG-autoround-loadtest   # 防被误命名成 -BF16-Baseline
+  sinks:
+    - type: local_fs           # 纯诊断，不回传 dataset
+
+agent:
+  fix_loop: false

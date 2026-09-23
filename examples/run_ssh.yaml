@@ -1,0 +1,18 @@
+# Remote run over (optionally multi-hop) SSH. Secrets come ONLY from env vars.
+_base_: run.yaml
+executor:
+  type: ssh
+  image:
+    gpu: nvcr.io/nvidia/pytorch:26.01-py3
+  proxy:
+    http_proxy: ${HTTP_PROXY:-}
+    https_proxy: ${HTTPS_PROXY:-}
+  ssh:
+    host: ${GPU_HOST:-user@gpu-box}
+    gpus: "0,1,2,3"
+    auth:
+      method: password
+      password_env: GPU_SSH_PASS
+    jump:
+      - host: ${JUMP_HOST:-jump-box}
+        auth: { method: password, password_env: JUMP_SSH_PASS }

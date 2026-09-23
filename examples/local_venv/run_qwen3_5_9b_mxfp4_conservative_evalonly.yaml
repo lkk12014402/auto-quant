@@ -1,0 +1,55 @@
+# Qwen3.5-9B — MXFP4 v1 保守档 eval-only（复用已量化 checkpoint，不重量化）
+# 背景：run_qwen3_5_9b_mxfp4_conservative.yaml 已产出量化权重；eval 阶段撞上
+# flashinfer 0.6.17 在 B300(sm_103a) JIT 编译失败（CU_..._OVERSIZED_... 符号缺失）。
+# 已新建独立 venv /models/.venv-qwen35-9b（克隆自可用的 .venv-zimage，含
+# flashinfer 0.6.18+cubin、lm_eval、vllm，见 patches/evaluate/flashinfer_0.6.18_sm103a.md）。
+# 本 yaml env.create:false 复用该 venv，仅对已量化 checkpoint 跑评估。
+#
+# 运行（必须先激活 venv，让 lm_eval 在 PATH 上）：
+#   source env.sh
+#   source /models/.venv-qwen35-9b/bin/activate
+#   aqa run examples/local_venv/run_qwen3_5_9b_mxfp4_conservative_evalonly.yaml
+
+model: /models/auto-quant/results/qwen3_5_9b_mxfp4_conservative/quantized
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag]
+  batch_size: "64"
+  baseline: false
+  thinking: auto
+  lm_eval:
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.5
+      enable_thinking: false
+      reasoning_parser: qwen3
+    group: false
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/.venv-qwen35-9b
+    create: false
+    packages: auto
+
+output:
+  dir: ./results/qwen3_5_9b_mxfp4_conservative_evalonly
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-9B
+  artifact_name: Qwen3.5-9B-MXFP4-Conservative
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

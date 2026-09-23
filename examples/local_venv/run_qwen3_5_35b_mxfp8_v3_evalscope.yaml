@@ -1,0 +1,58 @@
+# Qwen3.5-35B-A3B — MXFP8 V3（FP8 KV + FP8 attention）的 evalscope 补测
+#
+# 为什么还要跑：任务书 README 的评估矩阵是**每个变体 6 项**（lm_eval 4 + evalscope 2）。
+# 先补的是 MXFP4 V1/V2（推荐档 + KV 对照），本档与 mxfp4_v3 补齐六变体的推理基准覆盖。
+#
+# serve 侧与 V2 相同（`--kv-cache-dtype fp8`）：`static_attention_fp8` 是**权重侧**的
+# 静态注意力量化，不引入额外的 vLLM 启动参数，所以 V3 与 V2 的 serve 命令行一致，
+# 差别在 `model:` 指向的导出目录。
+#
+# 配置纪律同其余 eval-only 档（见 mxfp4_v1_evalscope 头部）：
+#   1) eval-only 走 pretrained provider、不经 resolve_export_dir ⇒ model 写**真实导出目录**
+#      （model-load 档是嵌套 quantized/<model>-mxfp-w8g32/）。
+#   2) port 逐档错开（这里 8810）。
+#   3) artifact_name 显式指定，避免被命名成 -BF16-Baseline 造成 dataset 上重复目录。
+# thinking：本工作区 evalscope harness 不处理双模式 ⇒ 单模式=思考链开启（见 journal §43）。
+model: /models/auto-quant/results/qwen3_5_35b_a3b/mxfp8_v3/quantized/Qwen3.5-35B-A3B-mxfp-w8g32
+
+eval:
+  backend: vllm
+  benchmarks: [aime25, gpqa_diamond]
+  baseline: false
+  thinking: "auto"
+  evalscope:
+    repeats: 5
+    port: 8810
+    eval_batch_size: 32
+    server_args:
+      # 权重 35.23 GiB（MTP 不在服务图里，故与 V1 几乎相同）；FP8 KV 实测 2,227,053 tokens。
+      # util 与 V1/V2 一致取 0.30 —— 换 util 会改变 KV 容量，跨档的耗时/并发数字就不可比了。
+      gpu_memory_utilization: 0.30
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      max_model_len: 40960
+      kv_cache_dtype: fp8
+      safetensors_load_strategy: prefetch
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_35b_a3b/mxfp8_v3_evalscope
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-35B-A3B
+  artifact_name: Qwen3.5-35B-A3B-MXFP8-FP8KV-FP8Attn-CT-RTN-AutoRound
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false

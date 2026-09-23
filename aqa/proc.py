@@ -1,4 +1,3 @@
- 
 """Run a subprocess while *teeing* its output: live to this process's stdout
 (so it streams back over the SSH channel in real time) and to a persisted log
 file (for debugging / upload).
@@ -42,28 +41,9 @@ def _emit(data: bytes) -> None:
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
-    """Terminate the child's whole process group (agents spawn sub-processes).
-
-    Pass ``pgid`` explicitly when the parent process may already be dead so the
-    ``os.getpgid(proc.pid)`` lookup doesn't fail before SIGTERM is delivered
-    to the orphaned descendants. When ``pgid`` is omitted we fall back to the
-    proc's own pgrp at call time (works only while the proc is alive).
-    """
-    sigterm_args: tuple = ()
-    if proc.pid is not None:
-        try:
-            sigterm_args = (os.getpgid(proc.pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    if not sigterm_args:
-        try:
-            proc.terminate()
-            proc.wait(timeout=10)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        return
+    """Terminate the child's whole process group (agents spawn sub-processes)."""
     try:
-        os.killpg(*sigterm_args)
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
         try:
             proc.terminate()
@@ -73,7 +53,7 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         try:
-            os.killpg(sigterm_args[0], signal.SIGKILL)
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except OSError:
             proc.kill()
 
@@ -92,53 +72,24 @@ def _stream_pipe(
         start_new_session=True,
     )
     assert proc.stdout is not None
-    # Capture the pgrp IMMEDIATELY while the child is alive so we can SIGTERM
-    # orphaned descendants even after the parent process has exited and
-    # ``os.getpgid(proc.pid)`` would raise ProcessLookupError.
-    pgid = os.getpgid(proc.pid)
     deadline = (time.monotonic() + timeout) if timeout else None
     fd = proc.stdout.fileno()
-    rc: int | None = None
-    try:
-        while True:
-            if deadline is not None and time.monotonic() > deadline:
-                _emit_timeout(log_file, timeout)
-                rc = TIMEOUT_RC
+    while True:
+        if deadline is not None and time.monotonic() > deadline:
+            _emit_timeout(log_file, timeout)
+            _kill_tree(proc)
+            return TIMEOUT_RC
+        rlist, _, _ = select.select([fd], [], [], 0.2)
+        if fd in rlist:
+            chunk = os.read(fd, 65536)
+            if not chunk:
                 break
-            rlist, _, _ = select.select([fd], [], [], 0.2)
-            if fd in rlist:
-                chunk = os.read(fd, 65536)
-                if not chunk:
-                    break
-                log_file.write(chunk)
-                log_file.flush()
-                _emit(chunk)
-            elif proc.poll() is not None:
-                break
-        if rc is None:
-            rc = proc.wait()
-    finally:
-        # vLLM spawns EngineCore + workers via `multiprocessing.spawn`; when the
-        # tool exits via Python exception (rc != 0, normal exit), those
-        # children are orphaned and keep holding GPU memory (they are not in
-        # the tool's wait queue and were never sent SIGTERM by Python).
-        # ``start_new_session=True`` makes the tool's pgrp == its sid, so
-        # ``killpg(pgid)`` reaches exactly its descendants and nothing else on
-        # the box. Use the captured ``pgid`` (not ``os.getpgid(proc.pid)``) so
-        # the SIGTERM lands even after the parent has exited.
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except OSError:
-                proc.kill()
-    assert rc is not None
-    return rc
+            log_file.write(chunk)
+            log_file.flush()
+            _emit(chunk)
+        elif proc.poll() is not None:
+            break
+    return proc.wait()
 
 
 def _stream_pty(
@@ -148,19 +99,6 @@ def _stream_pty(
     import pty
 
     master, slave = pty.openpty()
-    try:
-        # A fresh pty has a 0x0 winsize; tqdm (and any curses-style UI) renders
-        # an empty/collapsed bar against it. Inherit the parent's terminal size
-        # (COLUMNS/LINES aware, 80x24 fallback) so progress bars actually render.
-        import fcntl
-        import shutil
-        import struct
-        import termios
-
-        size = shutil.get_terminal_size()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", size.lines, size.columns, 0, 0))
-    except OSError:  # pragma: no cover - exotic platform; bar cosmetic only
-        pass
     proc = subprocess.Popen(
         list(cmd),
         stdin=subprocess.DEVNULL,
@@ -171,16 +109,13 @@ def _stream_pty(
         start_new_session=True,
     )
     os.close(slave)
-    # Capture the pgrp IMMEDIATELY while the child is alive (see _stream_pipe).
-    pgid = os.getpgid(proc.pid)
     deadline = (time.monotonic() + timeout) if timeout else None
-    rc: int | None = None
     try:
         while True:
             if deadline is not None and time.monotonic() > deadline:
                 _emit_timeout(log_file, timeout)
-                rc = TIMEOUT_RC
-                break
+                _kill_tree(proc)
+                return TIMEOUT_RC
             try:
                 rlist, _, _ = select.select([master], [], [], 0.2)
             except InterruptedError:  # pragma: no cover - signal during select
@@ -197,26 +132,9 @@ def _stream_pty(
                 _emit(data)
             elif proc.poll() is not None:
                 break
-        if rc is None:
-            rc = proc.wait()
     finally:
-        # See _stream_pipe: SIGTERM the captured pgrp on every exit so
-        # orphaned vLLM EngineCore / WorkerProc children don't pin GPU
-        # memory across fix-loop retries.
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except OSError:
-                proc.kill()
         os.close(master)
-    assert rc is not None
-    return rc
+    return proc.wait()
 
 
 def _emit_timeout(log_file, timeout: float | None) -> None:

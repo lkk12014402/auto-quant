@@ -73,11 +73,12 @@ _SECRET_ALLOWLIST = (
 def make_run_id(run_cfg: RunConfig) -> str:
     """Unique, filesystem-safe per-run id: ``<model>_<scheme>_<ts>_<rand>``."""
     scheme = run_cfg.quant.scheme if run_cfg.quant else "eval"
-    # Prefer the canonical `Org/Model` report id: for eval-only runs driven from a
-    # local export dir, `model` is a filesystem path and would leak the dir name
-    # (e.g. `Qwen3.5-9B-mxfp-w4g32`) into the public run id.
-    name = (run_cfg.output.report_model or run_cfg.model or "model").split("/")[-1]
-    base = f"{name}_{scheme}"
+    # Prefer the canonical reporting identity. Eval-only runs point ``model:`` at a local
+    # checkpoint dir — often auto-round's nested export folder
+    # (``.../quantized/Qwen3.5-9B-mxfp-w4g32``) — whose basename would otherwise leak into
+    # every run_id and the dataset path. ``output.report_model`` is the canonical Org/Model id.
+    ident = run_cfg.output.report_model or run_cfg.model
+    base = f"{ident.split('/')[-1]}_{scheme}"
     base = "".join(c if (c.isalnum() or c in "-_.") else "-" for c in base)
     return f"{base}_{time.strftime('%Y%m%d-%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
@@ -92,31 +93,23 @@ def repo_root() -> Path:
     return here.parents[2]
 
 
-def build_inner_config(
-    run_cfg: RunConfig,
-    run_id: str,
-    *,
-    num_gpus: int | None = None,
-    output_dir: str | None = None,
-) -> str:
+def build_inner_config(run_cfg: RunConfig, run_id: str) -> str:
     """Serialize a derived run config for the in-container ``local`` run.
 
     Strips the ssh/proxy executor wiring (that is the *host's* job) and repoints
     output at the mounted results dir.  Secrets are never embedded -- they arrive
-    via the docker ``--env-file``.  Local venv/docker env dispatch passes an
-    explicit ``num_gpus`` / ``output_dir`` (there is no ssh block to derive from).
+    via the docker ``--env-file``.
     """
     data = run_cfg.model_dump(mode="json", exclude_none=True)
     # The container is launched with `--gpus device=<ids>`; the in-container run
     # sees executor.type=local (no ssh block), so it would otherwise default to a
     # single GPU. Carry the host's device count through so the remote pipeline uses
     # the right vllm tensor_parallel_size and quantize --device_map.
-    if num_gpus is None:
-        ssh_gpus = run_cfg.executor.ssh.gpus if run_cfg.executor.ssh else ""
-        num_gpus = max(1, len([g for g in str(ssh_gpus).split(",") if g.strip()]))
+    ssh_gpus = run_cfg.executor.ssh.gpus if run_cfg.executor.ssh else ""
+    num_gpus = max(1, len([g for g in str(ssh_gpus).split(",") if g.strip()]))
     data["executor"] = {"type": "local", "num_gpus": num_gpus}
     data.setdefault("output", {})
-    data["output"]["dir"] = output_dir or f"{CONTAINER_RESULTS}/{run_id}"
+    data["output"]["dir"] = f"{CONTAINER_RESULTS}/{run_id}"
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
 
 
@@ -187,8 +180,6 @@ def build_remote_script(
     build_proxy = "".join(f'    --build-arg {k}={shlex.quote(v)} \\\n' for k, v in proxy_pairs)
     run_proxy = "".join(f'    -e {k}={shlex.quote(v)} \\\n' for k, v in proxy_pairs)
     env_file_arg = '    --env-file "$WORK/_secrets.env" \\\n' if has_secrets else ""
-    mounts = (run_cfg.executor.ssh.mounts if run_cfg.executor.ssh else []) or []
-    mounts_args = "".join(f'    -v {shlex.quote(m)} \\\n' for m in mounts)
 
     tag = f"aqa-gpu:{'local' if dockerfile else 'base'}"
 
@@ -248,7 +239,7 @@ docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 rc=0
 ( set -x
 docker run --rm --name "$CONTAINER" \\
-{device_args}{env_file_arg}{run_proxy}{mounts_args}    -v "$REPO":{CONTAINER_REPO} \\
+{device_args}{env_file_arg}{run_proxy}    -v "$REPO":{CONTAINER_REPO} \\
     -v "$HF_CACHE_ABS":{CONTAINER_HF_CACHE} \\
     --entrypoint bash \\
     "$IMAGE" \\
@@ -278,40 +269,13 @@ def container_packages(run_cfg: RunConfig) -> list[str]:
     ``executor.image.pip_install`` are appended (and can pin versions).
     """
     pkgs: list[str] = []
-    if run_cfg.eval.backend == "vllm_omni":
-        # Diffusion text-to-image stack: engine + pipeline utils + CLIP scorer deps.
-        # vllm-omni imports `vllm` (e.g. vllm.config.lora) but doesn't pin it as a
-        # dependency, so install vllm explicitly or the diffusion harness fails at
-        # import with a misleading "vllm-omni is not installed".
-        pkgs += [
-            "vllm", "vllm-omni", "diffusers", "datasets", "transformers",
-            "sentencepiece", "accelerate", "pillow",
-        ]
-    elif run_cfg.eval.backend in ("vllm", "vllm_xpu") and _accelerator(run_cfg) != "xpu":
+    if run_cfg.eval.backend in ("vllm", "vllm_xpu") and _accelerator(run_cfg) != "xpu":
         pkgs.append("vllm")
     pkgs += ["auto-round", "lm-eval"]
-    if _needs_evalscope(run_cfg):
-        # evalscope harness serves the model itself with vllm serve.
-        pkgs += ["evalscope"]
-        if "vllm" not in pkgs and _accelerator(run_cfg) != "xpu":
-            pkgs.append("vllm")
     for extra in run_cfg.executor.image.pip_install:
         if extra and extra not in pkgs:
             pkgs.append(extra)
     return pkgs
-
-
-def _needs_evalscope(run_cfg: RunConfig) -> bool:
-    """True when any requested benchmark routes to the evalscope harness."""
-    if run_cfg.eval.harness == "evalscope":
-        return True
-    try:
-        from ..eval.registry import BenchmarkRegistry
-
-        reg = BenchmarkRegistry()
-        return any(reg.get(b).harness == "evalscope" for b in run_cfg.eval.benchmarks)
-    except Exception:  # noqa: BLE001 - missing recipe files must not break env build
-        return False
 
 
 def _agent_enabled(run_cfg: RunConfig) -> bool:
@@ -383,12 +347,7 @@ def build_container_bootstrap(run_cfg: RunConfig) -> str:
     Copilot) backends are installed and provisioned so the fix-loop can run on the
     remote host.
     """
-    env_pkgs = run_cfg.executor.env.packages
-    # An explicit executor.env.packages list overrides the derived set — required
-    # when the base image already ships a custom stack (e.g. a vendor vllm build
-    # that must NOT be clobbered by the PyPI `vllm` the derivation would add).
-    pkg_list = container_packages(run_cfg) if env_pkgs == "auto" else list(env_pkgs)
-    pkgs = " ".join(shlex.quote(p) for p in pkg_list)
+    pkgs = " ".join(shlex.quote(p) for p in container_packages(run_cfg))
     agent_step = _agent_provision_snippet(run_cfg)
     return f"""#!/usr/bin/env bash
 set -uo pipefail
@@ -396,21 +355,14 @@ cd {CONTAINER_REPO}
 
 export PIP_BREAK_SYSTEM_PACKAGES=1 PIP_ROOT_USER_ACTION=ignore PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Prefer uv (the docker images ship it for exactly this); fall back to pip.
-if command -v uv >/dev/null 2>&1; then
-    _pkg_install() {{ uv pip install --system --break-system-packages "$@"; }}
-else
-    _pkg_install() {{ pip install "$@"; }}
-fi
-
 echo "== container: install aqa (editable) =="
-if ! _pkg_install -e . ; then
+if ! pip install -e . ; then
     echo "[bootstrap] FATAL: failed to install aqa" >&2
     exit 1
 fi
 
 echo "== container: install quant/eval stack: {pkgs} =="
-_pkg_install {pkgs} \\
+pip install {pkgs} \\
     || echo "[bootstrap] WARN: stack install had errors; continuing (agent-fix may repair env)"
 {agent_step}
 echo "== container: environment =="

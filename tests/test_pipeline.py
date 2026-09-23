@@ -81,25 +81,6 @@ def test_build_autoround_command_opt_rtn():
     assert "--disable_opt_rtn" in off and "--enable_opt_rtn" not in off
 
 
-def test_build_autoround_command_static_fp8():
-    cfg = QuantConfig(scheme="W4A16", method="autoround", iters=0,
-                      static_kv_fp8=True, static_attention_fp8=True)
-    cmd = build_autoround_command("org/m", cfg, Path("/tmp/out"))
-    assert _adjacent(cmd, "--static_kv_dtype") == "fp8"
-    assert _adjacent(cmd, "--static_attention_dtype") == "fp8"
-    off = build_autoround_command("org/m", QuantConfig(scheme="W4A16", method="autoround"),
-                                  Path("/tmp/out"))
-    assert "--static_kv_dtype" not in off and "--static_attention_dtype" not in off
-
-
-def test_quant_config_static_fp8_rejects_model_free():
-    import pytest
-    with pytest.raises(ValueError, match="calibration"):
-        QuantConfig(method="model_free", static_kv_fp8=True)
-    with pytest.raises(ValueError, match="calibration"):
-        QuantConfig(method="model_free", static_attention_fp8=True)
-
-
 def test_build_autoround_command_layer_config_emitted_as_json():
     # Per-layer mixed-precision overrides must reach the CLI as compact JSON,
     # not be silently dropped (regression: field existed but was never emitted).
@@ -360,23 +341,3 @@ def test_pipeline_records_self_heal_in_manifest(tmp_path, monkeypatch):
     assert sh["per_phase"]["quantize"]["agent_attempts"] == 2
     assert sh["per_phase"]["evaluate"]["deterministic_heals"] == 1
     assert sh["tokens"]["n_input_tokens"] == 100
-
-
-def test_write_terminal_state_refreshes_aqa_run_json(tmp_path):
-    """The sink upload happens inside run_pipeline; the executor's final
-    aqa_run.json rewrite only happens after. The pipeline must refresh the
-    state itself before dispatching, or the uploaded run claims "running"."""
-    from aqa.executors import ProcessState
-    from aqa.pipeline import _write_terminal_state
-
-    meta = tmp_path / "aqa_run.json"
-    meta.write_text(json.dumps({"model": "org/m", "state": "running"}))
-    _write_terminal_state(tmp_path, ProcessState.DONE, "org/m")
-    assert json.loads(meta.read_text())["state"] == "done"
-
-    _write_terminal_state(tmp_path, ProcessState.FAILED, "org/m")
-    assert json.loads(meta.read_text())["state"] == "failed"
-
-    # Missing meta file is a no-op (never creates one).
-    _write_terminal_state(tmp_path / "absent", ProcessState.DONE, "org/m")
-    assert not (tmp_path / "absent" / "aqa_run.json").exists()

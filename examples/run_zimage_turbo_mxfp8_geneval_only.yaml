@@ -1,0 +1,45 @@
+# Z-Image-Turbo MXFP8 v1 — geneval-only eval（独立进程，规避同进程二次 Omni 加载 bug）
+# 背景：run_zimage_turbo_mxfp8_evalonly.yaml 里 drawbench 正常但 geneval 全黑——
+# 根因是"CLIP 评分后同进程第二次 Omni 加载"时 MXFP8 生成全黑（owner 已复现：
+# 全新进程 geneval 风格生成正常）。故 geneval 单独跑独立进程。
+# 复用已量化 checkpoint：results/zimage-turbo-mxfp8/20260909-130532/.../quantized
+# bf16 baseline geneval = 0.7584（已测）。
+#
+# 运行：source env.sh && CUDA_VISIBLE_DEVICES=3 aqa run examples/run_zimage_turbo_mxfp8_geneval_only.yaml
+
+model: /models/auto-quant/results/zimage-turbo-mxfp8/20260909-130532/20260909-130532/quantized
+
+eval:
+  benchmarks: [geneval]
+  backend: vllm_omni
+  harness: diffusion
+  baseline: false
+  diffusion:
+    num_inference_steps: 8
+    guidance_scale: 0.0
+    height: 1024
+    width: 1024
+    seed: 42
+
+agent:
+  fix_loop: false
+  optimize: false
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/.venv-zimage
+    create: false
+
+output:
+  dir: ./results/zimage-turbo-mxfp8-geneval
+  unique_dir: true
+  report_model: Tongyi-MAI/Z-Image-Turbo
+  artifact_name: Z-Image-Turbo-MXFP8-CT-AutoRound-RTN
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN

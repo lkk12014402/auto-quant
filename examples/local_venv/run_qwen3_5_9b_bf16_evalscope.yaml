@@ -1,0 +1,48 @@
+# Qwen3.5-9B — bf16 的 evalscope 补测（aime25 + gpqa_diamond，avg@5）
+# 独立 eval-only run，落到该变体已存在的 dataset artifact 目录下（显式 artifact_name）。
+# 模型路径已解析到**真实导出目录**：V2/V3 是 autoround 导出，权重嵌套在
+# quantized/<model>-mxfp-wNg32/ 下，而 eval-only 走 pretrained provider、不经过
+# resolve_export_dir —— 直接指 quantized/ 会报 Invalid repository ID。
+# # BF16 基线：不加任何量化/FP8-KV 参数，作为 Ratio 分母
+# port 必须逐档错开（EvalScopeHarness 默认 8801，并行会撞）。
+# thinking 保持默认（开思考）：与 lm_eval 六行的 non-thinking 口径不同，页面分表呈现。
+model: /models/Qwen3.5-9B    # 绝对路径原样使用（注意 aqa validate 不校验含 "/" 的路径是否存在）
+
+eval:
+  backend: vllm
+  benchmarks: [aime25, gpqa_diamond]
+  baseline: false
+  thinking: "auto"
+  evalscope:
+    repeats: 5
+    port: 8805
+    eval_batch_size: 32
+    server_args:
+      gpu_memory_utilization: 0.35
+      max_model_len: 40960
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_9b/bf16_evalscope
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-9B
+  artifact_name: Qwen3.5-9B-BF16-Baseline
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

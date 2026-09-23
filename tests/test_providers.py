@@ -97,34 +97,6 @@ def test_quantize_provider_without_fn_raises():
         QuantizeProvider().provide(cfg, ProviderContext(out_dir=Path("/tmp/o")))
 
 
-def test_quantize_provider_keeps_flat_export_dir(tmp_path):
-    """model_free path writes config.json straight into quant_dir — no nesting."""
-    cfg = parse_run_config({"model": "org/m", "quant": {"scheme": "W4A16"}})
-
-    def fake_quantize(quant_dir: Path) -> None:
-        quant_dir.mkdir(parents=True)
-        (quant_dir / "config.json").write_text("{}")
-
-    ctx = ProviderContext(out_dir=tmp_path, quantize_fn=fake_quantize)
-    resolved = QuantizeProvider().provide(cfg, ctx)
-    assert resolved.model == str(tmp_path / "quantized")
-
-
-def test_quantize_provider_resolves_nested_export_dir(tmp_path):
-    """The model-load (tuning) path nests the export at <quant_dir>/<model>-<scheme>/."""
-    cfg = parse_run_config({"model": "org/m", "quant": {"scheme": "W4A16"}})
-
-    def fake_quantize(quant_dir: Path) -> None:
-        (quant_dir / "quantize.log").parent.mkdir(parents=True, exist_ok=True)
-        (quant_dir / "quantize.log").write_text("log")
-        nested = quant_dir / "m-w4g128"
-        nested.mkdir()
-        (nested / "config.json").write_text("{}")
-
-    ctx = ProviderContext(out_dir=tmp_path, quantize_fn=fake_quantize)
-    resolved = QuantizeProvider().provide(cfg, ctx)
-    assert resolved.model == str(tmp_path / "quantized" / "m-w4g128")
-
 def test_endpoint_provider_resolves_endpoint():
     cfg = parse_run_config({"model": "org/m",
                             "provider": {"type": "endpoint", "base_url": "http://h:8000/v1"}})

@@ -5,11 +5,11 @@
   "quantization_source": "zai-org/GLM-5.3-Flash-BF16（官方 BF16 变体，~640GB/120 分片）。不要从原生 FP8 版二次压缩；FP8 版留作量化范围的对齐参照",
   "model_facts": "320B 总参/18B 激活；45 层 = 34 KDA 线性注意力 + 11 稀疏 MLA（indexer，层号 3,7,...,43）；MLP 3 dense + 42 sparse（288 routed experts top-8 + 1 shared）；hyper-connection(hc_*)；MTP(eh_proj/enorm/hnorm/shared_head)；多模态(visual)；原生 FP8",
   "environment": {
-    "inference_image": "vllm/vllm-openai:glm53-flash-x86_64-cu130",
+    "inference_image": "vllm/vllm-openai:nightly（2026-09-21 构建，=main，含 glm5next+cu130+DeepGEMM+flashinfer-cubin）。专用 tag glm53-flash-x86_64-cu130 停在 09-09，缺 9/10-9/20 的 10 条修复，已非首选；latest=v0.29.0 同 digest，不含支持",
     "transformers_for_tuning": "transformers==5.16.1 + patches/transformers_glm5_next_mask_bool.patch（镜像自带 5.15.1 不认 glm5_next；RTN/model_free 不需要；补丁修 modeling_glm5_next.py 四处 ~mask 缺 .bool()，dynamo fake tensor 下必炸）",
     "torch_for_tuning": "镜像 torch 2.13.0 + patches/torch_186659_compiled_backward_context.patch（开 compile 必须；不打就 --disable_torch_compile）",
     "autoround": "0.15.0 通用路径，无需架构补丁。注意：GLM 预置规则强制 dense MLP 保 bf16（vllm 侧已知问题），ignore 里放开也无效",
-    "notes": "PyPI vllm 0.26.0/0.28.0 均不注册 glm5_next；PR #53906 含 CUDA kernel+scheduler 改动 → 不可 patch，必须官方定制镜像；packages 里不要装 vllm（会覆盖镜像定制版）"
+    "notes": "2026-09-21 复核：PR #53906 已于 2026-09-03T16:40Z 合并（merge commit 98ed0856，94 files/+17926）。最低可用 tag = v0.29.1rc0，稳定 tag = v0.30.0；但 PyPI 最新仍是 0.29.0（不含该架构）且无 :v0.30.0 镜像 → 只能走 wheels.vllm.ai/nightly/cu130 或 nightly 镜像。**不能只 patch Python**：PR 改了 csrc/libtorch_stable/cache_kernels.cu，把 gather_and_maybe_dequant_cache 的 head_dim 白名单 {320,576} 放宽到 {320,512,576}（512=GLM 的 MLA 隐头宽），已装的 0.29.0 wheel 里仍是旧检查。v0.30.0 比 main 少 10 条 glm5next 提交（#57477 kpool tail 寻址修复、#57701 indexer workspace 省 3GiB、#57327），所以建议跟 nightly 而非锁 v0.30.0。"
   },
   "serve_constraints": "KDA 的 Mamba 状态缓存 512 块 < vllm 默认 max_num_seqs=1024 → 必须显式 max_num_seqs<=256，否则引擎初始化炸；Hopper 上 KV cache 用 bf16（FP8 KV 仅 Blackwell）；serve 惯例 TP4 + --reasoning-parser glm45",
   "schemes": {
@@ -37,9 +37,87 @@
         "result": "mean 0.8388（-0.11pp，最佳量化方案）：piqa 0.8303 / hellaswag(acc) 0.6879 / mmlu 0.8652 / gsm8k 0.9719。用含 ShardWriter 坑⑤根修（7026d988）的 wheel 跑——导出直接正确分拆 q/k/v_conv1d，坑⑤ E2E 验证通过",
         "yaml": "examples/run_glm53_flash_w4a16_tuning_fp8aligned.yaml"
       }
+    },
+    "MXFP4-Mixed": {
+      "model_free_rtn": {
+        "command": "auto-round --model_name <GLM-5.3-Flash-BF16> --model_free --scheme MXFP8 --layer_config '{\"mlp.experts\":{\"bits\":4,\"data_type\":\"mx_fp\"}}' --ignore_layers lm_head,embed_tokens,visual,hc_,indexer,self_attn,mlp.gate.,eh_proj,enorm,hnorm,shared_head,norm,A_log,dt_bias,b_proj,f_a_proj,f_b_proj,g_a_proj,g_b_proj,conv1d --format llm_compressor --device_map auto --output_dir <out>",
+        "expected_allocation": "W4A4 311.654B/37152 层(routed experts) + W8A8 1.535B/138 层(dense MLP 9 + shared_experts 129) + BF16 8.070B/572 层；产物 ≈183.5 GB（bf16 源 642.7 GB）",
+        "cross_check": "预测 4-bit 层数 37152 与 HF 参考产物 group_0.targets 完全一致；ignore 覆盖 self_attn(含 KDA 与稀疏MLA)/mlp.gate./hc_/indexer/visual/MTP",
+        "published_scores": "参考产物 README：BF16 avg 0.8399 -> MXFP4 avg 0.8366（99.61%）；gsm8k .9735->.9735, mmlu .8666->.8581, piqa .8292->.8313, hellaswag .6903->.6836",
+        "not_blocked_by": "Qwen3.8-Flash-Next 的 MXFP8-MoE scale-swizzle 形状 bug 不适用于本方案：experts 是 W4A4 走 CutlassExpertsMxfp4；即便改 W8A8，cols=moe_intermediate/(TP*32)=64/TP 在 TP=1/2/4/8 下均为 4 的倍数",
+        "status": "2026-09-21 仅完成量化前审计与参考产物反解；未实跑（BF16 源未下载），且本机 vLLM 不支持该架构 -> 评测需先按 §6/§7 建环境"
+      }
+    },
+    "MXFP8": {
+      "model_free_rtn": {
+        "command": "同上但去掉 --layer_config",
+        "expected_allocation": "W8A8 313.189B/37290 层 + BF16 8.070B/572 层；产物 ≈339.3 GB",
+        "verdict": "不推荐：比官方 block-FP8 源(306 GB) 还大 —— MX 的 1/32 E8M0 scale 开销(3.1%) 高于 128x128 block scale(0.6%)"
+      }
     }
   },
   "ignore_layers_rationale": "保守版：MoE 保护（shared_experts 每 token 都过必保）+ 结构件（hc_/indexer/MTP/norm/conv1d/KDA 小投影）+ self_attn 全保。子串陷阱：mlp.gate 会误伤 mlp.gate_proj → 保守版显式列 dense 三项，激进版用尾点锚定 mlp.gate.；b_proj 会误伤稀疏层 q_b_proj → 锚定 self_attn.b_proj",
-  "deployable_scope_rule": "可部署量化范围 = auto-round 能量化 ∩ vllm 能加载。官方 FP8 范围超出交集的部分（稀疏 MLA 大投影）量化后也加载不了；dense MLP 被 auto-round 预置规则锁定。导出 config.json 的 extra_config 是未融合名，vllm 建成融合 gate_up_proj → aqa repair_fused_name_gaps 导出后自动补融合名（bits:16）",
-  "evidence": "docs/day0_quantization_recipe.md 附录 B；过程全记录 aqa_results/glm53_flash_day0/RUN_JOURNAL.md"
+  "deployable_scope_rule": "可部署量化范围 = auto-round 能量化 ∩ vllm 能加载。官方 FP8 范围超出交集的部分（稀疏 MLA 大投影）量化后也加载不了；dense MLP 被 auto-round 预置规则锁定。导出 config.json 的 extra_config 是未融合名，vllm 建成融合 gate_up_proj → aqa repair_fused_name_gaps 导出后自动补融合名（bits:16） | 2026-09-21 补：官方 FP8 比 G0 多量化 48 个稀疏MLA投影(q_a/q_b/kv_a/o_proj，共 1.208B)，转 MXFP8 只省 1.2 GB，不值当拿加载风险换",
+  "evidence": "docs/day0_quantization_recipe.md 附录 B；过程全记录 aqa_results/glm53_flash_day0/RUN_JOURNAL.md",
+  "local_source_warning": "本机 /models/lkk/cri_models/GLM-5.3-Flash 是原生 block-FP8 版（quant_method=fp8, weight_block_size=[128,128], 37338 个 F8_E4M3 + F32 weight_scale_inv，306GB）。量化必须用 zai-org/GLM-5.3-Flash-BF16（642GB）；从 FP8 二次量化虽被 auto-round model_free 支持（有 weight_scale_inv 反量化路径），但精度不可对标已发布产物。",
+  "scripts_and_docs": [
+    "/models/lkk/cri_models/GLM-5.3-Flash-quantization-recipe.md",
+    "/models/lkk/cri_models/quant_GLM-5.3-Flash-mxfp.sh",
+    "/models/lkk/cri_models/eval_GLM-5.3-Flash-quant.sh",
+    "/models/lkk/cri_models/setup_vllm_env_glm53.sh",
+    "/models/lkk/cri_models/audit_precision_plan.py",
+    "/models/lkk/cri_models/gen_glm_ignore.py"
+  ],
+  "serve_constraints_vllm_source_level": {
+    "block_size": "必须是 index_kpool×32=128 的倍数（cuda.py:430-447、glm5next/common/attention.py:116,135-143）",
+    "deep_gemm": "硬依赖但不在 vllm wheel requires_dist：models/glm5next/nvidia/sparse_indexer.py:662 RuntimeError；官方镜像用 tools/install_deepgemm.sh 从 vllm fork ref e1f418c2 现编",
+    "flashinfer_cubin": "v0.30.0 requirements/cuda.txt 明确从 wheel 依赖排除，需手装 0.6.18.post1",
+    "tp_divisibility": "num_attention_heads=64 与 KDA linear heads=64 必须被 TP 整除（model.py:693、kda.py:199、attention.py:436）；288 experts 无整除断言（通用 FusedMoE/EPLB，#55119 已为本模型开启）",
+    "pipeline_parallel": "实质禁用：model.py:735-737 注释 PP gated off；kv_cache_utils.py:1258-1264 会对无 MLA 槽位共享的 stage 抛错（解禁在 open #57171/#57121）",
+    "kda_vs_mla_page": "kv_cache_utils.py:1249-1254 'mamba state page does not fit the MLA page; increase TP or use a wider KV dtype' —— 这才是 TP/KV dtype 与能否起服务的真实耦合；max_num_seqs 按 max_num_seqs×(1+num_spec) 预留 mamba 块（kv_cache_interface.py:1034-1045）",
+    "max_model_len": "indexer decode logits ≈ max_num_seqs×max_model_len×4B（sparse_attn_indexer_kpool.py:310-325）；1M 上下文轻松上 GiB，收它的 #57701 不在 v0.30.0 → 显式封顶（脚本默认 8192）",
+    "kv_dtype": "sm103 自动选 FLASHINFER_MLA_SPARSE，允许 auto/fp8/fp8_e4m3；它专为 NoPE 开口子要求 qk_nope_head_dim=256 && kv_lora_rank=512（flashinfer_mla_sparse.py:127-140）正是本模型形状。**绝不能用 fp8_ds_mla/nvfp4_ds_mla**：cache_kernels.cu:937,948 断言 pe_dim==64 而 GLM 是 NoPE（open #57578/#55773）",
+    "dtype": "必须 bf16：mhc.py:667,702 hyper-connection scratch 硬编码 bf16",
+    "mtp_spec_decode": "MTP 支持量化权重（mtp.py:45,68-69 透传；speculative.py:64 有 glm5_next_mtp），但 mtp.py:49 的 eh_proj 是普通 nn.Linear 必须明文，且量化 ckpt + shared_head.head 有 open 加载期误报 #57532 → 评测阶段不开",
+    "reasoning_parser": "glm45（不是 qwen3）",
+    "correction_to_old_record": "旧 serve_constraints 把 max_num_seqs<=256 归因为'KDA 状态缓存 512 块<默认 1024'；真实机制见上 kda_vs_mla_page 项，保守值 256 保留"
+  },
+  "vllm_forced_plaintext": "以下模块在 vLLM 里被写死明文，量化了就是加载期崩，不是保守选择：稀疏MLA投影 q_a/q_b/kv_a_proj_with_mqa/o_proj（model.py:330 quant_config=None；vLLM 只对 block-FP8 格式的 _FP8_ATTN_PROJS 在 model.py:1199-1300 反量化成 BF16，compressed-tensors 的 MXFP4/MXFP8 打包不在该通路）；KDA 全部投影（kda.py:189-194 构造期置 quant_config=None）；indexer（attention.py:270-278 fp8 wk 反量化回 BF16）；hyper-connection hc_*（mhc.py:667,702 是 nn.Parameter+bf16 scratch，不经 quant method）；visual（model.py:1093 显式 None，注释说继承全局 fp8 会 NaN image features）；MTP eh_proj/enorm/hnorm/shared_head.norm。⇒ MX 只能落 mlp.experts.*（+可选 dense MLP/shared_experts）",
+  "env_build": "系统 python3 venv + uv：uv pip install --torch-backend=cu130 --pre --extra-index-url https://wheels.vllm.ai/nightly/cu130 'vllm>=0.29.1rc1.dev0'；再补 flashinfer-cubin==0.6.18.post1（--extra-index-url https://flashinfer.ai/whl/）；DeepGEMM 用 vLLM 官方 tools/install_deepgemm.sh 装（它自带权威 ref e1f418c2...，与 cmake/external_projects/deepgemm.cmake 同步，需 nvcc 且 CUDA>=12.8）—— 不要在调用方硬钉 sha。脚本 /models/lkk/cri_models/setup_vllm_env_glm53.sh",
+  "mx_note": "2026-09-21 更新：vLLM 支持状态与 serve 约束已按 v0.30.0/main 源码逐行复核（见 serve_constraints_vllm_source_level / vllm_forced_plaintext）；MXFP4-Mixed 档的量化范围经审计与 HF 参考产物 group_0=37152 层逐项吻合。量化与评测均未实跑。",
+  "known_pitfalls": [
+    "不要在调用方硬钉 DeepGEMM sha：本次抄错一位（e18418c2 vs 正确 e1f418c2，GitHub API 分别 422/200）导致 uv 报 'failed to find branch, tag, or commit'。改用 vLLM 官方 tools/install_deepgemm.sh，ref 由上游与 cmake/external_projects/deepgemm.cmake 同步维护",
+    "DeepGEMM 源码编译需要系统包 libdw-dev（third-party/deep_jit 里 #include <elfutils/libdwfl.h>）；Ubuntu 24.04 默认没装，缺了在 build_ext 阶段 fatal error。setup 脚本已加预检",
+    "官方 install_deepgemm.sh 用 `python3 setup.py bdist_wheel`：必须把 venv/bin 前置到 PATH，否则按系统 python/系统 torch 头编译（本机版本恰好相同才没暴露）",
+    "vllm 0.29.1rc1.dev471 nightly wheel 已验证注册 Glm5NextForConditionalGeneration（本机实测），但 deep_gemm 不在其 requires_dist 内",
+    "uv pip install lm-eval 会连带升级 transformers（5.16.1->5.17.0）；装完务必回归 torch/vllm 版本与 registry，别让 resolver 静默改动推理栈",
+    "ignore 里写裸 b_proj 会子串误伤 q_b_proj/kv_b_proj（实测让 plus 少量化 12 层且不报错）；必须写 self_attn.b_proj",
+    "KDA 与稀疏MLA 的输出投影在 checkpoint 里同名 self_attn.o_proj，无法用子串区分，只能按 kda_layers 层号锚定正则"
+  ],
+  "env_status_2026_09_21": "VERIFIED on this box: /models/lkk/venv_glm53（系统 /usr/bin/python3 3.12.3 + uv 0.12.13）装成 torch 2.13.0+cu130 / vllm 0.29.1rc1.dev471+g82daf9f57（nightly cu130 索引）/ deep_gemm 2.8.0+e1f418c（官方 install_deepgemm.sh 源码编，需先 apt 装 libdw-dev）/ flashinfer + flashinfer_cubin + tilelang + compressed_tensors + lm_eval 全部 import OK；registry 实测 Glm5NextForConditionalGeneration=True。副作用：装 lm-eval 把 transformers 从 5.16.1 升到 5.17.0（vllm 要求 >=5.10.4，无碍）。eval 脚本两道预检（registry + deep_gemm）与 TP/block_size 守卫均实测通过。量化与端到端评测仍未跑（缺 BF16 源）。",
+  "attn_ignore_profiles": {
+    "generator": "/models/lkk/cri_models/gen_glm_ignore.py <model_dir> --profile aligned|plus（层号取自 linear_attn_config.kda_layers）",
+    "aligned": "HF 参考产物口径：self_attn 一把覆盖，8bit 138 层 / 16bit 572 层 / 产物 ≈183.46 GB",
+    "plus": "把官方 block-FP8 也量了的 48 个稀疏MLA投影纳入 MXFP8：8bit 186 层 / 16bit 524 层 / ≈182.29 GB（只省 1.17 GB）",
+    "plus_prediction": "预计 vLLM 加载失败——按装机版源码：common/model.py:330 构造 Glm5NextMLAAttention 传 quant_config=None（注释 'MLA projections are BF16 in checkpoint'）；common/kda.py:189-194 KDA 构造期置 None；common/model.py:1236-1243 的 _FP8_ATTN_PROJS 兼容层只认 block-FP8 的 weight_scale_inv，CT 的 weight_scale(uint8 E8M0) 触发不了",
+    "correction": "此结论与 INC 无关：llm_compressor 走 compressed-tensors 通路，先例的 KeyError qweight 属 INC/W4A16 症状，不可作为本方案依据（旧记录已更正）",
+    "mode_flags": "MODE=mxfp4_mixed|mxfp4_mixed_plus|mxfp8|mxfp8_plus",
+    "status": "2026-09-21：plus 口径已实现并通过量化前审计，尚未实跑量化与加载验证"
+  },
+  "env_verified": {
+    "date": "2026-09-21",
+    "venv": "/models/lkk/venv_glm53（/usr/bin/python3 3.12.3 + uv 0.12.13，不用 conda）",
+    "vllm": "0.29.1rc1.dev471+g82daf9f57 <- https://wheels.vllm.ai/nightly/cu130 (--pre --torch-backend=cu130)",
+    "torch": "2.13.0+cu130",
+    "deep_gemm": "2.8.0+e1f418c（官方 tools/install_deepgemm.sh，PATH 前置 venv/bin 编译）",
+    "flashinfer": "0.6.18.post1 + flashinfer-cubin 0.6.18.post1",
+    "tilelang": "0.1.12",
+    "compressed_tensors": "0.17.0",
+    "lm_eval": "0.4.13",
+    "transformers": "5.17.0（装 lm-eval 的连带升级，5.16.1 -> 5.17.0）",
+    "system_prereq": "libdw-dev 0.190-1.1ubuntu0.1（Ubuntu 24.04 默认无，缺则 DeepGEMM 编译 fatal error: elfutils/libdwfl.h）",
+    "registry": "Glm5NextForConditionalGeneration / ForCausalLM / Glm5NextMTPModel 全 True；device cc (10,3)=sm103",
+    "script_behavior": "setup_vllm_env_glm53.sh 已内置该 verified 组合：PIN=1 默认锁版本（取不到自动退 moving nightly）、CHECK_ONLY=1 纯体检、已就绪则幂等跳过安装",
+    "still_unverified": "量化未实跑（缺 BF16 源）；MXFP4-Mixed 产物的端到端加载/精度未测"
+  }
 }

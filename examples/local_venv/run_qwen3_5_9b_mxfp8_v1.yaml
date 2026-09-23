@@ -1,0 +1,78 @@
+# Qwen3.5-9B — MXFP8 v1（复现已发布 recipe 页）
+# owner 任务书：owner_tasks/qwen3-5-9b.md —— mxfp8 已有页面，ignore 清单**沿用页面**
+# 页面：INC-Quantization-Recipes/other-model-recipes/qwen3-5-9b/mxfp8-recipe.md
+#   Exclude layers: lm_head,embed_tokens,visual,in_proj_a,in_proj_b,conv1d,gate
+#
+# 【owner 偏离记录：页面清单原样跑不通，已做最小修正】
+# 任务书要求 mxfp8 v1「ignore 沿用页面」，但页面清单在本模型上**不是掉精度，是硬崩**：
+#   ValueError: Found different quantization schemes for the shards of
+#   language_model.model.layers.0.mlp.gate_up_proj. vLLM requires all use the same scheme.
+# 机理（两层叠加，均已实证）：
+#   1) aqa 原样透传 ignore_layers，auto-round 按 re.search 匹配**全模块名**
+#      （auto_round/utils/model.py: find_matching_blocks）。本模型是 dense、无 MoE router，
+#      裸 `gate` 命中的是 32 个 mlp.gate_proj（SwiGLU 门控），于是 gate_proj 留 bf16、
+#      up_proj 进 MXFP8。
+#   2) vLLM 加载时把权重融合（qwen3_5.py:307-310）：
+#        gate_up_proj <- [gate_proj, up_proj]
+#        in_proj_qkvz <- [in_proj_qkv, in_proj_z]
+#        in_proj_ba   <- [in_proj_b,  in_proj_a]
+#      同一融合模块的 shard 方案必须一致 —— 于是 (1) 直接判死。
+# 逐组核对页面清单：in_proj_a+in_proj_b 同组且一起 ignore ✓、
+# in_proj_qkv+in_proj_z 同组且一起量化 ✓，**只有 gate/up 被拆开**。
+# 所以最小修正 = 去掉裸 `gate`，其余四项与页面逐字相同。已在页面上其余 exclude
+# 全部保留的前提下，让 gate_proj 与 up_proj 一起进 MXFP8。
+# 结论：页面 `Exclude layers` 需要更新（去掉 `gate`），否则任何人照抄都跑不起来。
+model: /models/Qwen3.5-9B
+
+quant:
+  scheme: MXFP8
+  method: model_free
+  export_format: llm_compressor
+  ignore_layers: 'lm_head,embed_tokens,visual,in_proj_a,in_proj_b,conv1d'
+
+provider:
+  type: quantize
+  upload:
+    repo: INCModel3
+    token_env: LOCAL_RESULTS_HF_TOKEN
+    model_card: true
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag]
+  batch_size: "64"
+  baseline: false
+  thinking: "off"
+  lm_eval:
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.35
+      enable_thinking: false
+      reasoning_parser: qwen3
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_9b/mxfp8_v1
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-9B
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

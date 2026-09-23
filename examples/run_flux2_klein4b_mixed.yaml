@@ -1,0 +1,66 @@
+# FLUX.2-klein-4B — 混合精度：base MXFP4，3 个 modulation Linear 用 MXFP8
+# 目标：modulation 层用 mxfp8 保精度，其余 mxfp4 压体积
+model: /models/FLUX.2-klein-4B
+
+quant:
+  scheme: MXFP4
+  method: autoround
+  export_format: auto_round
+  iters: 0
+  layer_config:
+    double_stream_modulation_img.linear: {bits: 8, data_type: mx_fp}
+    double_stream_modulation_txt.linear: {bits: 8, data_type: mx_fp}
+    single_stream_modulation.linear: {bits: 8, data_type: mx_fp}
+  extra_args:
+    - --disable_opt_rtn
+    - --disable_model_free
+    - --dataset
+    - coco2014
+    - --num_inference_steps
+    - "4"
+    - --guidance_scale
+    - "1.0"
+
+eval:
+  benchmarks: [drawbench_metrics, geneval]
+  backend: vllm_omni
+  harness: diffusion
+  baseline: false
+  diffusion:
+    num_inference_steps: 4
+    guidance_scale: 1.0
+    height: 1024
+    width: 1024
+    seed: 42
+    scorer_model: openai/clip-vit-base-patch32
+
+agent:
+  fix_loop: false
+  optimize: false
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/.venv-zimage
+    create: false
+    packages: auto
+
+output:
+  dir: ./results/flux2-klein-4b-mixed
+  unique_dir: true
+  report_model: black-forest-labs/FLUX.2-klein-4B
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+provider:
+  type: quantize
+  upload:
+    repo: INCModel3
+    repo_name: FLUX.2-klein-4B-MXFP4-MXFP8-Mixed-AutoRound
+    token_env: LOCAL_RESULTS_HF_TOKEN
+    model_card: false

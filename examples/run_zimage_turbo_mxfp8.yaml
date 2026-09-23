@@ -44,7 +44,7 @@ eval:
     scorer_model: openai/clip-vit-base-patch32
 
 agent:
-  fix_loop: true
+  fix_loop: false
   optimize: false
   knowledge:
     repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
@@ -55,7 +55,7 @@ executor:
   num_gpus: 1
   env:
     type: venv
-    path: ~/.venv-zimage
+    path: /models/.venv-zimage
     create: false          # 复用已修好的 venv（vllm+vllm-omni+flashinfer0.6.18）
     packages: auto            # vllm_omni → vllm-omni + diffusers + auto-round + ...
 

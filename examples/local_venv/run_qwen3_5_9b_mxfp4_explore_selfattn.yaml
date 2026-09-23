@@ -1,0 +1,59 @@
+# Qwen3.5-9B — MXFP4 ignore 探索【中间档 B】：MLP + self_attn，仍保 linear_attn
+# 为什么需要这一档：aggressive 档同时放开了 self_attn(0.94 GB) 与
+# linear_attn 大投影(3.22 GB)，gsm8k −7pp 无法归因到具体哪一族。
+# 本档只额外放开 self_attn，与 conservative(仅 mlp) 对比即可隔离 self_attn 的影响；
+# 与 aggressive 对比即可隔离 linear_attn 的影响。三档缺一档，清单就是猜的。
+#
+# 量化范围：mlp.{gate,up,down}_proj x32 (9.66 GB) + self_attn.{q,k,v,o}_proj x8 (0.94 GB)
+#          = 10.60 GB / 77.9% of Linear 参数
+# 保留：embed_tokens/lm_head/visual/mtp/linear_attn（含 N=32 的 in_proj_a/b）
+model: /models/Qwen3.5-9B
+
+quant:
+  scheme: MXFP4
+  method: model_free
+  export_format: llm_compressor
+  ignore_layers: 'lm_head,embed_tokens,model\.visual,mtp,linear_attn'
+
+provider:
+  type: quantize
+
+eval:
+  backend: vllm
+  benchmarks: [gsm8k, piqa, mmlu, hellaswag]
+  batch_size: "64"
+  baseline: false
+  thinking: "off"
+  lm_eval:
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.35
+      enable_thinking: false
+      reasoning_parser: qwen3
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_9b_explore/selfattn
+  unique_dir: true
+  report_model: Qwen/Qwen3.5-9B
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+agent:
+  fix_loop: false
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+    token_env: LOCAL_RESULTS_HF_TOKEN

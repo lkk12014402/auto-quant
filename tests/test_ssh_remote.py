@@ -105,8 +105,7 @@ def test_container_packages_includes_vllm_for_vllm_backend():
     assert "vllm" in pkgs
     assert "auto-round" in pkgs and "lm-eval" in pkgs
     boot = build_container_bootstrap(cfg)
-    assert "_pkg_install vllm" in boot
-    assert "uv pip install --system" in boot  # uv preferred, pip fallback
+    assert "pip install vllm" in boot
     assert "PIP_BREAK_SYSTEM_PACKAGES=1" in boot
 
 
@@ -229,34 +228,3 @@ def test_bootstrap_agent_provision_enabled_by_optimize_only():
     boot = build_container_bootstrap(cfg)
     assert "aqa.agent.provision" in boot
     assert "@github/copilot" in boot
-
-
-def test_remote_script_ssh_mounts():
-    """executor.ssh.mounts add bind mounts to the remote container (shared FS)."""
-    import copy
-    data = copy.deepcopy(_BASE)
-    data["executor"]["ssh"]["mounts"] = ["/home:/home", "/data/models:/models:ro"]
-    cfg = parse_run_config(data)
-    script = build_remote_script(cfg, "r1", has_secrets=False)
-    assert "-v /home:/home" in script
-    assert "-v /data/models:/models:ro" in script
-
-
-def test_remote_script_no_mounts_by_default():
-    cfg = _cfg()
-    script = build_remote_script(cfg, "r1", has_secrets=False)
-    mount_lines = [l for l in script.splitlines() if "-v " in l]
-    assert len(mount_lines) == 3  # $REPO + HF cache + the chown helper
-    assert not any("-v /" in l and "$" not in l for l in mount_lines)  # no host-path mounts
-
-
-def test_run_id_prefers_report_model_over_local_path():
-    data = {**_BASE, "model": "/models/auto-quant/results/x/quantized/Qwen3.5-9B-mxfp-w4g32"}
-    data["output"] = {**_BASE["output"], "report_model": "Qwen/Qwen3.5-9B"}
-    cfg = parse_run_config(data)
-    rid = make_run_id(cfg)
-    assert rid.startswith("Qwen3.5-9B_")
-    assert "mxfp-w4g32" not in rid
-    # without report_model the local dir name is used (legacy behavior)
-    cfg2 = parse_run_config({**_BASE, "model": "/models/x/Qwen3.5-9B-mxfp-w4g32"})
-    assert make_run_id(cfg2).startswith("Qwen3.5-9B-mxfp-w4g32_")

@@ -44,7 +44,7 @@ eval:
     scorer_model: openai/clip-vit-base-patch32
 
 agent:
-  fix_loop: true
+  fix_loop: false
   optimize: false
   knowledge:
     repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}

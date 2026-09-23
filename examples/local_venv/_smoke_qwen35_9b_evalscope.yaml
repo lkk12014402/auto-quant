@@ -1,0 +1,43 @@
+# 【冒烟】evalscope harness 通路验证：aime25 + gpqa_diamond
+# 目的：确认 vllm serve 起得来、localhost 探测不被公司代理 403 挂死、evalscope 能出分。
+# 只落 local_fs，不回传。limit=2 让它几分钟内结束（repeats 仍按任务书设 5）。
+model: /models/auto-quant/results/qwen3_5_9b/mxfp4_v1/quantized
+
+eval:
+  backend: vllm
+  benchmarks: [aime25, gpqa_diamond]
+  baseline: false
+  limit: 2
+  thinking: "auto"
+  evalscope:
+    repeats: 5
+    # 注意：_make_harness 对 evalscope 只展开 cfg.evalscope，不转发 eval.limit，
+    # 所以 limit 必须写在这个块里（写在外层 eval.limit 会静默失效）。
+    limit: 2
+    # vllm serve 的参数只能走 server_args：EvalScopeHarness.__init__ 只接受
+    # num_gpus/limit/port/repeats/eval_batch_size/generation_config/dataset_args/
+    # server_args/chat_template_kwargs/startup_timeout/api_key，
+    # 而 _make_harness 是 HARNESSES.create("evalscope", **cfg.evalscope) 直接展开，
+    # 多传键会 TypeError。
+    server_args:
+      gpu_memory_utilization: 0.35
+      max_model_len: 40960
+
+executor:
+  type: local
+  num_gpus: 1
+  env:
+    type: venv
+    path: /models/miniforge3/envs/muse_new
+    create: false
+    packages: []
+
+output:
+  dir: ./results/qwen3_5_9b/_smoke_evalscope
+  unique_dir: false
+  report_model: Qwen/Qwen3.5-9B
+  sinks:
+    - type: local_fs
+
+agent:
+  fix_loop: false
