@@ -51,6 +51,19 @@ def _lowest_bit_scheme(quant) -> str:
     return mapped if (scheme_bits is None or best_bits < scheme_bits) else scheme
 
 
+def scheme_display(quant) -> str:
+    """Scheme label for human-facing surfaces (the HF model card).
+
+    ``quant.scheme`` is the *base* recipe knob and under-describes a mixed artifact:
+    ``scheme=MXFP8`` + ``layer_config={mlp.experts: 4 bit}`` ships routed experts at
+    MXFP4, so a card reading "This is a MXFP8 quantization" mislabels the weights.
+    Use the same effective-lowest-bit scheme :func:`canonical_artifact_name` leads
+    with, plus the ``Mixed`` marker, so card and artifact/repo name agree.
+    """
+    label = _lowest_bit_scheme(quant)
+    return f"{label}-Mixed" if quant.layer_config else label
+
+
 def canonical_artifact_name(run_cfg: RunConfig) -> str:
     """Canonical name for a quantize run's artifact (dataset path + model repo)."""
     if run_cfg.output.artifact_name:

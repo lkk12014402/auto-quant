@@ -1,0 +1,34 @@
+diff --git a/vllm/models/qwen4_exp/nvidia/ngram_embedding.py b/vllm/models/qwen4_exp/nvidia/ngram_embedding.py
+index c26fd87..2e9d1f9 100644
+--- a/vllm/models/qwen4_exp/nvidia/ngram_embedding.py
++++ b/vllm/models/qwen4_exp/nvidia/ngram_embedding.py
+@@ -183,6 +183,29 @@ class Qwen4ExpPLEEmbeddingMethod(QuantizeMethodBase):
+             quant_config, ModelOptQuantConfigBase
+         ) and quant_config.is_layer_excluded(prefix):
+             return Qwen4ExpPLEUnquantizedEmbeddingMethod()
++        from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import (  # noqa: E501
++            CompressedTensorsConfig,
++        )
++
++        if isinstance(quant_config, CompressedTensorsConfig):
++            # A compressed-tensors artifact quantizes Linears (and RoutedExperts); the
++            # n-gram table is never a target — auto-round's `--format llm_compressor`
++            # export lists every `...ple_embedding.ngram_embedding.shard_<i>` in
++            # `ignore`, and those shards are BF16 on disk. Before #54371 this selection
++            # returned "no PLE method" for every config that was not a serialized-FP8
++            # Fp8Config, which is what let CT checkpoints load at all; the rewrite into
++            # this whitelist turned that silent pass into a hard rejection of every
++            # compressed-tensors qwen4_exp export.
++            # The `ignored_layers` check the Fp8Config branch below uses is NOT reusable
++            # here: artifact names are HF-checkpoint-style
++            # (`model.language_model.layers.*`) while `prefix` is vLLM's module path, so
++            # matching textually would reject valid artifacts.
++            logger.debug_once(
++                "Qwen4Exp PLE embedding: treating compressed-tensors checkpoint as "
++                "unquantized n-gram table (prefix=%s)",
++                prefix,
++            )
++            return Qwen4ExpPLEUnquantizedEmbeddingMethod()
+         if not isinstance(quant_config, Fp8Config):
+             raise NotImplementedError(
+                 "Qwen4Exp PLE embedding does not support quantization config "

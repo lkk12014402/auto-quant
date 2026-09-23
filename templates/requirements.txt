@@ -1,0 +1,17 @@
+# requirements.txt —— 本任务实际跑通的依赖冻结快照（第②步产物）
+#
+# 约定（写进 AGENTS.md 硬流程）：
+#   1. 环境跑通自检后立刻冻结：  <venv>/bin/python -m uv pip freeze > requirements.txt
+#   2. 之后每次换/升/打补丁任何依赖，自检重跑后必须重新冻结——本文件永远描述
+#      "实际跑过的环境"，不是"声称的环境"。
+#   3. 源码/editable 安装要保留来源注释（仓库路径 + git commit），wheel 补丁写明
+#      对应 patches/ 里的补丁文件名。
+#   4. 删除本注释块，下面是 uv pip freeze 的原样输出。
+#
+# ---- 示例（实际填写时删掉，路径/版本换成你的实测值）----
+# auto-round @ file://</abs/path/to>/auto-round  # editable, git <commit>
+# torch==2.13.0+cu130
+# vllm==0.29.1rc1.dev471+g82daf9f57  # wheels.vllm.ai/nightly/cu130
+# transformers==5.17.0
+# compressed-tensors==0.17.0
+# lm-eval==0.4.13

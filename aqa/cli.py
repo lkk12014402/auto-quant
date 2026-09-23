@@ -140,6 +140,23 @@ def compare(baseline: str, candidate: str) -> None:
         click.echo(f"{name:<20}{_fmt(bs):>10}{_fmt(cs):>12}{delta:>10.4f}")
 
 
+@main.group()
+def artifacts() -> None:
+    """Owner hard-flow artifact checks (AGENTS.md 硬流程)."""
+
+
+@artifacts.command(name="check")
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False))
+def artifacts_check(run_dir: str) -> None:
+    """Verify hard-flow owner artifacts in a run dir (files, sections, gate match)."""
+    from .report.artifacts import check_artifacts, format_report
+
+    report = check_artifacts(Path(run_dir))
+    click.echo(format_report(report))
+    if not report.ok:
+        raise SystemExit(1)
+
+
 def _fmt(v):
     return "-" if v is None else f"{v:.4f}"
 

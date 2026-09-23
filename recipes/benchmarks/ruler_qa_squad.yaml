@@ -1,0 +1,25 @@
+# ruler_qa_squad: RULER multi-doc QA over SQuAD-v2 dev passages.
+#
+# Synthetic like every RULER task (see niah_multiquery.yaml for the two hard
+# requirements: `--metadata max_seq_lengths` to pick the context length, and a
+# tokenizer resolved from model_args).  The passage pool is fetched at dataset
+# build time from `rajpurkar.github.io/SQuAD-explorer/dataset/dev-v2.0.json`,
+# so this task needs outbound network on first use (it is not in the HF cache).
+#
+# Scoring is `string_match_part` (any gold answer present counts), with a short
+# answer budget — RULER asks for the answer only, no restatement.
+name: ruler_qa_squad
+harness: lm_eval
+type: generative
+
+apply_chat_template: true
+fewshot_as_multiturn: false
+num_fewshot: 0
+gen_kwargs: { max_gen_toks: 32 }
+batch_size: "4"
+
+scoring:
+  metric: "131072,none"
+  prefer: ["131072,none"]
+
+description: RULER SQuAD-v2 multi-document QA (synthetic long context, per-length metric).

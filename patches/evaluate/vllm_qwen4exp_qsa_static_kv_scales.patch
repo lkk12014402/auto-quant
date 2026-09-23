@@ -1,0 +1,107 @@
+diff --git a/vllm/models/qwen4_exp/nvidia/model.py b/vllm/models/qwen4_exp/nvidia/model.py
+index 2e38339..89b2cb9 100644
+--- a/vllm/models/qwen4_exp/nvidia/model.py
++++ b/vllm/models/qwen4_exp/nvidia/model.py
+@@ -10,6 +10,7 @@ from torch import nn
+ 
+ from vllm.config import VllmConfig
+ from vllm.distributed import get_pp_group
++from vllm.logger import init_logger
+ from vllm.model_executor.layers.fused_moe.utils import (
+     is_model_fused_shared_expert_compatible,
+ )
+@@ -82,6 +83,9 @@ from .ple_layer import Qwen4ExpPLELayer
+ from .qsa import Qwen4ExpQSAAttention
+ 
+ 
++logger = init_logger(__name__)
++
++
+ def without_modelopt_fp4(
+     quant_config: QuantizationConfig | None,
+ ) -> QuantizationConfig | None:
+@@ -630,6 +634,52 @@ class Qwen4ExpModel(nn.Module):
+             weights,
+             mapper=mapper,
+         )
++        # A serialized main-cache scale is remapped onto the QSA owner's `_k_scale`
++        # buffer above, but the QSA kernel reads the *host* copies (`_k_scale_float`)
++        # that set_default_quant_scales() initialized to 1.0 -- and no quant method is
++        # attached to refresh them, because both compressed-tensors and ModelOpt gate
++        # their KV-cache method on `isinstance(layer, Attention)` while QSA owns the
++        # cache directly. Without this sync a checkpoint's static KV scales load and
++        # are then ignored, i.e. the run silently keeps scale=1.0 while *looking*
++        # correct, so also log what landed.
++        synced: list[tuple[float, float]] = []
++        for module in self.modules():
++            if not isinstance(module, Qwen4ExpQSAAttention):
++                continue
++            for cache, host, cpu_copy in (
++                ("_k_scale", "_k_scale_float", "_k_scale_cpu"),
++                ("_v_scale", "_v_scale_float", "_v_scale_cpu"),
++            ):
++                buf = getattr(module, cache, None)
++                if buf is None:
++                    continue
++                # `attn_head` strategies serialize one scale per head; the host
++                # scalar the kernel uses follows vLLM's existing convention of
++                # taking the max over them.
++                value = float(buf.detach().to("cpu").max().item())
++                setattr(module, host, value)
++                cpu = getattr(module, cpu_copy, None)
++                if cpu is not None:
++                    cpu.fill_(value)
++            synced.append((module._k_scale_float, module._v_scale_float))
++        if synced:
++            ks = [k for k, _ in synced]
++            vs = [v for _, v in synced]
++            logger.info_once(
++                "Qwen4Exp QSA: applied checkpoint static KV-cache scales on %d "
++                "layer(s); k=[%.6g..%.6g] v=[%.6g..%.6g]",
++                len(synced), min(ks), max(ks), min(vs), max(vs),
++            )
++            if all(k == 1.0 and v == 1.0 for k, v in synced):
++                # The artifact declared a KV scheme but no scale reached the layers:
++                # serving would silently use scale=1.0, which is exactly the
++                # "looks fine, measures wrong" failure mode. Say it out loud.
++                logger.warning_once(
++                    "Qwen4Exp QSA: checkpoint declares a KV-cache scheme but every "
++                    "k/v scale is still 1.0 -- the checkpoint likely does not ship "
++                    "self_attn.{k,v}_scale for these layers, so FP8 KV runs with "
++                    "unit scales."
++                )
+         return loaded
+ 
+ 
+diff --git a/vllm/models/qwen4_exp/nvidia/qsa.py b/vllm/models/qwen4_exp/nvidia/qsa.py
+index e480142..3071091 100644
+--- a/vllm/models/qwen4_exp/nvidia/qsa.py
++++ b/vllm/models/qwen4_exp/nvidia/qsa.py
+@@ -280,8 +280,25 @@ class Qwen4ExpQSAAttention(Qwen3NextAttention, AttentionLayerBase):
+             raise NotImplementedError(
+                 "Qwen4Exp QSA requires a BF16 or FP8-e4m3 main KV cache"
+             )
+-        if getattr(quant_config, "kv_cache_scheme", None) is not None:
+-            raise NotImplementedError("Qwen4Exp QSA does not support KV quantization")
++        kv_scheme = getattr(quant_config, "kv_cache_scheme", None)
++        if kv_scheme is not None:
++            # A serialized KV-cache scheme is consumable here *iff* it is the static
++            # FP8 path this kernel implements: e4m3 bytes in the cache, dequantized
++            # with the layer's host-side per-tensor scales. Everything else (int8,
++            # block-wise, dynamic, per-token-head) keeps refusing instead of being
++            # silently approximated.
++            if (
++                cache_config.cache_dtype not in ("fp8", "fp8_e4m3")
++                or kv_scheme.get("num_bits") != 8
++                or kv_scheme.get("type") != "float"
++                or kv_scheme.get("dynamic")
++                or kv_scheme.get("strategy") not in ("tensor", "attn_head")
++            ):
++                raise NotImplementedError(
++                    "Qwen4Exp QSA supports only a static FP8 (e4m3) main-cache "
++                    f"scheme; got cache_dtype={cache_config.cache_dtype!r} "
++                    f"scheme={kv_scheme!r}"
++                )
+         parallel_config = vllm_config.parallel_config
+         if (
+             parallel_config.prefill_context_parallel_size > 1

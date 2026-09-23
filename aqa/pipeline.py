@@ -540,16 +540,26 @@ def _maybe_upload_model(run_cfg: RunConfig, resolved, result: EvalResult, out_di
         disable_xet=cfg.disable_xet,
         model_card=cfg.model_card,
     )
+    from .report.names import scheme_display
+
     meta = RunMeta(
         # The generated card puts this into `base_model:`, which HF validates as an
         # `org/name` repo id. `model:` is usually a local checkpoint path here, and that
         # makes the whole upload fail ("Invalid metadata in README.md").
         # `output.report_model` is the canonical `Org/Model` id for exactly this case.
         model=run_cfg.output.report_model or run_cfg.model,
-        scheme=run_cfg.quant.scheme if run_cfg.quant else None,
+        # The card's Scheme line is human-facing prose, so show the *effective* label
+        # (MXFP4-Mixed for a MXFP8 base whose experts drop to 4 bit), not the base
+        # recipe knob — same value the artifact/repo name leads with.
+        scheme=scheme_display(run_cfg.quant) if run_cfg.quant else None,
         method=run_cfg.quant.method if run_cfg.quant else None,
         artifact_name=cfg.repo_name or _artifact_name(run_cfg, "quant"),
         org_override=_report_org(run_cfg),
+        # HfModelSink._card_commands_versions() reads run_manifest.json from
+        # meta.run_root; without it the card loses its mandatory
+        # "Reproduce & Environment" section (the actual auto-round + lm_eval
+        # commands and the package pins — e.g. which vLLM build a CT artifact needs).
+        run_root=out_dir,
         extra={"results": {n: b.score for n, b in result.benchmarks.items()}},
     )
     try:

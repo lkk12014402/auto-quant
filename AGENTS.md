@@ -4,6 +4,37 @@
 **owner 角色**驱动 aqa 的外部 agent。读完本文件再动手；凡本文件与代码冲突，
 以代码为准（并修正本文件）。
 
+**新任务入口：直接按下面「硬流程」五步建 plan 开工，不要从中间章节开始。**
+
+## 硬流程：每个模型必走的五步 + 产物契约
+
+**接到任何量化/评估任务，先读这段。** 后面各节是知识库，本段是执行顺序。
+**开工第一件事：把下表五步转成你的 plan/todo**（每步一条，带产物与完成判据），
+按序推进并即时更新状态——上一步产物缺失不得进入下一步。模板真源在
+`templates/`（骨架，禁止写本机绝对路径；填好的实例在 `templates/examples/`、
+`cookbooks/`、`docs/RUN_JOURNAL.md`）。所有 runtime 产物最终落进 run 的
+`output.dir` 顶层，随 sink 回传（§6，文本自动脱敏）。
+
+| 步 | 做什么 | 产物 | 完成判据 |
+|---|---|---|---|
+| ① 结构分析与量化方案 | 不下载权重读 config+index；**先查 skill / recipe / knowledge**（查阅清单是硬章节，逐条记采纳或偏离）；三件套探针定推理路径；出逐模块精度表 | `analysis.md` | 查阅清单填满；ignore/量化范围对 index.json 逐条核对；给出量化命令 + 评估计划 + 预期体积 |
+| ② 环境 | 按①的推理路径结论：先找本机现有环境，没有则新建 venv（uv 优先，conda 优先于系统 python） | `setup_venv.sh` + `requirements.txt` | 自检通过（架构 registry 命中 = 硬门槛）；自检后 `uv pip freeze` 冻结；**之后每次换依赖必须重跑自检并重冻结** |
+| ③ yaml 定稿 | 从 `templates/run.yaml` 出发按①②结论填全（baseline/quant/eval/gate/sink） | `run.yaml`（实际文件名可另起） | `aqa validate` 过 + 回传字段补全（§0 铁律）；后续单跑某环节也从此 yaml 派生 |
+| ④ 运行与输出 | `aqa run`；输出结构守 layout 契约；发布权重（`provider.upload`）时写 model card | `model_card.md`（仅发布时必填） | 输出符合 `aqa/report/layout.yaml`（`aqa inspect` 核对）；card 守 `templates/model_card.md` 四条纪律并作为模型 repo README |
+| ⑤ 回溯 | 对照产物写报告（不凭记忆）；经验全部路由落点 | `report.md` | sanity check 达标（体积/键 dtype/完备性）；经验路由表无空行；`aqa artifacts check <run_dir>` 全过 |
+
+贯穿全程另有两份产物：`journal.md`（叙事日志：每步命令+依据+坑，**随手记
+不是收尾补记**，粒度参照 `docs/RUN_JOURNAL.md`）与 `owner_actions.jsonl`
+（机器可读动作，`aqa log-action` 追加）。journal 记"为什么"，log-action 记
+"做了什么"，不重复。
+
+收尾完成的定义 = ⑤的判据全过。⑤的经验路由包括**回流本仓**——cookbooks
+实例、recipes pin、skills/AGENTS.md/打包层知识、patches，都要落到本仓
+对应位置并标明路径（**git 提交交给 user，agent 不擅自提交**；只回传 HF
+不回流本仓 = 知识只存了一半）。`aqa artifacts check
+<run_dir>` 做确定性校验：产物文件存在、必备章节齐全、report 的 gate 结论与
+`gate.json` 一致、发布权重时 `model_card.md` 在场。
+
 ## 文档地图
 
 | 主题 | 位置 |
@@ -22,8 +53,9 @@
 | owner 回写 recipe 站 skill（量化完更新 INC-Quantization-Recipes） | `skills/recipe-page/SKILL.md` |
 | day-0 新架构 playbook | `docs/day0_quantization_recipe.md` |
 | auto-round 全参数参考（file:line 引用） | `docs/autoround_full_reference.md` |
-| 结构分析 skill（逐模块精度判定） | `/home/kaokaolv/Pai-Megatron-Patch/autoround-quant-analysis/SKILL.md` |
+| 结构分析 skill（逐模块精度判定） | autoround-quant-analysis/SKILL.md（部署机本地文件，不在本仓，向 owner 要路径） |
 | 内部 skill（provision 给 aqa 的 agent） | `skills/{quantize,evaluate,fix-and-patch}/SKILL.md` |
+| **产物模板（硬流程骨架）** | `templates/`（实例在 `templates/examples/` 与 `cookbooks/`） |
 
 ## 0. 角色定位与铁律
 
@@ -409,6 +441,7 @@ day-0 定制镜像抄 `local_docker/run_qwen38_flash_next_tuning.yaml`。
 aqa validate <yaml>            # 配置体检（pydantic schema）
 aqa run <yaml> --dry-run       # 打印执行计划
 aqa compare <baseline_dir> <eval_dir>   # 事后对比 accuracy.json
+aqa artifacts check <run_dir>  # 硬流程产物校验（收尾必过）
 pytest tests/ -q               # 全量单测（改动后必跑）
 ```
 

@@ -1,0 +1,71 @@
+# run.yaml —— <Model> 量化 + 评估初始配置（第③步产物）
+#
+# 模板使用：这是全字段模板，不是最小示例。按第①步 analysis.md 和第②步环境的
+# 结论填值；用不到的块整块删掉（extra=forbid，写错字段 aqa validate 会直接报错）。
+# 字段逐项解释见 docs/usage/yaml_reference.md（下面对每行给出引用锚点）。
+# 后续单跑某一环节（aqa eval / aqa sweep）也从这份 yaml 派生，保持单一真源。
+#
+# 体检：aqa validate <本文件> ；预演：aqa run <本文件> --dry-run
+
+# ---------- 模型（yaml_reference.md 顶层） ----------
+model: <HF id 或本地路径——量化源按 analysis.md 结论选 bf16 源>
+
+# ---------- 量化（yaml_reference.md「quant」；等价于 provider.quantize） ----------
+quant:
+  scheme: <MXFP4 | MXFP8 | W4A16 | ...>        # 用户需求硬约束
+  method: <model_free | autoround>             # model_free=免校准 RTN；autoround=校准路径
+  # algorithm: rtn                             # autoround 路径才写；链式见 reference
+  # iters: 200                                 # 不写/0=RTN；200 量级=tuning
+  export_format: llm_compressor                # vllm 直加载用 llm_compressor
+  ignore_layers: "<对着 index.json 逐条核对过的清单；注意子串陷阱>"
+  # layer_config: {mlp.experts: {bits: 4, data_type: mx_fp}}   # 混合精度时
+  # static_kv_fp8: true                        # 仅 method: autoround
+  # device_map: "0,1"                          # 默认多卡 auto
+
+# ---------- 评估（yaml_reference.md「eval」） ----------
+eval:
+  backend: vllm                                # vllm | hf
+  benchmarks: [piqa, mmlu, hellaswag, gsm8k]   # 逐任务口径真源在 recipes/benchmarks/<task>.yaml
+  baseline: true                               # gate 对比前提；不测 baseline 就别配 gate
+  # thinking: auto                             # thinking 模型默认双模式各测一遍
+  lm_eval:
+    model_args:                                # 按第②步环境实测约束填
+      # max_num_seqs: 256
+      # reasoning_parser: <model card 指定值>
+      # max_model_len: 8192
+
+# ---------- gate（yaml_reference.md「gate」；不配不判） ----------
+gate:
+  max_accuracy_drop: 0.02                      # 阈值是口径绑定的——改 benchmark 口径要同步改
+  # min_accuracy: <绝对下限，需要和 baseline 无关的验收线时再配>
+
+# ---------- 内部 agent（yaml_reference.md「agent」） ----------
+agent:
+  fix_loop: true
+  optimize: false                              # owner 已按 analysis.md 定方案时不替它拍脑袋
+  knowledge:
+    repo: ${LOCAL_RESULTS_DATASET:-}           # fix_loop 开着必须配（铁律：知识同库回传）
+
+# ---------- 执行环境（yaml_reference.md「executor」；按第②步结论三选一） ----------
+executor:
+  type: local
+  env:
+    type: venv
+    path: <第②步 setup_venv.sh 建出的 venv 路径>
+    create: false                              # 已建好就复用，不重装
+
+# ---------- 落盘与回传（yaml_reference.md「output」；铁律：回传字段必须补全） ----------
+output:
+  dir: <aqa_results 工作目录下的本 run 目录>
+  unique_dir: true
+  sinks:
+    - type: local_fs
+    - type: hf_dataset
+      repo: ${LOCAL_RESULTS_DATASET:-lvkaokao/lb_local}
+      token_env: LOCAL_RESULTS_HF_TOKEN
+
+# ---------- 权重发布（可选；yaml_reference.md「provider.upload」） ----------
+# provider:
+#   upload:
+#     repo: <org>/<Model>-<Scheme>-AutoRound   # 命名规范见 aqa/report/names.py
+#     token_env: HF_TOKEN                      # 发布时 model_card.md 作为 README

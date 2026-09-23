@@ -29,6 +29,7 @@ def _make_harness(name: str, cfg: EvalConfig, num_gpus: int):
             limit=cfg.limit,
             gen_max_toks=cfg.gen_max_toks,
             model_args=opts.model_args,
+            metadata=opts.metadata,
             gen_kwargs=opts.gen_kwargs,
             seed=opts.seed,
             apply_chat_template=opts.apply_chat_template,

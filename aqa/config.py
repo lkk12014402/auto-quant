@@ -130,11 +130,22 @@ class QuantConfig(BaseModel):
                 "enable_alg_ext (auto-round v2) only applies to the auto_round "
                 "algorithm; add 'auto_round' to `algorithm` or drop enable_alg_ext"
             )
-        if self.method == "model_free" and (self.static_kv_fp8 or self.static_attention_fp8):
+        if self.method == "model_free" and self.static_attention_fp8:
             raise ValueError(
-                "static_kv_fp8 / static_attention_fp8 need calibration (static "
-                "scales are measured from data); set method='autoround' to use them"
+                "static_attention_fp8 needs the calibrated model-load path; "
+                "set method='autoround' to use it"
             )
+        # `static_kv_fp8` IS allowed with method=model_free. It used to be rejected on the
+        # assumption that model_free cannot calibrate, which measurement disproved
+        # (2026-09-23, Llama-3.1-8B, `--model_free --scheme MXFP8 --static_kv_dtype fp8`):
+        # auto-round loads the model, runs calibration forwards, and exports
+        # `kv_cache_scheme` (8bit/float/tensor, dynamic=false) plus 64 distinct
+        # `self_attn.{k,v}_scale` values (0.0011..0.0059) — i.e. genuinely static,
+        # data-measured KV scales, which the runtime `kv_cache_dtype=fp8` flag alone
+        # cannot provide (vLLM then assumes 1.0 for every layer).
+        # Cost caveat for the operator: with this flag, model_free is no longer
+        # weight-streaming-only — the checkpoint must be resident for calibration, so
+        # budget memory/time like a load path (`nsamples` forward passes).
         return self
 
 
@@ -200,11 +211,14 @@ class LmEvalOptions(BaseModel):
     ``group`` merges benchmarks that share the same generation parameters into a
     single ``lm_eval --tasks a,b,c`` call (e.g. piqa+hellaswag+mmlu), while tasks
     needing distinct params (e.g. gsm8k) run separately.
+    ``metadata`` is forwarded verbatim as lm_eval's ``--metadata`` JSON object;
+    synthetic tasks read their sizing knobs there (RULER: ``max_seq_lengths``).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     model_args: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     gen_kwargs: dict[str, Any] = Field(default_factory=dict)  # default --gen_kwargs (generative)
     apply_chat_template: bool | None = None  # global override (None => per-recipe)
     fewshot_as_multiturn: bool | None = None

@@ -54,12 +54,14 @@ class LmEvalHarness:
         seed: int = 42,
         apply_chat_template: bool | None = None,
         fewshot_as_multiturn: bool | None = None,
+        metadata: dict | None = None,
     ):
         self.num_gpus = num_gpus
         self.batch_size = batch_size
         self.limit = limit
         self.gen_max_toks = gen_max_toks
         self.model_args = model_args or {}
+        self.metadata = metadata or {}
         self.gen_kwargs = gen_kwargs or {}
         self.seed = seed
         self.apply_chat_template = apply_chat_template
@@ -127,6 +129,13 @@ class LmEvalHarness:
                 cmd += ["--gen_kwargs", ",".join(f"{k}={v}" for k, v in gen.items())]
         if self.limit is not None:
             cmd += ["--limit", str(self.limit)]
+        if self.metadata:
+            # lm_eval's MergeDictAction takes a single JSON object (a bare k=v
+            # string cannot carry the list value RULER wants). lm_eval merges
+            # --metadata with --model_args before handing it to a task's
+            # custom_dataset, so synthetic tasks also see `pretrained` and use it
+            # as their tokenizer.
+            cmd += ["--metadata", json.dumps(self.metadata)]
         return cmd
 
     def run(self, recipe: BenchmarkRecipe, model: str, backend, out_dir: Path) -> BenchmarkResult:
