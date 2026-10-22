@@ -124,8 +124,9 @@ class BenchmarkRecipe(BaseModel):
 
     # lm_eval routing: the registered lm_eval task name (defaults to `name`).
     lm_eval_task: str | None = None
-    apply_chat_template: bool = False
-    fewshot_as_multiturn: bool = False
+    # None keeps the harness default; explicit False is a recipe-level override.
+    apply_chat_template: bool | None = None
+    fewshot_as_multiturn: bool | None = None
     num_fewshot: int | None = None
     gen_kwargs: dict[str, Any] = Field(default_factory=dict)
     batch_size: str | None = None  # per-task batch size override (else harness default)

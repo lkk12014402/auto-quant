@@ -29,7 +29,7 @@ quant:
     - name: fp8kv
       description: 手工档2：档1 + 静态 FP8 KV cache（校准路径，iters=0 即 RTN 权重）
       scheme: MXFP8
-      method: autoround          # static_kv_fp8 需校准，schema 禁止 model_free
+      method: autoround          # 此档使用校准加载路径；当前 schema 也允许 model_free + static_kv_fp8（仍会做 KV scale 校准）
       iters: 0
       static_kv_fp8: true        # --static_kv_dtype fp8
       ignore_layers: "lm_head,embed_tokens,mlp.gate"

@@ -4,7 +4,7 @@
 _base_: run_qwen3_30b_mixed.yaml
 
 quant:
-  method: autoround            # static_kv_fp8 需校准，schema 禁止 model_free
+  method: autoround            # 此档使用校准加载路径；当前 schema 也允许 model_free + static_kv_fp8（仍会做 KV scale 校准）
   iters: 0
   static_kv_fp8: true          # --static_kv_dtype fp8
 
