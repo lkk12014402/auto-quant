@@ -2,8 +2,9 @@
 
 本目录是 AGENTS.md「硬流程」的模板真源。**骨架 vs 实例**：本目录是骨架，
 `cookbooks/`（实例分析/脚本）、`docs/RUN_JOURNAL.md`（实例日志）、
-`templates/examples/model_card_example.md`（实例 model card，GLM-5.3-Flash-MXFP8
-实测卡）是填出来的样子。
+`templates/examples/model_card_gemma-4-31B.md`（合格 baseline model card，
+gemma-4-31B-MXFP8-FP8KV）与 `templates/examples/model_card_example.md`（实例 model card，
+NVIDIA-Nemotron-3-Nano-30B-A3B-MXFP8-FP8KV-FP8Attn）是填出来的样子。
 
 **可移植纪律**：骨架文件（本目录顶层）不许出现任何本机绝对路径——本仓库会换
 机器、会给别人用。实例文件（`examples/`）是历史实录，其中的路径属于产生它的
@@ -14,6 +15,10 @@
 1. 每个新模型任务：把对应模板拷到该模型的工作目录，逐项替换 `<...>` 占位。
 2. 填写纪律：章节结构不许删（不需要的章节写「本次无，原因」）；所有数字必须是
    **实测值**并注明测量方式/日期；拿不准的标 `TODO(owner)`，不许留空。
+   **例外：`model_card.md`** 面向下载权重的用户，按其文件头的生成规则与禁写清单
+   填写：章节固定、不写测量方式/审计证据（这些留在 `analysis.md` / `report.md`），
+   不允许出现 `TODO` 或「本次无」；末行必须是 `Signed-off-by: Name <email>`，身份每次
+   向用户询问确认（实例里的 `example.com` 身份是占位，`aqa artifacts check` 会拒绝）。
 3. 产物归属：任务收尾时 7 个产物拷进 run 的 `output.dir` 顶层，随 sink 回传
    （文本自动脱敏，权重结构性排除）：
 
