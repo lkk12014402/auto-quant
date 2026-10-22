@@ -44,6 +44,21 @@ def test_manifest_without_owner_actions_is_none(tmp_path):
     assert m.to_dict()["owner_actions"] is None
 
 
+def test_log_action_refreshes_existing_manifest(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest = run_dir / "run_manifest.json"
+    manifest.write_text('{"model": {"id": "org/m"}}')
+
+    result = CliRunner().invoke(
+        main,
+        ["log-action", str(run_dir), "--kind", "decision", "--text", "记录复核结论"],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(manifest.read_text())
+    assert data["owner_actions"][0]["kind"] == "decision"
+
+
 def test_model_card_details_section():
     from aqa.report.sinks import RunMeta, build_model_card
 

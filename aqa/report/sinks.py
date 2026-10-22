@@ -100,12 +100,23 @@ class LocalFsSink:
 
     def upload(self, run_dir: Path, meta: RunMeta) -> str:
         dest = self.path / (meta.artifact_name or Path(run_dir).name)
+        resolved_dest = dest.resolve()
         dest.mkdir(parents=True, exist_ok=True)
         if Path(run_dir).resolve() != dest.resolve():
+            def ignore_destination(path: str, names: list[str]) -> list[str]:
+                try:
+                    component = resolved_dest.relative_to(Path(path).resolve()).parts[0]
+                except (ValueError, IndexError):
+                    return []
+                return [name for name in names if name == component]
+
             for item in Path(run_dir).iterdir():
+                if item.resolve() == resolved_dest:
+                    continue
                 target = dest / item.name
                 if item.is_dir():
-                    shutil.copytree(item, target, dirs_exist_ok=True)
+                    shutil.copytree(
+                        item, target, dirs_exist_ok=True, ignore=ignore_destination)
                 else:
                     shutil.copy2(item, target)
         (dest / "run_meta.json").write_text(json.dumps(meta.__dict__, indent=2, default=str))

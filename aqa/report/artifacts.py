@@ -4,7 +4,8 @@ Deterministic validation that a run dir carries the five-step owner
 artifacts: required files exist, required section headers are present,
 ``report.md``'s gate verdict agrees with ``gate.json``, and
 ``model_card.md`` is present whenever the run publishes weights
-(``provider.upload.repo`` in the run yaml).  Templates live in
+(``provider.upload.repo`` in the run yaml) and ends with a
+``Signed-off-by: Name <email>`` line.  Templates live in
 ``templates/``; this module encodes their *contract* so a run can be
 checked instead of trusted.
 """
@@ -41,6 +42,8 @@ _SPECS: tuple[ArtifactSpec, ...] = (
 _YAML_SUFFIXES = {".yaml", ".yml"}
 _VERDICTS = ("GO", "NO-GO", "INCONCLUSIVE")
 _VERDICT_RE = re.compile(r"\b(?:NO-GO|INCONCLUSIVE|GO)\b")
+_SIGNOFF_RE = re.compile(r"^Signed-off-by: [^<>{}]*\S <([^<>@\s{}]+@[^<>@\s{}]+\.[^<>@\s{}]+)>$")
+_PLACEHOLDER_DOMAINS = ("example.com", "example.org", "example.net")
 
 
 @dataclass
@@ -112,6 +115,17 @@ def _routing_table_rows(text: str) -> list[list[str]] | None:
     return rows
 
 
+def _signoff_problem(text: str) -> str | None:
+    """Model cards are uploaded by bot accounts, so the last line must name the member."""
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    m = _SIGNOFF_RE.match(lines[-1]) if lines else None
+    if not m:
+        return "model_card.md 末行须为 `Signed-off-by: Name <email>`（身份每次向用户确认）"
+    if m.group(1).rsplit("@", 1)[1].lower() in _PLACEHOLDER_DOMAINS:
+        return "model_card.md 的 Signed-off-by 是占位身份，须填向用户确认的真实成员"
+    return None
+
+
 def check_artifacts(run_dir: str | Path) -> ArtifactsReport:
     """Check ``run_dir`` against the hard-flow owner-artifact contract."""
     run_dir = Path(run_dir)
@@ -139,6 +153,12 @@ def check_artifacts(run_dir: str | Path) -> ArtifactsReport:
         for kw in missing:
             report.findings.append(Finding(
                 "error", f"{spec.path} 缺必备章节「{kw}」"))
+
+    card = run_dir / "model_card.md"
+    if card.exists():
+        problem = _signoff_problem(card.read_text(errors="replace"))
+        if problem:
+            report.findings.append(Finding("error", problem))
 
     report_md = run_dir / "report.md"
     if report_md.exists():

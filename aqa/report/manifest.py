@@ -16,6 +16,7 @@ handed) so it is unit-tested without a real run.
 from __future__ import annotations
 
 import json
+import os
 import platform
 import sys
 from dataclasses import asdict, dataclass, field
@@ -23,6 +24,8 @@ from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from .owner_actions import load_owner_actions
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..config import RunConfig
@@ -54,6 +57,18 @@ def _accelerator(run_cfg: RunConfig) -> dict[str, Any]:
         gpus = [g for g in ssh.gpus.split(",") if g.strip()]
         return {"family": ssh.accelerator, "num_devices": len(gpus) or 1,
                 "executor": run_cfg.executor.type, "remote": True}
+    num_devices = run_cfg.executor.num_gpus
+    if num_devices is None and "CUDA_VISIBLE_DEVICES" in os.environ:
+        visible = [
+            device.strip()
+            for device in os.environ["CUDA_VISIBLE_DEVICES"].split(",")
+            if device.strip() and device.strip() not in {"-1", "NoDevFiles"}
+        ]
+        num_devices = len(visible)
+    if num_devices:
+        family = "xpu" if run_cfg.eval.backend == "vllm_xpu" else "cuda"
+        return {"family": family, "num_devices": num_devices,
+                "executor": run_cfg.executor.type, "remote": False}
     return {"family": "cpu/local", "num_devices": 1,
             "executor": run_cfg.executor.type, "remote": False}
 
@@ -109,6 +124,7 @@ class RunManifest:
     gate: dict[str, Any] | None = None
     commands: dict[str, Any] = field(default_factory=dict)
     reproduce: dict[str, Any] = field(default_factory=dict)
+    owner_actions: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -204,6 +220,7 @@ def build_manifest(
         gate=gate,
         commands=commands,
         reproduce={"command": _reproduce_command(config_path), "config": config_path},
+        owner_actions=load_owner_actions(out_dir) if out_dir is not None else None,
     )
 
 

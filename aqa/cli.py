@@ -1,12 +1,14 @@
 """``aqa`` command-line interface.
 
-Verbs mirror NeMo Evaluator's ``nel``: run / eval / quant / validate / list /
-compare / gate / report -- a clear, declarative surface over the pipeline.
+Verbs mirror NeMo Evaluator's ``nel``: run / eval / quant / validate / inspect /
+list / compare / gate / report -- a clear, declarative surface over the pipeline.
 """
 
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from .config import load_run_config
 from .eval.registry import BenchmarkRegistry
 from .logging_util import AqaError, get_logger
 from .registry import EXECUTORS, all_registries
+from .report.owner_actions import OWNER_ACTION_KINDS, append_owner_action
 
 _log = get_logger("cli")
 
@@ -140,6 +143,72 @@ def compare(baseline: str, candidate: str) -> None:
         click.echo(f"{name:<20}{_fmt(bs):>10}{_fmt(cs):>12}{delta:>10.4f}")
 
 
+@main.command(name="log-action")
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option("--kind", type=click.Choice(OWNER_ACTION_KINDS), required=True)
+@click.option("--text", required=True, help="Human-readable reason or action summary.")
+@click.option("--command", default=None, help="Command associated with the action.")
+def log_action(run_dir: Path, kind: str, text: str, command: str | None) -> None:
+    """Append an owner action and refresh run_manifest.json when present."""
+    try:
+        append_owner_action(run_dir, kind=kind, text=text, command=command)
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(f"could not log owner action: {exc}") from exc
+    click.echo(f"logged {kind} action -> {run_dir / 'owner_actions.jsonl'}")
+
+
+@main.command(name="capture-patch")
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.option(
+    "--repo",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+)
+def capture_patch(run_dir: Path, repo: Path) -> None:
+    """Capture tracked working-tree changes into patches/owner without applying them."""
+    repo = repo.resolve()
+    try:
+        root = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if root.returncode:
+            raise click.ClickException(root.stderr.strip() or f"{repo} is not a git repository")
+        diff = subprocess.run(
+            ["git", "-C", str(root.stdout.strip()), "diff", "--binary", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise click.ClickException(f"could not run git diff: {exc}") from exc
+    if diff.returncode:
+        raise click.ClickException(diff.stderr.strip() or "git diff failed")
+    if not diff.stdout:
+        click.echo("clean tree; no patch captured")
+        return
+
+    repo_name = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(root.stdout.strip()).name).strip("-")
+    patch_dir = run_dir / "patches" / "owner"
+    patch_dir.mkdir(parents=True, exist_ok=True)
+    patch_path = patch_dir / f"{repo_name or 'repo'}.patch"
+    patch_path.write_text(diff.stdout, encoding="utf-8")
+    try:
+        append_owner_action(
+            run_dir,
+            kind="patch",
+            text=f"Captured tracked working-tree diff from {root.stdout.strip()}",
+            command=f"git -C {root.stdout.strip()} diff --binary HEAD",
+        )
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(
+            f"patch saved at {patch_path}, but action log failed: {exc}"
+        ) from exc
+    click.echo(f"captured patch -> {patch_path}")
+
+
 @main.group()
 def artifacts() -> None:
     """Owner hard-flow artifact checks (AGENTS.md 硬流程)."""
@@ -152,6 +221,18 @@ def artifacts_check(run_dir: str) -> None:
     from .report.artifacts import check_artifacts, format_report
 
     report = check_artifacts(Path(run_dir))
+    click.echo(format_report(report))
+    if not report.ok:
+        raise SystemExit(1)
+
+
+@main.command()
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False))
+def inspect(run_dir: str) -> None:
+    """Check a run directory against the artifact layout contract."""
+    from .report.layout import format_report, inspect_run_dir
+
+    report = inspect_run_dir(Path(run_dir))
     click.echo(format_report(report))
     if not report.ok:
         raise SystemExit(1)
