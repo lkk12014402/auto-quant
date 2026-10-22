@@ -22,7 +22,7 @@
 | 结构分析 skill（autoround-quant-analysis/SKILL.md，部署机路径见 AGENTS.md 文档地图） | | |
 | `recipes/schemes/<scheme>.yaml` | | |
 | `recipes/quant/` 同模型/同架构历史 pin 配方 | `<有=路径；无=本次收尾要补 pin>` | |
-| knowledge 增量层：`aqa knowledge show` 的 `auto_round_ref` | `<文档版本 vs 将用的 auto-round 版本；旧则先走 docs/knowledge_refresh.md 刷新>` | |
+| knowledge 增量层：外部 references/manifest（若有） | `<当前 checkout 无 aqa knowledge CLI/refs 同步；记录打包层或 owner 提供的目录与版本>` | |
 | 同类实证：`cookbooks/` 相近架构 recipe / `docs/day0_quantization_recipe.md` | | |
 | 上游查证（model card / vllm PR·issue / transformers release） | | |
 

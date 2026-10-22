@@ -1,7 +1,13 @@
 # auto-round 知识刷新流程（references refresh）
 
+> **当前 checkout 状态**：`aqa/cli.py` 未注册 `aqa knowledge` 子命令，且
+> `KnowledgeStore` 尚未同步或读取 `references/` 子树。下面的命令流程当前不可直接执行；
+> 没有外部工具/目录时，使用打包知识并在 `analysis.md` 记录此偏离。不要把下方命令
+> 当成本 checkout 已提供的 CLI。
+
 auto-round 迭代快，aqa 内置的量化知识（`aqa/agent/recipes/*.md`、
-`docs/autoround_full_reference.md`）会随版本过期。本流程是更新机制：
+`docs/autoround_full_reference.md`）会随版本过期。本文件记录预期的 owner-managed
+刷新流程，仅在提供对应 CLI/API 的部署中可执行：
 **增量同步的存储**（knowledge store 的 `references/` 子树）+ **确定性圈定变更范围**
 （`aqa knowledge diff`）+ **owner 复核刷新**（agent 读 PR/源码，人/agent 写文档）
 + **推送共享**（`aqa knowledge push-references`）。

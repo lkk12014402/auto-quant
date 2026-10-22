@@ -1,0 +1,152 @@
+{
+  "model": "google/gemma-4-31B",
+  "local_path": "/models/gemma-4-31B",
+  "architecture": "gemma4 (Gemma4ForConditionalGeneration, dense, multimodal)",
+  "validated_on": "2026-10-21",
+  "status": {
+    "structure_analysis": "VERIFIED from config, safetensors index and headers without loading source weight payload; 60 text layers = 50 sliding_attention (window 1024, 16 KV heads, head_dim 256) + 10 full_attention (layers 5,11,...,59; 4 global KV heads, head_dim 512, p-RoPE, k=v no v_proj), dense MLP, tie_word_embeddings, vision_tower 0.55B.",
+    "mxfp8_autoload_static_fp8_kv_attn": "VERIFIED 2026-10-21 with AutoRound 0.16.1 (model-load RTN iters=0); export carries static 8-bit float KV scheme (tensor strategy) plus per-layer q/k/v scales for attention_input_activations (static attention, dynamic:false); vLLM 0.32.0 loaded via CompressedTensorsW8A8Mxfp8 with Parameter-named k_scale/v_scale/q_scale (compressed_tensors.py:1159-1269).",
+    "sm120_marlin_qdq": "VERIFIED 2026-10-21 on 4x RTX 5090 (SM120): engine logs `Using MarlinMxfp8LinearKernel for MXFP8 GEMM` with explicit linear_backend=marlin; vllm-qdq-plugin@123f1d4 registers qdq under vllm.general_plugins and monkey-patches marlin GEMM ops (MXFP4+MXFP8); VLLM_QDQ=1 VLLM_QDQ_CUTE=1 keeps activation QDQ semantics.",
+    "evaluation": "VERIFIED full PIQA/HellaSwag/MMLU/GSM8K eval at max_model_len=131072, kv_cache_dtype=fp8, TRITON_ATTN, TP=4, batch 32; manual gate GO vs local-machine BF16 baseline with max_accuracy_drop=0.01 (worst delta gsm8k -0.0061).",
+    "replay_ready": true
+  },
+  "environment": {
+    "conda_env": "/home/xuehaosu/miniforge3/envs/aqa_gemma4",
+    "autoround": "0.16.1",
+    "transformers": "5.19.0",
+    "torch": "2.13.0",
+    "vllm": "0.32.0",
+    "flashinfer": "flashinfer-python 0.7.0.post1 (installed; attention uses TRITON_ATTN)",
+    "lm_eval": "0.4.13",
+    "compressed_tensors": "0.17.0",
+    "vllm_qdq_plugin": "0.1.0 editable from intel/neural-compressor benchmark/vllm-qdq-plugin pinned at 123f1d47dfa59ce2664ec09cc244965b8f084d00",
+    "nvidia_cutlass_dsl": "4.8.0 (requires >=4.6.0 for VLLM_QDQ_CUTE=1)",
+    "gpu": "4x NVIDIA GeForce RTX 5090 (SM120), physical GPUs 0-3",
+    "required_env": "VLLM_QDQ=1 VLLM_QDQ_CUTE=1 for eval-side activation QDQ on the Marlin path (owner-directed); envs.py Unknown-variable warning for VLLM_QDQ* is benign"
+  },
+  "structure": {
+    "total_params_B": 32.682,
+    "bf16_size_GB": 62.546,
+    "source_checkpoint_count": {
+      "tensor_count": 1188,
+      "total_size_bytes": 62546177752,
+      "dtype": "BF16",
+      "tie_word_embeddings": true,
+      "count_note": "Nominal total params 32.68B; export metadata counts tied embedding once (32.19B) - keep the two metrics separate in audits."
+    },
+    "text_tower": {
+      "num_hidden_layers": 60,
+      "layer_types": "50 sliding_attention + 10 full_attention (5,11,...,59)",
+      "attention_projections": "q/k/o in all 60 layers; v_proj only in the 50 sliding-attention layers; full-attention layers have k=v (no v_proj)",
+      "moe": false
+    },
+    "precision_allocation": [
+      {
+        "tensor_family": "text attention + mlp linear projections",
+        "dtype": "F8_E4M3",
+        "tensor_count": 410,
+        "count_note": "6 quantized linears x 60 layers (q,k,o + v in 50 sliding; gate/up/down) = 410; MXFP8 E8M0 group32 scales are the matching U8 set (410)."
+      },
+      {
+        "tensor_family": "static kv + attention input scales",
+        "dtype": "F32",
+        "tensor_count": 261,
+        "count_note": "Text: 60 layers x (q,k,v) = 180. Vision: 27 layers x (q,k,v) = 81 (from attention_input_activations targets including Gemma4VisionAttention; harmless because vision weights stay BF16 and language_model_only disables the mm path)."
+      },
+      {
+        "tensor_family": "embeddings / vision weights / norms / misc",
+        "dtype": "BF16",
+        "tensor_count": 778,
+        "count_note": "embed_tokens tied (262144, 5376) BF16; vision MLP/attn weights BF16 (quant_nontext_module=false); norm weights retained."
+      },
+      {
+        "tensor_family": "misc fp32 keep-alive (std_scale etc.)",
+        "dtype": "F32",
+        "count_note": "std_scale and similar fp32 source params preserved inside the F32 bucket accounting."
+      }
+    ],
+    "quantized_export": {
+      "size_bytes": 34174661356,
+      "size_human": "34.17 GB (predicted 33-35 GB window hit)",
+      "format": "llm_compressor / compressed-tensors MXFP8 (format=mxfp8-quantized, quantization_status=compressed)",
+      "weight_dtype_stats": {
+        "F8_E4M3": 410,
+        "U8": 410,
+        "BF16": 778,
+        "F32": 261
+      },
+      "index_keys": 1859,
+      "index_keys_note": "Every source key (1188) covered; 671 new keys are all scale-package tensors (0 non-scale additions). No unreferenced shards, no cross-shard duplicate keys."
+    }
+  },
+  "ignore_layers": "",
+  "ignore_layers_rationale": "None needed: no MoE/router/indexer; vision tower excluded via quant_nontext_module=false; embeddings not Linear targets; verified by export audit (source keys fully covered, no stray quantized modules).",
+  "schemes": {
+    "MXFP8": {
+      "model_load_rtn_static_kv_fp8_static_attention_fp8": {
+        "runner": "AQA run YAML (owner_tasks/run_gemma-4-31B_mxfp8.yaml); do not hand-run auto-round for reproducibility",
+        "command": "auto-round --model_name /models/gemma-4-31B --scheme MXFP8 --iters 0 --nsamples 128 --static_kv_dtype fp8 --static_attention_dtype fp8 --device_map auto --format llm_compressor --output_dir <quantized_dir>",
+        "environment": "CUDA_VISIBLE_DEVICES=0,1,2,3; quantization does not need VLLM_QDQ*",
+        "expected_size": "34.17 GB (54.6% of 62.546 GB BF16 source)",
+        "results": {
+          "baseline": {
+            "source": "/home/xuehaosu/aqa_results/Gemma-4-31B-BF16-FlashInfer-Eval-5090_20260928-1045/eval/accuracy.json (same machine, vllm FlashInfer, TP8)",
+            "piqa_acc": 0.8281,
+            "hellaswag_acc": 0.6596,
+            "mmlu_acc": 0.8117,
+            "gsm8k_strict_match": 0.8628,
+            "mean": 0.7905
+          },
+          "mxfp8_fp8_kv_fp8_attn": {
+            "piqa_acc": 0.8248,
+            "hellaswag_acc": 0.6573,
+            "mmlu_acc": 0.8116,
+            "gsm8k_strict_match": 0.8567,
+            "mean": 0.7876
+          },
+          "gate": "manual GO; max_accuracy_drop=0.01; all four deltas within [-0.0061, -0.0001]"
+        },
+        "evaluation": "vLLM 0.32.0, TRITON_ATTN, linear_backend=marlin, kv_cache_dtype=fp8, max_model_len=131072, TP=4, batch_size 32, language_model_only, apply_chat_template=false (no chat_template in tokenizer); lm_eval group piqa/hellaswag/mmlu + gsm8k 5shot",
+        "limitations": "No RULER/128K stress test, no thinking-on, no agentic/vision tasks, no throughput/latency benchmark; baseline uses FlashInfer while candidate uses Triton + static attention - cross-backend口径差 is part of the delta, not a pure quantization effect."
+      }
+    }
+  },
+  "troubleshooting": {
+    "sm120_linear_backend_marlin": {
+      "symptom": "With default linear_backend=auto the selected MXFP8 kernel may fall outside the QDQ plugin's marlin patch coverage; no QDQ operation trace (observed on 2026-10-19 QDQ RULER run pitfall #1).",
+      "fix": "Pass linear_backend=marlin explicitly in eval model_args; smoke asserts `Using MarlinMxfp8LinearKernel for MXFP8 GEMM` and (with VLLM_QDQ_TRACE=1) a `backend=CuTe format=MXFP8 op=marlin_gemm` trace line.",
+      "evidence": "/home/xuehaosu/aqa_results/Gemma-4-31B-BF16-QDQ-RULER-128K_20261019-2123/report.md and this run's engine logs"
+    },
+    "qdq_env_var_unknown_warning": {
+      "symptom": "vLLM envs.py logs `Unknown vLLM environment variable detected: VLLM_QDQ[...]` at startup.",
+      "root_cause": "Plugin-owned variables are not part of core vLLM env schema.",
+      "fix": "Benign; verify success via `QDQ patches applied: ... torch.ops._C.marlin_gemm (MXFP4, MXFP8)` and `CUTE QDQ backend requested` lines instead."
+    },
+    "q_scale_naming_note": {
+      "symptom": "Grep for `_k_scale/_v_scale/_q_scale` in the exported index finds nothing although static KV/attn scales are present.",
+      "root_cause": "AutoRound 0.16.1 llm_compressor export names them as Parameter-style keys `...self_attn.k_scale` (no underscore prefix); vLLM creates Parameter with that exact name and registers *_scale buffers at load (compressed_tensors.py:1159-1269).",
+      "fix": "Audit by suffix pattern `self_attn.(q|k|v)_scale` instead of `_q_scale`; engine boot log is the second source of truth."
+    },
+    "aqa_local_unique_dir_and_dry_run": {
+      "symptom": "unique_dir field has no consumer in this checkout; `aqa run --dry-run` writes aqa_run.json=running into output.dir (corrupts an existing terminal run dir; AGENTS pitfall #9).",
+      "fix": "Use a literal fresh output dir for the real run and do dry-runs through a throwaway copy of the yaml pointing at /tmp paths."
+    }
+  },
+  "verification": {
+    "pre_run": "source owner_tasks/setup_gemma4_venv.sh self-check (transformers AutoConfig + vllm registry + auto-round static flags + vllm_qdq_plugin import + entrypoint); aqa validate; dry-run via throwaway yaml on /tmp dir",
+    "post_export": "audit weight_map vs shard headers (all referenced, no dup); volume vs 34.17 GB expectation; dtype bucket accounting (410/410/778/261); quantization_config kv_cache_scheme + attention_input_activations; per-layer q/k/v scale presence",
+    "smoke": "engine log must show MarlinMxfp8LinearKernel + fp8 kv cache + mm_prefix disabled; QDQ patches applied; (optional) VLLM_QDQ_TRACE=1 --enforce-eager short run for per-op trace",
+    "eval": "aqa compare /path/to/baseline/eval <run_dir>/eval",
+    "gate": "manual GO recorded in run report (in-run baseline skipped by owner decision)",
+    "artifacts": "aqa inspect <run_dir>; aqa artifacts check <run_dir>"
+  },
+  "evidence": [
+    "/home/xuehaosu/aqa_results/Gemma-4-31B-MXFP8-FP8KV-FP8Attn-AutoRound/run.yaml",
+    "/home/xuehaosu/aqa_results/Gemma-4-31B-MXFP8-FP8KV-FP8Attn-AutoRound/run_manifest.json",
+    "/home/xuehaosu/aqa_results/Gemma-4-31B-MXFP8-FP8KV-FP8Attn-AutoRound/report.md",
+    "/home/xuehaosu/aqa_results/Gemma-4-31B-MXFP8-FP8KV-FP8Attn-AutoRound/journal.md",
+    "/home/xuehaosu/aqa_results/Gemma-4-31B-MXFP8-FP8KV-FP8Attn-AutoRound/analysis.md",
+    "/home/xuehaosu/aqa_results/Gemma-4-31B-BF16-FlashInfer-Eval-5090_20260928-1045/eval/accuracy.json",
+    "/home/xuehaosu/aqa_results/gemma-4-31B-5090-handoff.md"
+  ]
+}

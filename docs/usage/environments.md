@@ -1,7 +1,8 @@
 # 环境构建：三种形态与安装内容（真源：`aqa/executors/_remote.py`、`aqa/executors/local_env.py`）
 
-三种形态共享同一套 **staged inner run**：aqa 生成派生 `_run.yaml`（剥掉 env 块、
-executor 强制 local），在目标环境里执行内层 `aqa run`。区别只在"环境怎么来"。
+ssh docker 与 local docker 共享同一套 **staged inner run**：aqa 生成派生 `_run.yaml`
+（剥掉 env 块、executor 强制 local），在目标环境里执行内层 `aqa run`。local venv
+也有对应 helper，但当前 CLI 尚未 dispatch 到它；详见下方实现状态。区别只在"环境怎么来"。
 
 ## 1. ssh docker（远程生产）
 
@@ -41,13 +42,21 @@ day-0 定制镜像用法：`image.gpu` 指向官方镜像、`dockerfile` 留空�
 
 `executor.type: local` + `env.type: venv`。
 
+**当前 checkout 的实现状态（以代码为准）**：`aqa.cli.run` 将 local executor 直接交给
+`LocalExecutor.run`，后者在当前进程调用 `run_pipeline`；调用链没有进入
+`aqa.executors.local_env.run_venv`。因此 `aqa run` 当前忽略 `executor.env`，不会按
+`env.path` 切换解释器、创建环境或安装包。已有 Conda 环境应通过
+`conda run -p <env_path> aqa run <yaml>` 显式启动，且 YAML 省略 `executor.env`；
+`local_env.py` helper 的单元测试不代表 CLI 集成已完成。下表仅描述 helper 的目标行为，
+接线与端到端测试完成前，不应依赖 YAML 自动 provisioning/switch。
+
 | 步骤 | 行为 |
 |---|---|
-| 创建（缺失且 `create: true`） | **conda 优先**（`conda create -p <path> python=3.12`），无 conda 用 `python3 -m venv` |
-| 安装 | **uv 优先**（`uv pip install --python <venv>/bin/python`），无 uv 回退 pip；`aqa`(editable) + 包集（同容器推导，`packages: auto` 时） |
-| 复用 | venv 已存在则幂等跳过；存在但无 `aqa` 入口 → 报错 |
-| agent provision | 与容器对齐：Node 解进 venv 前缀、npm 装 openclaw(+copilot)、`aqa.agent.provision`（best-effort） |
-| 运行 | `<venv>/bin/aqa run _run.yaml`，PATH 前置 venv/bin；卡选择靠 `CUDA_VISIBLE_DEVICES`（不重映射） |
+| 创建（缺失且 `create: true`） | helper：**conda 优先**（`conda create -p <path> python=3.12`），无 conda 用 `python3 -m venv` |
+| 安装 | helper：**uv 优先**（`uv pip install --python <venv>/bin/python`），无 uv 回退 pip；`aqa`(editable) + 包集（同容器推导，`packages: auto` 时） |
+| 复用 | helper：venv 已存在则幂等跳过；存在但无 `aqa` 入口 → 报错 |
+| agent provision | helper：与容器对齐，Node 解进 venv 前缀、npm 装 openclaw(+copilot)、`aqa.agent.provision`（best-effort） |
+| 运行 | helper 目标：`<venv>/bin/aqa run _run.yaml`，PATH 前置 venv/bin；实际 CLI 当前运行 `LocalExecutor` 所在 Python |
 
 ## 4. in-process
 

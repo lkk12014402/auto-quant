@@ -1,7 +1,7 @@
 # Knowledge store 结构定义（HF dataset 的 knowledge/ 子树 / 本地 ~/.cache/aqa/knowledge）
 #
-# knowledge store 的结构契约。`aqa knowledge show` 与 sync/push 以此为真源；
-# 每个条目注明生产者（auto=运行自动沉淀 / owner=人工维护推送）。
+# knowledge store 的目标结构契约；当前 CLI/KnowledgeStore 尚未实现 references
+# 子树的 show/sync/push。每个条目注明生产者（auto=运行自动沉淀 / owner=人工维护推送）。
 
 layout:
   - path: lessons/
@@ -49,7 +49,7 @@ layout:
     format: 见下方 manifest_schema
     producer: owner
     required: true  # references/ 存在时必有
-    desc: 新鲜度锚点；`aqa knowledge show` 读它，`aqa knowledge diff` 用它的 auto_round_ref 圈定上游变更。
+    desc: 目标新鲜度锚点；预期 `knowledge` CLI 可读取它并用 auto_round_ref 圈定上游变更。
 
 manifest_schema:
   # MANIFEST.json 顶层字段
@@ -62,7 +62,7 @@ manifest_schema:
       updated_at: "该文件最近更新时间"
       scope: "一句话说明该文件覆盖范围（如 'LLM 量化 recipe'）"
 
-# 更新语义（aqa knowledge push-references）：
+# 目标更新语义（待 references CLI/API 接入）：
 #   默认 replace：整树替换（--from 目录成为新的 references/ 全部内容）
 #   --file <name>:  增量：只更新单个文件（merge），只刷该文件的 per-file 新鲜度条目
 # 读取优先级（消费方）：references/ 同步副本 > aqa 打包副本（离线兜底）

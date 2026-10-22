@@ -1,0 +1,74 @@
+{
+  "model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+  "architecture": "nemotron_h",
+  "validated_on": "2026-10-14",
+  "quantization_source": "NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 (local BF16 checkpoint)",
+  "model_facts": "31.58B parameters; 52 hybrid layers with Mamba2, routed/shared MoE, and six full-attention layers. The six attention layers are 5, 12, 19, 26, 33, and 42; protect the adjacent Mamba projections in layers 4, 11, 18, 25, 32, and 41.",
+  "environment": {
+    "quantization": "Conda Python 3.12.15, uv 0.13.0, AutoRound 0.16.0, torch 2.13.0/CUDA 13.0",
+    "inference": "vLLM 0.31.0, Transformers 5.17.0, compressed-tensors 0.17.0, lm-eval 0.4.13",
+    "hardware": "RTX 5090 / SM120; final candidate evaluation used physical GPUs 0-3, TP=2 x DP=2 + EP, PP=1",
+    "notes": "Use native NemotronHForCausalLM with trust_remote_code=false. For MXFP8 MoE on SM120, automatic Marlin failed with Invalid thread config; explicit Humming passed full evaluation. The external vLLM server and AQA local_completions evaluation are staged because this checkout does not restart the server between pipeline phases."
+  },
+  "schemes": {
+    "MXFP8": {
+      "autoround_rtn_bf16kv": {
+        "command": "auto-round --model_name /models/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 --scheme MXFP8 --algorithm rtn --iters 0 --ignore_layers lm_head,backbone.embeddings,mixer.q_proj,mixer.k_proj,mixer.v_proj,mixer.o_proj,mixer.gate,mixer.conv1d,model.layers.4.mixer.in_proj,model.layers.4.mixer.out_proj,model.layers.11.mixer.in_proj,model.layers.11.mixer.out_proj,model.layers.18.mixer.in_proj,model.layers.18.mixer.out_proj,model.layers.25.mixer.in_proj,model.layers.25.mixer.out_proj,model.layers.32.mixer.in_proj,model.layers.32.mixer.out_proj,model.layers.41.mixer.in_proj,model.layers.41.mixer.out_proj --device_map 0 --format llm_compressor --output_dir <out> --seqlen 2048 --batch_size 1 --nsamples 128 --disable_trust_remote_code",
+        "quantizes": "5,888 routed-expert weights, 46 shared-expert weights, and 34 non-attention-adjacent Mamba projections; protects attention, router, embeddings/head, conv1d, and the 12 attention-adjacent Mamba projections.",
+        "static_kv": "No static FP8 KV or attention scales are requested. vLLM uses kv_cache_dtype=auto with BF16 model dtype.",
+        "export_audit": "PASS: all 6,243 source parameter keys match; 5,968 F8_E4M3 weights and 5,968 U8 group-32 scales; 206 BF16 and 69 F32 tensors; seven indexed shards, no duplicates or unreferenced shards; payload and index total_size are 33,616,949,632 bytes.",
+        "result": "Four lm-eval tasks, all expected sample counts, batch_size=32. BF16 baseline mean 0.766001; pure MXFP8 with automatic/BF16 KV mean 0.766556 (+0.000554, +0.0554 pp); maximum per-task drop 0.002274 (0.2274 pp); gate GO at max_accuracy_drop=0.02.",
+        "task_results": {
+          "gsm8k": "0.948446 -> 0.946171 (-0.2274 pp); strict-match; 1,319 samples",
+          "piqa": "0.805223 -> 0.811752 (+0.6529 pp); acc; 1,838 samples",
+          "mmlu": "0.712149 -> 0.710013 (-0.2136 pp); acc; 14,042 samples",
+          "hellaswag": "0.598188 -> 0.598287 (+0.0100 pp); acc; 10,042 samples"
+        },
+        "variant_comparison": "Prior MXFP8+FP8-KV mean 0.766297; prior MXFP8+FP8-KV+FP8-attention mean 0.767533. Their topologies and KV/attention protocols differ, so these are not causal ablations.",
+        "yaml": "Run artifacts run.yaml and eval_candidate.yaml; external vLLM runner is run_external_eval.sh; procedure and caveats are in cookbooks/NVIDIA-Nemotron-3-Nano-30B-A3B-MXFP8-施工卡.md",
+        "evidence": "Local run artifacts: /home/xuehaosu/aqa_results/NVIDIA-Nemotron-3-Nano-30B-A3B-MXFP8-AutoRound_20261014/logs/quantized_header_audit.json, baseline/accuracy.json, eval/accuracy.json, gate.json, run_manifest.json, report.md.",
+        "caveats": "max_model_len=131072 was configured, but the four tasks were not 128K-context stress tests. Baseline used TP4 x DP1 + EP; candidate used TP2 x DP2 + EP, so this is not a strict topology-matched weight-only ablation. eval.thinking is not injected by this checkout. The canonical aqa_run.json remains failed because its embedded eval had no external vLLM server; staged full evaluation succeeded."
+      },
+      "autoround_rtn_static_fp8kv": {
+        "command": "auto-round --model_name /models/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 --scheme MXFP8 --algorithm rtn --iters 0 --static_kv_dtype fp8 --ignore_layers lm_head,backbone.embeddings,mixer.q_proj,mixer.k_proj,mixer.v_proj,mixer.o_proj,mixer.gate,mixer.conv1d,model.layers.4.mixer.in_proj,model.layers.4.mixer.out_proj,model.layers.11.mixer.in_proj,model.layers.11.mixer.out_proj,model.layers.18.mixer.in_proj,model.layers.18.mixer.out_proj,model.layers.25.mixer.in_proj,model.layers.25.mixer.out_proj,model.layers.32.mixer.in_proj,model.layers.32.mixer.out_proj,model.layers.41.mixer.in_proj,model.layers.41.mixer.out_proj --device_map 0,1 --format llm_compressor --output_dir <out> --seqlen 2048 --batch_size 1 --nsamples 128 --disable_trust_remote_code",
+        "quantizes": "5,888 routed-expert weights, 46 shared-expert weights, and 34 non-attention-adjacent Mamba projections; protects attention, router, embeddings/head, and 12 attention-adjacent Mamba projections.",
+        "static_kv": "Calibrates and exports 12 nonzero finite F32 K/V scales across the six attention layers. AR_DISABLE_META_LOAD=1 is required by the observed AutoRound 0.16.0 fused-MoE meta-loader failure to materialize the new scales.",
+        "export_audit": "PASS: all 6,243 source parameter keys match; 5,968 F8_E4M3 weights and 5,968 U8 group-32 scales; retained BF16/F32 tensors have expected dtypes; seven indexed shards with no unreferenced shard; tensor payload 33,616,949,680 bytes.",
+        "result": "Four lm-eval tasks, all expected sample counts, batch_size=32. BF16 baseline mean 0.766001; MXFP8+FP8-KV mean 0.766297; per-task maximum drop 0.002290; gate GO at max_accuracy_drop=0.02. Protocol comparison only: baseline used automatic BF16 KV, candidate used static FP8 KV.",
+        "task_results": {
+          "gsm8k": "0.948446 -> 0.950720; strict-match; 1,319 samples",
+          "piqa": "0.805223 -> 0.808487; acc; 1,838 samples",
+          "mmlu": "0.712149 -> 0.710084; acc; 14,042 samples",
+          "hellaswag": "0.598188 -> 0.595897; acc; 10,042 samples"
+        },
+        "yaml": "Run artifact run.yaml; instance procedure and caveats are in cookbooks/NVIDIA-Nemotron-3-Nano-30B-A3B-MXFP8-FP8KV-施工卡.md",
+        "evidence": "Local run artifacts: /home/xuehaosu/aqa_results/NVIDIA-Nemotron-3-Nano-30B-A3B-MXFP8-FP8KV-AutoRound_20261013/logs/quantized_header_audit_attempt05.json, baseline/accuracy.json, eval/accuracy.json, gate.json.",
+        "caveats": "max_model_len=131072 was enforced, but the four tasks were not 128K-context stress tests. Baseline and candidate use different KV-cache dtypes and parallel topologies; scores do not isolate weight quantization alone."
+      },
+      "autoround_rtn_static_fp8kv_fp8attn": {
+        "command": "auto-round --model_name /models/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 --scheme MXFP8 --algorithm rtn --iters 0 --static_kv_dtype fp8 --static_attention_dtype fp8 --ignore_layers lm_head,backbone.embeddings,mixer.q_proj,mixer.k_proj,mixer.v_proj,mixer.o_proj,mixer.gate,mixer.conv1d,model.layers.4.mixer.in_proj,model.layers.4.mixer.out_proj,model.layers.11.mixer.in_proj,model.layers.11.mixer.out_proj,model.layers.18.mixer.in_proj,model.layers.18.mixer.out_proj,model.layers.25.mixer.in_proj,model.layers.25.mixer.out_proj,model.layers.32.mixer.in_proj,model.layers.32.mixer.out_proj,model.layers.41.mixer.in_proj,model.layers.41.mixer.out_proj --device_map 0 --format llm_compressor --output_dir <out> --seqlen 2048 --batch_size 1 --nsamples 128 --disable_trust_remote_code",
+        "quantizes": "5,888 routed-expert weights, 46 shared-expert weights, and 34 non-attention-adjacent Mamba projections; protects attention, router, embeddings/head, and 12 attention-adjacent Mamba projections.",
+        "static_kv": "Calibrates and exports 12 nonzero finite F32 K/V scales across the six attention layers. AR_DISABLE_META_LOAD=1 is required by the observed AutoRound 0.16.0 fused-MoE meta-loader failure to materialize the new scales.",
+        "static_attention": "Calibrates and exports six finite positive F32 q_scales (one per attention layer). On RTX 5090/SM120 with vLLM 0.31.0, use TRITON_ATTN with FP8 KV; verify loaded q/k/v scales and the QuantFP8 query path at runtime. FLASHINFER did not consume q_scale on the tested SM120 path.",
+        "export_audit": "PASS: all 6,243 source parameter keys match; 5,968 F8_E4M3 weights and 5,968 U8 group-32 scales; 206 BF16 and 87 F32 tensors (69 source F32 + 12 K/V scales + 6 q_scales); seven indexed shards, no unreferenced shard; tensor payload 33,616,949,704 bytes.",
+        "result": "Four lm-eval tasks, all expected sample counts, batch_size=32, no full-evaluation OOM. BF16 baseline mean 0.766001; prior MXFP8+FP8-KV mean 0.766297; MXFP8+FP8-KV+FP8-attention mean 0.767533. Gate GO at max_accuracy_drop=0.02; worst BF16-relative drop was 0.002421 on MMLU (0.2421 pp).",
+        "task_results": {
+          "gsm8k": "BF16 0.948446 -> candidate 0.952995 (+0.4549 pp); prior KV-only 0.950720; strict-match; 1,319 samples",
+          "piqa": "BF16 0.805223 -> candidate 0.810120 (+0.4897 pp); prior KV-only 0.808487; acc; 1,838 samples",
+          "mmlu": "BF16 0.712149 -> candidate 0.709728 (-0.2421 pp); prior KV-only 0.710084; acc; 14,042 samples",
+          "hellaswag": "BF16 0.598188 -> candidate 0.597291 (-0.0896 pp); prior KV-only 0.595897; acc; 10,042 samples"
+        },
+        "yaml": "Run artifact run.yaml; staged full-evaluation configuration is eval_candidate.yaml; instance procedure and results are in cookbooks/NVIDIA-Nemotron-3-Nano-30B-A3B-MXFP8-FP8KV-FP8Attn-施工卡.md",
+        "evidence": "Local run artifacts: /home/xuehaosu/aqa_results/NVIDIA-Nemotron-3-Nano-30B-A3B-MXFP8-FP8KV-FP8Attn-AutoRound_20261014/logs/quantized_header_audit.json, logs/attention_runtime_probe_validation_20261014T030411Z.json, baseline/accuracy.json, reference_mxfp8_fp8kv/accuracy.json, eval/accuracy.json, gate.json, run_manifest.json.",
+        "caveats": "max_model_len=131072 was enforced, but the four tasks were not 128K-context stress tests. The BF16 and prior KV-only references use different inference protocols; this is not a causal isolation of the attention change. eval.thinking is not injected by this checkout, so chat-template defaults apply."
+      }
+    }
+  },
+  "known_pitfalls": [
+    "AutoRound ignore_layers matches runtime module names, not necessarily checkpoint tensor prefixes. For the adjacent Mamba layers here, use model.layers.* in the ignore list and verify exported dtypes; the earlier backbone.layers.* attempt quantized 12 protected projections.",
+    "The Mamba2 reference fallback attempted a 64 GiB allocation with its default batch. Use --seqlen 2048 --batch_size 1 for this calibrated static-KV run; this is a measured workaround, not a universal Mamba setting.",
+    "Verify actual SM120 MXFP8 MoE execution on the final weights and topology. The default Marlin path failed in this environment; explicitly selecting Humming passed the candidate smoke and full evaluation.",
+    "The AQA full pipeline did not complete because this checkout cannot restart an external vLLM server between phases. Preserve the failed aqa_run.json as history and use the recorded staged server plus aqa eval artifacts; do not label the original aqa run itself as successful.",
+    "On SM120, static FP8 attention requires the tested TRITON_ATTN + FP8 KV path and a runtime check that checkpoint q/k/v scales load and QuantFP8 query quantization is active; exported q_scales alone are not sufficient."
+  ]
+}

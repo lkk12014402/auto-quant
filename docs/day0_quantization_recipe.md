@@ -128,6 +128,22 @@ HF dataset）在内层 run 里统一发生，与载体无关；secrets 经 `coll
 4. 小 limit 评估（piqa limit 16 之类）；
 5. 全量基准 + gate。
 
+**Attention backend × KV dtype 必须做设备/维度组合冒烟，静态能力声明不够**：
+混合 head size 模型的某一层可能直到 KV-cache 初始化或首个 prefill JIT 才触发限制。
+实测边界（vLLM 0.30.0、FlashInfer 0.6.18.post1、Gemma 4、A100 SM80）：
+
+- 默认 `TRITON_ATTN` 明确拒绝 SM80 上的 FP8 KV（其原生 FP8 路径要求 SM89+）。
+- 显式 `FLASHINFER` 虽然 `supports_combination` 静态检查可接受 head size 512 + FP8，
+  但真实 FA2 prefill JIT 对 `head_dim>256` 的一字节 KV 只生成 CUDA major
+  `[10, 11, 12]`（SM100+），所以 Gemma 4 的 512-dim full-attention 层在 SM80 仍会失败。
+  FlashInfer 上游 `tests/attention/test_batch_prefill_kernels.py` 也将该 FP8 large-head
+  路径在 pre-SM100 上 gate 掉。
+- 对纯文本 task，`language_model_only=true` 可关闭 Gemma 4 的 multimodal-prefix attention，
+  但不会放宽 head-dimension / compute-capability kernel 限制；不得把它用于图像/视频评估。
+- 先用真实量化 checkpoint、目标 GPU、真实 FP8 cache 做单样本 smoke，并确认日志已
+  选定 backend、进入 prefill/cache 初始化且生成结果；未出样本前不得启动全量任务。
+  不得仅为让 smoke 通过而伪造架构、放宽未验证的 JIT gate 或静默改用 BF16/跳过层。
+
 ## 6. 导出保真检查（tuning 路径特有，实证新增）
 
 调优路径经 transformers 重序列化导出，可能引入三类静默损坏：
@@ -310,3 +326,24 @@ yaml：`examples/local_docker/run_glm53_flash_w4a16_rtn_fp8aligned.yaml`。
 - 修复脚本：`aqa_results/glm53_flash_day0/logs/fix_tuning_export.py`（conv 拷回，幂等）、
   `logs/cmp_tun_rtn.py`（RTN/tuning 权重对比排查）；
 - 产物：`aqa_results/glm53_flash_day0/`（rtn/ rtn_fp8aligned/ tuning/ logs/ RUN_JOURNAL.md）。
+
+## C. Gemma-4-31B 稠密 · SM120 · static KV/Attn + QDQ 线 ✅（2026-10-21）
+
+- 模型：`/models/gemma-4-31B`（Gemma4ForConditionalGeneration 多模态轉 dense 文本塔，60 层 =
+  50 sliding(窗口 1024·16KV·head256) + 10 full(5,11,…,59·4KV·head512·p-RoPE·k=v 无 v_proj)）。
+- 方案：MXFP8 · model-load(autoround) · RTN iters=0 · `--static_kv_dtype fp8 --static_attention_dtype fp8`
+  · llm_compressor；vision 保 bf16（quant_nontext_module=false），embed tied 保 bf16。
+- **三件套探针**（vllm 0.32.0 / transformers 5.19.0 / auto-round 0.16.1 全命中）：
+  GPUs 4×5090(SM120)；`linear_backend=marlin` 显式 → `Using MarlinMxfp8LinearKernel`；
+  vllm-qdq-plugin@123f1d4（`VLLM_QDQ=1 VLLM_QDQ_CUTE=1`）激活侧 QDQ 达成 W8A8 语义。
+- ** Scores**：四 task（piqa/hswag/mmlu/gsm8k@131072·TP4·batch32·无模板口径）对同机 BF16
+  baseline Δ≤0.0061 → 手工 gate GO（这款是 5090 上首次 dense 全家四 task 过线）。
+- **审计口径**：静态 scale 导出命名是 `...self_attn.{q,k,v}_scale`（**不带下划线前缀**，区别于
+  vllm 内部 `_*_scale` buffer）；体积 accounting：F8 410（6·60+50 v_proj）+ U8 410 + BF16 778
+  + F32 261（文本 180 + vision 81）——相对旧 checkpoint +87 q_scale 即 static attention 证据。
+- **坑**：① 评估必须与 baseline 同门（本模型无 chat_template，gsm8k recipe 默认模板要用
+  `apply_chat_template: false` 压掉）；② `linear_backend=auto` 时不一定命中 Marlin（QDQ 失效，
+  10-19 RULER run 实证）；③ 本 checkout `unique_dir` 无消费者 + dry-run 写终态（坑 #9 根因）。
+- pinned recipe：`recipes/quant/google__gemma-4-31B.json`；施工卡+终态：
+  `cookbooks/Gemma-4-31B-MXFP8-FP8KV-FP8Attn-施工卡.md`；run 证据：
+  `aqa_results/Gemma-4-31B-MXFP8-FP8KV-FP8Attn-AutoRound/`（run_id `...102331_c085b8`）。

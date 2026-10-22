@@ -42,6 +42,8 @@
 - **dataset sink**（`hf_dataset`）：上传整个 run 目录但**结构性排除权重**
   （`quantized/` 与全部权重后缀）并做文本脱敏（`aqa/report/scrub.py`）；
   layout.yaml 中 `sink: false` 的条目（权重、staged 工件）不在其内。
+- **local_fs sink** 镜像 `<artifact_name>/` 时会排除镜像目录本身；同一 run 目录
+  重跑或刷新镜像不会把旧镜像递归复制成嵌套目录。
 - **量化模型权重**默认不外传；需要时配 `provider.upload`（HF model repo，
   自动生成模型卡）。
 

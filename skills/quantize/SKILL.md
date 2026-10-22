@@ -39,19 +39,41 @@ quantization) with **exactly one block-quantizer**:
 
 ## Procedure
 1. **Analyse structure without downloading weights**: read `config.json` +
-   safetensors index; classify dense vs MoE, list module names, expert layout.
+   safetensors index; classify dense vs MoE, list tensor names, expert layout,
+   and check how checkpoint names map to runtime module names.
 2. **Consult the recipe corpus** (`recipes/schemes/<scheme>.yaml`, prior pinned
    recipes) for known-good settings.
 3. **Emit the command** via `aqa/quantize` (or an agent-optimized command). Use
    `--model_name <model>` explicitly. Add `--ignore_layers` / `layer_config`
-   for mixed precision when the structure requires it.
+   for mixed precision when the structure requires it. Resolve ignore tokens
+   against AutoRound's actual `model.named_modules()` names; checkpoint keys
+   may use a converted prefix (for example, `backbone.*` while modules are
+   named `model.*`).
 4. **Write `quantization_recipe.md`** (conclusion / structure / module list /
    built-in handling / config decisions / recommended command / accuracy
    expectation / variants) and **pin** the machine-readable recipe via a
    `RecipeStore` (default `repo_dir` -> `recipes/quant/<org>__<model>.json`).
 
 ## Accuracy / safety rules
-- Never fabricate module names — derive them from the actual index.
+- Never fabricate tensor names — derive them from the actual index. For
+  `ignore_layers`, separately verify the runtime module-name namespace and any
+  checkpoint/model prefix conversion; index hits or log strings alone do not
+  prove a module was excluded. After export, compare safetensors dtypes with
+  the planned precision allocation.
+- Treat `model.safetensors.index.json` as the checkpoint map: verify every mapped
+  key is present in its selected shard, detect unreferenced physical shards and
+  duplicate keys, and check index metadata totals against indexed tensors.
+  Unreferenced leftovers must not inflate the size check; remove them only after
+  confirming they are outside the index map. Duplicate tensor copies are safe
+  only when the index selects an occurrence and every duplicate has identical
+  dtype, shape, and payload.
 - `group_size` for MX schemes is fixed at 32; export `llm_compressor` for vLLM.
+- If `static_kv_fp8` creates new K/V scale parameters and AutoRound's fused-MoE
+  blockwise/meta loader reports `Failed to materialize ... k_scale/v_scale ...
+  still on meta`, use its documented `AR_DISABLE_META_LOAD=1` whole-model CPU
+  loading path, then verify every exported KV scale is finite and nonzero.
+  This trades host RAM for materialization; enable it in response to that
+  failure, not by default. Verified examples: the Gemma-4-26B-A4B and
+  Nemotron-3-Nano-30B-A3B cookbooks.
 - The pinned recipe is the single source of truth; do not hard-code recipe
   knowledge in code paths.

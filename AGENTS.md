@@ -17,10 +17,10 @@
 
 | 步 | 做什么 | 产物 | 完成判据 |
 |---|---|---|---|
-| ① 结构分析与量化方案 | 不下载权重读 config+index；**先查 skill / recipe / knowledge**（查阅清单是硬章节，逐条记采纳或偏离）；三件套探针定推理路径；出逐模块精度表 | `analysis.md` | 查阅清单填满；ignore/量化范围对 index.json 逐条核对；给出量化命令 + 评估计划 + 预期体积 |
+| ① 结构分析与量化方案 | 不下载权重读 config+index；**先查 skill / recipe / knowledge**（查阅清单是硬章节，逐条记采纳或偏离）；三件套探针定推理路径；出逐模块精度表 | `analysis.md` | 查阅清单填满；量化范围对 index.json 逐条核对，ignore 名称另与 AutoRound 实际模块名/前缀映射核对；给出量化命令 + 评估计划 + 预期体积 |
 | ② 环境 | 按①的推理路径结论：先找本机现有环境，没有则新建 venv（uv 优先，conda 优先于系统 python） | `setup_venv.sh` + `requirements.txt` | 自检通过（架构 registry 命中 = 硬门槛）；自检后 `uv pip freeze` 冻结；**之后每次换依赖必须重跑自检并重冻结** |
 | ③ yaml 定稿 | 从 `templates/run.yaml` 出发按①②结论填全（baseline/quant/eval/gate/sink） | `run.yaml`（实际文件名可另起） | `aqa validate` 过 + 回传字段补全（§0 铁律）；后续单跑某环节也从此 yaml 派生 |
-| ④ 运行与输出 | `aqa run`；输出结构守 layout 契约；发布权重（`provider.upload`）时写 model card | `model_card.md`（仅发布时必填） | 输出符合 `aqa/report/layout.yaml`（`aqa inspect` 核对）；card 守 `templates/model_card.md` 四条纪律并作为模型 repo README |
+| ④ 运行与输出 | `aqa run`；输出结构守 layout 契约；发布权重（`provider.upload`）时写 model card | `model_card.md`（仅发布时必填） | 输出符合 `aqa/report/layout.yaml`（`aqa inspect` 核对）；card 按 `templates/model_card.md` 的生成规则与禁写清单填写（只写用户部署所需，审计与证据留在 report），末行 `Signed-off-by: Name <email>`（身份每次向用户确认，不得推断），并作为模型 repo README |
 | ⑤ 回溯 | 对照产物写报告（不凭记忆）；经验全部路由落点 | `report.md` | sanity check 达标（体积/键 dtype/完备性）；经验路由表无空行；`aqa artifacts check <run_dir>` 全过 |
 
 贯穿全程另有两份产物：`journal.md`（叙事日志：每步命令+依据+坑，**随手记
@@ -33,7 +33,7 @@
 对应位置并标明路径（**git 提交交给 user，agent 不擅自提交**；只回传 HF
 不回流本仓 = 知识只存了一半）。`aqa artifacts check
 <run_dir>` 做确定性校验：产物文件存在、必备章节齐全、report 的 gate 结论与
-`gate.json` 一致、发布权重时 `model_card.md` 在场。
+`gate.json` 一致、发布权重时 `model_card.md` 在场且末行为 `Signed-off-by`。
 
 ## 文档地图
 
@@ -148,12 +148,26 @@ day-0 典型用法：model card 指定了官方定制镜像（如
 ### 2.3 local venv（本机，复用现有环境）
 `executor.type: local` + `env.type: venv`。场景：你（用户）已有一个配置好的环境
 （含已有 docker container 内），aqa 在其中建/复用一个虚拟环境。
+
+**当前 checkout 的 CLI 实现状态（以代码为准）**：`aqa.cli.run` 将
+`executor.type: local` 直接交给 `LocalExecutor.run`，后者在当前进程调用
+`run_pipeline`；本 checkout 没有从该调用链 dispatch 到
+`aqa.executors.local_env.run_venv`。因此 `aqa run` 当前不会按 `executor.env.path`
+切换解释器、创建环境或安装包；只配置 `env:` 并不能保证 run 使用目标环境。
+要复用独立 Conda 环境，应从该环境直接运行
+`conda run -p <env_path> aqa run <yaml>`，并在 YAML 中省略 `executor.env`，
+明确以当前进程运行。`local_env.py` 中的 helper 与直接调用它的单元测试不等于
+CLI 端到端支持；在 dispatcher 与集成测试接通前，`examples/local_venv/` 不能作为
+`aqa run` 会自动切换环境的证明。
+
+下列是 `local_env.py` helper 实现的预期 provisioning 行为，**当前 CLI 尚未接线**：
 - 新建环境时**优先 conda**（`conda create -p <path> python=3.12`），无 conda 用
   `python3 -m venv`；包安装**优先 uv**（`uv pip install`），无 uv 回退 pip
 - `env.create: false` + `env.path` 指向既有环境时原样复用（幂等，不重装）
 - `env.packages: auto` 时按与容器相同的推导装（auto-round/lm-eval/vllm 等）
 - agent 后端 provision 与容器版对齐（Node 解进 venv 前缀，best-effort）
-示例：`examples/local_venv/run_qwen38_flash_next.yaml`。
+目标示例：`examples/local_venv/run_qwen38_flash_next.yaml`（CLI 接线完成前不可据此
+假定运行时会自动 provision/switch）。
 
 ### 2.4 in-process（最简）
 `executor.type: local` 且无 `env` 块：直接在当前进程跑，不做任何环境构建。
@@ -172,7 +186,7 @@ schema：`aqa/config.py` 的 `QuantConfig`（extra=forbid，写错字段会直�
 | `export_format` | 默认 `llm_compressor`；也可 `auto_round` |
 | `ignore_layers` / `layer_config` | 逗号分隔 ignore 清单 / 按层混合精度(JSON) |
 | `quant_lm_head` / `opt_rtn` / `hadamard_type` / `enable_alg_ext` | 对应 auto-round 旗标 |
-| `static_kv_fp8` / `static_attention_fp8` | **新增**：FP8 KV cache / FP8 attention（`--static_kv_dtype fp8` / `--static_attention_dtype fp8`）。需校准，仅 `method: autoround` |
+| `static_kv_fp8` / `static_attention_fp8` | **新增**：FP8 KV cache / FP8 attention（`--static_kv_dtype fp8` / `--static_attention_dtype fp8`）。当前 schema 允许 `static_kv_fp8` 搭配 `model_free` 或 `autoround`；但 `model_free + static_kv_fp8` 仍会加载模型并执行 KV scale 校准 forward，并非纯流式免校准。`static_attention_fp8` 仍要求 `method: autoround` |
 | `device_map` | 默认多卡 auto；可显式覆盖 |
 | `extra_args` | 原样透传 CLI 的逃生口 |
 
@@ -184,11 +198,18 @@ schema：`aqa/config.py` 的 `QuantConfig`（extra=forbid，写错字段会直�
 经验法则（详见 `skills/quantize/SKILL.md` 与 `docs/autoround_full_reference.md`）：
 - 分析模型**不要加载权重**：读 `config.json` + `model.safetensors.index.json`。
 - MoE：shared_expert、router/gate、attention 通常保高精度；ignore 清单要对着
-  index.json 的实际层名逐条核对（错配 = 静默漏量或过量）。
+  index.json 的实际层名逐条核对（错配 = 静默漏量或过量）；同时必须核实
+  AutoRound `model.named_modules()` 的运行时名称。checkpoint 与模型模块可能有
+  `model`/`backbone` 等前缀转换；index 命中、命令含 ignore 字符串或日志打印该字符串
+  都不能单独证明运行时已排除，最终以导出 safetensors dtype 对照精度表验收。
 - 每次量化后必做 sanity check：输出目录体积是否符合位宽预期（如 125B 模型
   W4A16≈181G、FP8≈240G、bf16 全量 360G），并抽查量化键 dtype。
   **体积 = 原始大小说明量化静默失效**（典型根因：auto-round 版本过旧不认
-  fused MoE——融合专家拆解需 ≥0.15.0/#2072）。
+  fused MoE——融合专家拆解需 ≥0.15.0/#2072）。同时逐一核对
+  `model.safetensors.index.json` 的 `weight_map` 与磁盘 shard：只将索引引用的
+  shard/tensor 计入结果；未引用旧 shard 会虚增目录体积，确认不被索引引用后再清理。
+  校验每个 key 在索引指定 shard 中存在，重复 key 的 dtype/shape/payload 必须一致，
+  并检查 index `total_size` / `total_parameters` / `total_shards` 与引用内容一致。
 
 ### 3.1 结构分析（逐模块精度判定）
 
@@ -198,7 +219,8 @@ mxfp4/mxfp8/w4a16）。判定方法（与 optimize agent 同源的免下载分�
 1. 读 `config.json`：架构类型、dense vs MoE（`num_experts`/`moe_*`）、
    `layer_types`、MLA/MTP/vision 字段、`tie_word_embeddings`、
    **`quantization_config`（模型可能已是量化权重，如 FP8 源）**。
-2. 读 `model.safetensors.index.json` + 抽查张量头的 **dtype/shape**：
+2. 读 `model.safetensors.index.json` + 抽查张量头的 **dtype/shape**，并用
+   AutoRound 实际模型模块名核对 ignore 的命名空间及 checkpoint 前缀映射：
    抓融合 3D 专家（`experts.gate_up_proj [E,2I,H]`）、小 N 层（out<128，
    MXFP8 推理核 `mm_mxfp8 requires N >= 128` 的雷）、已量化权重（F8_E4M3）。
 3. 按决策表归类：**量化主力**=路由专家（MoE 50-90% 参数）/稠密 MLP；
@@ -243,24 +265,21 @@ baseline 只测一次（第一档），`sweep_report.json` 含各档分数与命
 
 ### 3.3 量化知识的更新机制（references）
 
-auto-round 迭代快，aqa 打包的量化知识会过期。知识分两层：
+auto-round 迭代快，aqa 打包的量化知识会过期。知识原计划分两层：
 
 - **打包层**：`aqa/agent/recipes/*.md`、`docs/autoround_full_reference.md`
   （随 aqa 发布，可能旧）
-- **增量层**：knowledge store 的 `references/` 子树（与 fix-knowledge 共用
-  HF dataset，run 开始 `sync_down` 拉最新）——optimize agent 的 prompt 知识
-  **优先读这一层**，读不到回退打包层
+- **references 增量层**：目标布局定义在 `aqa/agent/knowledge_layout.yaml`。
 
-owner 的职责：**开始任务前用 `aqa knowledge show` 看 `auto_round_ref`
-（文档验证时的 auto-round 版本），比你将用的 auto-round 旧就触发刷新**——
-`aqa knowledge diff --auto-round-dir <repo>` 圈定变更范围，逐条复核后更新
-文档并 `aqa knowledge push-references` 推送共享。完整流程与纪律见
-`docs/knowledge_refresh.md`。fix-loop / optimize agent 读到的是同一套
-references，所以你刷新一次，所有 agent 都受益。
+**当前实现状态（以代码为准）**：本 checkout 的 `aqa/cli.py` 没有注册
+`aqa knowledge` 子命令；`aqa/agent/knowledge.py` 也未同步或读取 `references/`
+子树。因此，其他章节中提到的 `aqa knowledge show/diff/push-references`
+在本 checkout 不可执行，optimize 也不能依赖该增量层。开始任务时应查阅打包层，
+并在 `analysis.md` 记录 references 未接入的偏离；若 owner 提供外部 references
+目录及可用工具，再核对其 `MANIFEST.json` 并记录版本。不要臆造或直接运行不存在的命令。
 
-**用不用增量层是可选的**：`agent.knowledge.use_references: false` 会把
-optimize 锁回打包层（复现实验、排除知识漂移时用）；**刷新永远是 owner 手动
-动作**，run 不会自动更新知识——不刷新就只是继续用现有层，不会有意外变化。
+references 的目标刷新流程与纪律见 `docs/knowledge_refresh.md`；在相应 CLI/API
+接入前，它只是操作设计文档，不代表当前命令已实现。
 
 
 
@@ -275,12 +294,22 @@ optimize 锁回打包层（复现实验、排除知识漂移时用）；**刷新
 3. **auto-round**：是否支持（含 fused MoE 等结构）？
 
 判定细则：
-- 模型权重目录里**自带 modeling 文件** → 算支持，`trust_remote_code=True` 即可
-  （aqa 后端默认带此参数）。
+- 模型目录自带 `modeling` 文件不自动等于已支持；分别探测
+  `AutoConfig.from_pretrained(..., trust_remote_code=False/True)`，确认本机 vLLM
+  registry 与实际加载路径。若 Transformers/vLLM 已原生支持且原生路径通过，
+  优先 `trust_remote_code: false`；`true` 会选择 `auto_map` 指向的远端实现，
+  该实现可能与当前 Transformers 版本冲突。只有远端实现确实必需且单独验证通过时
+  才启用 remote code。
 - 任一不认 → 查 **model card 的推理 recipe**（可能指定 docker image / vllm 版本，
   如 `recipes.vllm.ai/<org>/<model>`）、transformers/vllm 的 PR 与 issue。
 - 推理路径确定后选环境：官方定制镜像 → local docker（§2.2）；有明确版本要求
   → local venv 或 ssh docker + `env.packages` 显式 pin。
+- MoE 量化模型不能只凭 registry 或 backend `is_supported` 探针认定可运行：
+  在目标设备、真实权重和最终并行拓扑上完成加载与生成 smoke，并从日志确认
+  实际 MoE kernel。静态支持检查可能漏掉特定 shape 的运行时失败；只有确认是
+  真正 OOM 才降 batch/token budget，否则应定位 kernel/backend。Nemotron 3 Nano
+  在 RTX 5090/SM120 + vLLM 0.31.0 的实证见对应 cookbook：自动 Marlin 通过支持
+  探针但运行失败，显式 Humming 才通过生成 smoke。
 - 量化侧：model_free 也要 **double check 配置命中**（ignore_layers/layer_config
   与 index.json 层名对齐）；model_free 对不识别的结构可能静默全量跳过
   （用 §3 的体积 check 抓）。
@@ -298,22 +327,23 @@ optimize 锁回打包层（复现实验、排除知识漂移时用）；**刷新
 backend 额外参数走 `eval.lm_eval.model_args`（如 `reasoning_parser`、`max_num_seqs`）。
 `eval.baseline: true` 会先测 bf16 原模型再测量化模型（gate 对比的前提）。
 
-### 5.2 thinking 双模式（新）
-thinking 模型开/关思考链分数差异巨大。`eval.thinking`：
-- `auto`（默认）：检测 chat template 是否含 `enable_thinking` 开关，
-  是则**开/关各测一遍**；否则单测（行为同旧版）
-- `both` / `on` / `off`：强制双测 / 仅开 / 仅关
-- `thinking_off_model_args`（默认 `{enable_thinking: false}`）定义"关"的传参，
-  特殊模型可覆盖
-产物分目录：`eval/`（on）与 `eval_thinking_off/`（off）；baseline 同理；
-gate 按**同模式配对**判定（on 对 on、off 对 off），`gate.json` 含每模式明细。
+### 5.2 thinking 双模式（实现状态）
+thinking 模型开/关思考链分数差异巨大。`EvalConfig` 已定义 `eval.thinking`
+（`auto` / `both` / `on` / `off`）、`thinking_off_model_args`，且
+`aqa/eval/thinking.py` 有模板探测和按模式改写配置的 helper；但当前 checkout 的
+`aqa run` pipeline/runner 尚未调用这些 helper。因此目前这些字段**不会触发双模式
+评估或 thinking-off 参数注入**，实际行为由模型 chat template 的默认值决定。
+只有 pipeline 接入 `resolve_thinking_modes` / `apply_mode_to_cfg` 后，预期行为才是：
+`auto` 按模板决定单测或双测，`both` / `on` / `off` 强制相应模式，产物分目录
+（`eval/` 与 `eval_thinking_off/`，baseline 同理），gate 按同模式配对。
 
 ### 5.3 evalscope（推理类 benchmark）
 aime24/25/26、gpqa_diamond 走 `evalscope` harness（`recipes/benchmarks/` 已内置
 recipe）：harness 自动 `vllm serve`（TP=num_gpus）→ `evalscope eval` → 收报告。
 `eval.evalscope` 透传参数：`repeats`（avg@N）、`generation_config`、
-`server_args`（vllm serve 参数）、`port` 等；thinking off 由 §5.2 统一注入
-（请求级 `chat_template_kwargs`）。
+`server_args`（vllm serve 参数）、`port` 等；当前需通过
+`eval.evalscope.chat_template_kwargs` 显式传模式参数，pipeline 尚不会按
+`eval.thinking` 自动注入。
 
 ### 5.4 agent 任务（harbor 风格）
 仓库自带 agentic eval 栈（`aqa/agent_eval/`、`aqa/terminal_bench/`、
@@ -452,6 +482,33 @@ pytest tests/ -q               # 全量单测（改动后必跑）
 2. **手工 patch 版本错位** → `patches/` 的 README 有两种文件布局对照；
    不要把 patch 手工移植到别的基线。
 3. **vendor vllm 被 PyPI 覆盖** → 用 `env.packages` 显式清单。
-4. **thinking 模型单测一边** → 用 `eval.thinking` 双模式，gate 按模式配对。
+4. **thinking 模式** → 当前 pipeline 只按 chat template 默认值运行；
+   `eval.thinking` 双模式配置尚未接线，勿假设 `auto` 会自动跑 on/off。
 5. **权重误传 HF** → 权重只走 `provider.upload`；dataset sink 永远排除权重。
 6. **env.sh 提交进 git** → 里面是明文密钥。
+7. **ignore 字符串未命中运行时模块** → AutoRound 可能仍将受保护层量化；核对
+   `model.named_modules()` 匹配和导出 dtype，不要仅看 index 命中或日志列表。
+8. **RTX 5090 SM120 + vLLM 0.31 FlashInfer + AutoRound FP8 Attention** → 含非单位
+   `q_scale` 的 checkpoint 可能在 `supports_quant_query_input=false` 时仍将 scale
+   作用于 BF16 query。Qwen3.6 实测默认 FlashInfer 的 MMLU-50 为0.418，改用
+   `attention_backend: TRITON_ATTN` 且确认 `query_quant=QuantFP8` 后恢复到0.848；
+   必须核对运行时 impl、query quantizer 与 scale，不能只看 YAML 或 checkpoint。
+9. **已完成 run 目录上执行 `aqa run --dry-run` 会污染终态** → 当前
+   `LocalExecutor.run` 在 dry-run 分支前先写 `aqa_run.json=running`，随后直接返回
+   而不恢复旧状态。不要对已有终态的 run 目录做 dry-run；误执行后依据原始日志/
+   manifest 恢复真实终态并核验。在 executor 修复前，配置检查优先用 `aqa validate`。
+10. **AutoRound missing-tensor copy 后 `index.json` 的 `metadata.total_size` 可能过期** →
+   本次 Qwen3.6-35B-A3B 导出把未量化的 MTP 张量补进 index，却未同步更新总字节数。
+   导出审计时应按 `weight_map` 引用的 keys/shards 核对实际 payload 与 `total_size`；
+   先确认无缺失或未引用张量后，若差额恰为补拷权重 payload，只修正 `total_size`，
+   保留 `total_parameters` 等具有不同语义的字段。
+11. **本 checkout `output.unique_dir` 未接线 + dry-run 污染终态（坑 #9 的根因和补充）** →
+   `LocalExecutor.run`（aqa/executors/local.py:27-34）在 dry-run 分支之前就向 output.dir
+   写 `aqa_run.json=running` 且不恢复；gemma-4-31B run 实证 `unique_dir` 全仓无消费者
+   （AGENTS §6.1 的"自动时间戳+latest 软链"未实现）。对策：真 run 用字面全新目录；
+   dry-run 永远通过一次性拷贝 yaml 把 output.dir 指到 /tmp。
+12. **auto-round 0.16.1 llm_compressor 静态 scale 命名不带下划线前缀** → 导出里是
+   `...self_attn.{q,k,v}_scale`（Parameter 名），vllm 0.32 按同名 Parameter 装载后再注册
+   `_*_scale` buffer（compressed_tensors.py:1159-1269）。审计 grep 用
+   `self_attn.(q|k|v)_scale` 模式，别用 `_k_scale`（会误报缺失）；static attention 的
+   导出证据 = 相对无 static 档的 checkpoint 多出的 per-layer q_scale。

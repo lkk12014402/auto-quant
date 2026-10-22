@@ -1,0 +1,67 @@
+# Gemma-4-26B-A4B MXFP8 + calibrated FP8 KV RULER suite, 100 samples per task.
+# Start the matching vLLM server with the run directory's start_vllm.sh first.
+model: /home/xuehaosu/aqa_results/Gemma-4-26B-A4B-MXFP8-FP8KV-AutoRound_20260927-180251/quantized/gemma-4-26B-A4B-mxfp-w8g32
+provider:
+  type: pretrained
+
+eval:
+  backend: local_completions
+  harness: lm_eval
+  benchmarks:
+    - niah_single_1
+    - niah_single_2
+    - niah_single_3
+    - niah_multikey_1
+    - niah_multikey_2
+    - niah_multikey_3
+    - niah_multiquery
+    - niah_multivalue
+    - ruler_vt
+    - ruler_cwe
+    - ruler_fwe
+    - ruler_qa_squad
+    - ruler_qa_hotpot
+  batch_size: "2"
+  baseline: false
+  limit: 100
+  thinking: "off"
+  gen_max_toks: 128
+  lm_eval:
+    group: true
+    seed: 42
+    apply_chat_template: false
+    fewshot_as_multiturn: false
+    metadata:
+      max_seq_lengths: [131072]
+      tokenizer: /models/gemma-4-26B-A4B
+    model_args:
+      base_url: http://127.0.0.1:8000/v1/completions
+      tokenizer: /models/gemma-4-26B-A4B
+      tokenizer_backend: huggingface
+      tokenized_requests: true
+      add_bos_token: true
+      num_concurrent: 2
+      max_retries: 50
+      timeout: 500
+      max_length: 131073
+
+agent:
+  fix_loop: false
+  optimize: false
+
+executor:
+  type: local
+  num_gpus: 4
+  env:
+    type: current
+    packages:
+      - wonderwords==2.2.0
+      - ninja==1.13.2
+
+output:
+  dir: /home/xuehaosu/aqa_results/Gemma-4-26B-A4B-MXFP8-FP8KV-RULER-128K_20261009-1425
+  unique_dir: false
+  report_model: google/gemma-4-26B-A4B
+  artifact_name: Gemma-4-26B-A4B-MXFP8-FP8KV-RULER-128K
+  sinks:
+    - type: local_fs
