@@ -1,12 +1,9 @@
 # templates/ — 每个模型量化任务的产物骨架
 
-本目录是 AGENTS.md「硬流程」的模板真源。`templates/model_card.md` 是例外：它不是抽象
-骨架，而是一张验收合格的真卡（gemma-4-31B-MXFP8-FP8KV）——生成规则与禁写清单以文件头
-注释保留，主体即「填出来的样子」。用它生成新卡时只模仿结构，所有具体值一律从本 run 重新
-生成，禁止沿用卡中任何数值/名字/命令。其余实例：`cookbooks/`（实例分析/脚本）、
-`docs/RUN_JOURNAL.md`（实例日志）、`templates/examples/model_card_example.md`
-（另一张实例 model card，NVIDIA-Nemotron-3-Nano-30B-A3B-MXFP8-FP8KV-FP8Attn，末行
-身份为占位示例）。
+本目录是 AGENTS.md「硬流程」的模板真源。**骨架 vs 实例**：本目录是骨架，
+`cookbooks/`（实例分析/脚本）、`docs/RUN_JOURNAL.md`（实例日志）、
+`templates/examples/model_card_gemma-4-31B.md`（合格 baseline model card，
+gemma-4-31B-MXFP8-FP8KV）是填出来的样子。
 
 **可移植纪律**：骨架文件（本目录顶层）不许出现任何本机绝对路径——本仓库会换
 机器、会给别人用。实例文件（`examples/`）是历史实录，其中的路径属于产生它的
