@@ -1,0 +1,13 @@
+# RULER common word extraction.
+name: ruler_cwe
+harness: lm_eval
+type: generative
+apply_chat_template: false
+fewshot_as_multiturn: false
+num_fewshot: 0
+gen_kwargs: { max_gen_toks: 120 }
+batch_size: "2"
+scoring:
+  metric: "131072,none"
+  prefer: ["131072,none"]
+description: RULER common word extraction; score the 128K context bucket.
