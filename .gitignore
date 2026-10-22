@@ -5,3 +5,9 @@ __pycache__/
 
 # Secrets (HF tokens, ssh passwords, agent keys) — never commit
 env.sh
+
+# Editable-install build artifacts
+*.egg-info/
+
+# Owner scratch artifacts (kept local by decision)
+owner_tasks/setup_logs/
