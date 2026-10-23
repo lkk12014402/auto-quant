@@ -123,8 +123,24 @@ def test_model_card_required_only_when_upload(tmp_path: Path) -> None:
     assert not report.ok
     assert any("model_card.md 缺失" in m for m in _errors(report))
 
-    (tmp_path / "model_card.md").write_text("# card\n")
+    (tmp_path / "model_card.md").write_text(
+        "# card\n\nSigned-off-by: Jane Smith <jane.smith@intel.com>\n")
     assert check_artifacts(tmp_path).ok
+
+
+@pytest.mark.parametrize("card, needle", [
+    ("# card\n", "末行须为"),
+    ("Signed-off-by: Jane Smith <jane.smith@intel.com>\n\n# card\n", "末行须为"),
+    ("# card\n\nSigned-off-by: Jane Smith\n", "末行须为"),
+    ("# card\n\nSigned-off-by: {Name} <{email}>\n", "末行须为"),
+    ("# card\n\nSigned-off-by: Full Name <full.name@example.com>\n", "占位身份"),
+])
+def test_model_card_requires_signoff_last_line(tmp_path: Path, card: str, needle: str) -> None:
+    _fill_run_dir(tmp_path)
+    (tmp_path / "model_card.md").write_text(card)
+    report = check_artifacts(tmp_path)
+    assert not report.ok
+    assert any(needle in m for m in _errors(report))
 
 
 def test_no_gate_json_skips_verdict_check(tmp_path: Path) -> None:

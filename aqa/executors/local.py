@@ -32,7 +32,13 @@ class LocalExecutor:
         if dry_run:
             _log.info("[dry-run] would run pipeline for %s in %s", run_cfg.model, out_dir)
             return RunResult(output_dir=out_dir, state=ProcessState.DONE)
-        state = run_pipeline(run_cfg, out_dir)
+        try:
+            state = run_pipeline(run_cfg, out_dir)
+        except Exception:
+            meta_path.write_text(
+                json.dumps({"model": run_cfg.model, "state": ProcessState.FAILED.value})
+            )
+            raise
         meta_path.write_text(json.dumps({"model": run_cfg.model, "state": state.value}))
         return RunResult(output_dir=out_dir, state=state)
 

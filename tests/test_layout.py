@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from click.testing import CliRunner
+
+from aqa.cli import main
 from aqa.report.layout import inspect_run_dir, load_layout
 
 
@@ -67,3 +70,22 @@ def test_running_state_skips_done_entries(tmp_path):
     # running 状态下 done 级条目不视为缺失
     assert all(e.path != "run_manifest.json" for e in report.missing)
     assert report.ok
+
+
+def test_inspect_cli_reports_layout_status(tmp_path):
+    d = _mk_run(tmp_path, state="failed")
+
+    result = CliRunner().invoke(main, ["inspect", str(d)])
+
+    assert result.exit_code == 0, result.output
+    assert "status: OK" in result.output
+
+
+def test_inspect_cli_fails_for_missing_required_artifacts(tmp_path):
+    d = tmp_path / "run"
+    d.mkdir()
+
+    result = CliRunner().invoke(main, ["inspect", str(d)])
+
+    assert result.exit_code == 1
+    assert "aqa_run.json" in result.output

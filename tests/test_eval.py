@@ -40,11 +40,71 @@ def test_lm_eval_command_generative_vllm():
     assert "tensor_parallel_size=4" in joined and "max_gen_toks=2048" in joined
 
 
+def test_lm_eval_vllm_generative_forwards_task_generation_overrides():
+    recipe = BenchmarkRegistry().get("gsm8k")
+    cmd = LmEvalHarness(
+        gen_kwargs={"max_gen_toks": 2048, "until": "<|im_end|>"},
+    ).build_command(recipe, "org/m", VllmBackend(), Path("/tmp/o"))
+
+    assert cmd[cmd.index("--gen_kwargs") + 1] == "until=<|im_end|>"
+    assert "max_gen_toks=2048" in cmd[cmd.index("--model_args") + 1]
+
+
+def test_lm_eval_generative_can_disable_chat_template_and_fewshot_multiturn():
+    recipe = BenchmarkRegistry().get("gsm8k")
+    cmd = LmEvalHarness(
+        apply_chat_template=False,
+        fewshot_as_multiturn=False,
+    ).build_command(recipe, "org/m", VllmBackend(), Path("/tmp/o"))
+
+    assert cmd[cmd.index("--tasks") + 1] == "gsm8k"
+    assert cmd[cmd.index("--num_fewshot") + 1] == "5"
+    assert "--apply_chat_template" not in cmd
+    assert "--fewshot_as_multiturn" not in cmd
+    assert "max_gen_toks=2048" in cmd[cmd.index("--model_args") + 1]
+    assert "--gen_kwargs" not in cmd
+
+
+def test_chat_template_false_suppresses_recipe_multiturn_default():
+    recipe = BenchmarkRegistry().get("gsm8k")
+    cmd = LmEvalHarness(apply_chat_template=False).build_command(
+        recipe, "org/m", VllmBackend(), Path("/tmp/o")
+    )
+
+    assert "--apply_chat_template" not in cmd
+    assert "--fewshot_as_multiturn" not in cmd
+
+
 def test_extract_metric_prefers_recipe_metric():
     recipe = BenchmarkRecipe(name="gsm8k", scoring={"metric": "exact_match,strict-match"})
     data = {"exact_match,strict-match": 0.73, "exact_match,flexible-extract": 0.70}
     score, key = _extract_metric(data, recipe)
     assert score == 0.73 and key == "exact_match,strict-match"
+
+
+def test_lm_eval_aggregate_sample_count_uses_result_sample_len(tmp_path):
+    import json
+
+    result_json = {
+        "results": {
+            "mmlu": {
+                "acc,none": 0.81,
+                "sample_len": 14042,
+                "sample_count": {"acc,none": 14042},
+            }
+        },
+        "n-samples": {
+            "mmlu_abstract_algebra": {"original": 100, "effective": 100},
+            "mmlu_anatomy": {"original": 135, "effective": 135},
+        },
+    }
+    (tmp_path / "results.json").write_text(json.dumps(result_json))
+
+    result = LmEvalHarness().parse_results(BenchmarkRegistry().get("mmlu"), tmp_path)
+
+    assert result.score == 0.81
+    assert result.metric == "acc,none"
+    assert result.num_samples == 14042
 
 
 def test_native_evaluate_samples_pure():
@@ -93,6 +153,7 @@ def test_lm_eval_group_key_separates_generative():
     assert h.group_key(ll) != h.group_key(gen)
     # loglikelihood tasks share a key
     assert h.group_key(ll) == h.group_key(BenchmarkRecipe(name="mmlu", type="loglikelihood"))
+    assert h.group_key(gen) != LmEvalHarness(apply_chat_template=False).group_key(gen)
 
 
 class _RecordingHarness:

@@ -1,0 +1,48 @@
+# Gemma 4 26B-A4B: standalone BF16-weight / BF16-KV evaluation.
+# Run in the existing autoround-test environment with CUDA_VISIBLE_DEVICES=0,1,2,3.
+model: /models/gemma-4-26B-A4B
+provider:
+  type: pretrained
+
+eval:
+  backend: vllm
+  harness: lm_eval
+  benchmarks: [piqa, mmlu, hellaswag, gsm8k]
+  batch_size: "64"
+  baseline: false
+  thinking: "off"
+  gen_max_toks: 2048
+  lm_eval:
+    group: true
+    seed: 42
+    apply_chat_template: false
+    fewshot_as_multiturn: false
+    model_args:
+      attention_backend: FLASHINFER
+      language_model_only: true
+      dtype: bfloat16
+      kv_cache_dtype: auto
+      max_model_len: 131072
+      max_num_seqs: 64
+      max_num_batched_tokens: 32768
+      gpu_memory_utilization: 0.85
+      tensor_parallel_size: 4
+      pipeline_parallel_size: 1
+      enable_thinking: false
+      enable_prefix_caching: false
+
+agent:
+  fix_loop: false
+  optimize: false
+
+executor:
+  type: local
+  num_gpus: 4
+
+output:
+  dir: /home/xuehaosu/aqa_results/Gemma-4-26B-A4B-BF16-BF16KV-Baseline_20261009-094556
+  unique_dir: false
+  report_model: google/gemma-4-26B-A4B
+  artifact_name: Gemma-4-26B-A4B-BF16-BF16KV-Baseline
+  sinks:
+    - type: local_fs

@@ -39,6 +39,7 @@ _BUILTINS: dict[str, dict[str, str]] = {
     "aqa.backends": {
         "hf": "aqa.backends.hf:HfBackend",
         "vllm": "aqa.backends.vllm:VllmBackend",
+        "local_completions": "aqa.backends.local_completions:LocalCompletionsBackend",
     },
     "aqa.sinks": {
         "local_fs": "aqa.report.sinks:LocalFsSink",

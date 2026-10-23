@@ -1,0 +1,169 @@
+{
+  "model": "google/gemma-4-26B-A4B",
+  "local_path": "/models/gemma-4-26B-A4B",
+  "architecture": "gemma4 (Gemma4ForConditionalGeneration, MoE)",
+  "validated_on": "2026-09-28",
+  "status": {
+    "structure_analysis": "VERIFIED from config, safetensors index and headers without loading source weight payload; 30 text layers, 128 routed experts/top-8, 25 sliding-attention + 5 full-attention layers.",
+    "mxfp8_model_free_static_fp8_kv": "VERIFIED 2026-09-28 with AutoRound 0.16.0.dev193; AutoRound export recorded static 8-bit float KV scheme and vLLM quantized eval loaded successfully using FP8 KV.",
+    "evaluation": "VERIFIED full PIQA/MMLU/HellaSwag/GSM8K eval at max_model_len=131072 and kv_cache_dtype=fp8; gate GO with max_accuracy_drop=0.02.",
+    "replay_ready": true
+  },
+  "environment": {
+    "conda_env": "/home/xuehaosu/miniforge3/envs/autoround-test",
+    "autoround": "0.16.0.dev193+g22d6e28c",
+    "transformers": "5.17.0",
+    "torch": "2.13.0+cu130",
+    "vllm": "0.29.0",
+    "flashinfer": "flashinfer-python 0.7.0",
+    "lm_eval": "0.4.13",
+    "gpu": "3x NVIDIA GeForce RTX 5090, physical GPUs 1,2,3 for the validated run",
+    "required_env": "AR_DISABLE_META_LOAD=1 for static-kv scale materialization in the fused-MoE Transformers 5 meta-load path"
+  },
+  "structure": {
+    "total_params_B": 26.544,
+    "bf16_size_GB": 51.612,
+    "source_checkpoint_count": {
+      "tensor_count": 1013,
+      "total_size_bytes": 51611872412,
+      "dtype": "BF16",
+      "unique_serialized_weight_elements": 25805936206,
+      "tie_word_embeddings": true,
+      "count_note": "Keep the nominal total_params_B figure separate from unique serialized tensor elements; use this index-derived count for stored-weight dtype and size audits."
+    },
+    "text_tower": {
+      "num_hidden_layers": 30,
+      "num_experts": 128,
+      "experts_per_token": 8,
+      "layer_types": "25 sliding_attention + 5 full_attention",
+      "attention_projections": "q/k/o in all 30 layers; v_proj in the 25 sliding-attention layers; the 5 full-attention source layers have no v_proj",
+      "moe": true
+    },
+    "precision_allocation": [
+      {
+        "tensor_family": "routed_experts",
+        "dtype": "F8_E4M3",
+        "tensor_count": 11520,
+        "weight_elements": 22837985280
+      },
+      {
+        "tensor_family": "self_attention_projections",
+        "dtype": "F8_E4M3",
+        "tensor_count": 115,
+        "weight_elements": 1110179840,
+        "count_note": "Derived from total F8_E4M3 weight elements minus routed-expert weight elements; covers q/k/o in all layers and v in the 25 sliding-attention layers."
+      },
+      {
+        "tensor_family": "shared_mlp",
+        "dtype": "BF16",
+        "tensor_count": 90,
+        "weight_elements": 535265280
+      },
+      {
+        "tensor_family": "router",
+        "dtype": "BF16",
+        "tensor_count": 90,
+        "weight_elements": 10901760
+      },
+      {
+        "tensor_family": "vision_tower",
+        "dtype": "BF16",
+        "tensor_count": 355,
+        "weight_elements": 569550384
+      },
+      {
+        "tensor_family": "vision_embedding_projection",
+        "dtype": "BF16",
+        "tensor_count": 1,
+        "weight_elements": 3244032
+      },
+      {
+        "tensor_family": "token_embedding",
+        "dtype": "BF16",
+        "tensor_count": 1,
+        "weight_elements": 738197504
+      },
+      {
+        "tensor_family": "other_retained_tensors",
+        "dtype": "BF16",
+        "tensor_count": 301,
+        "weight_elements": 612126
+      }
+    ],
+    "quantized_export": {
+      "size_bytes": 28412087908,
+      "format": "llm_compressor / compressed-tensors MXFP8",
+      "weight_dtype": "F8_E4M3",
+      "weight_tensor_count": 11635,
+      "weight_element_counts": {
+        "F8_E4M3": 23948165120,
+        "BF16": 1857771086,
+        "total_stored_weight_elements": 25805936206
+      },
+      "expert_weight_tensor_count": 11520,
+      "attention_weight_tensor_count": 115,
+      "block_scale_dtype": "U8",
+      "block_scale_tensor_count": 11635,
+      "static_kv_scale_dtype": "F32",
+      "static_kv_scale_tensor_count": 114,
+      "text_layer_kv_scales": "60 finite, nonzero values; 30 layers × K/V",
+      "vision_layer_kv_scales": "54 zero values from text-only calibration; vision is BF16 and excluded from language_model_only evaluation"
+    }
+  },
+  "ignore_layers": "router,vision_tower,embed_vision,embed_tokens,mlp",
+  "ignore_layers_rationale": "Protect routing, vision tower/projection, token embeddings, and the always-on shared mlp branch. AutoRound reports embed_tokens does not match a supported quantizable module because embeddings are not Linear targets; the key remains BF16. The checkpoint has no multi_modal_projector key; do not add that unmatched pattern.",
+  "schemes": {
+    "MXFP8": {
+      "model_free_rtn_static_fp8_kv": {
+        "runner": "AQA run YAML; do not execute a hand-built AutoRound command for the run",
+        "command": "auto-round --model_name /models/gemma-4-26B-A4B --scheme MXFP8 --model_free --static_kv_dtype fp8 --ignore_layers router,vision_tower,embed_vision,embed_tokens,mlp --device_map 0,1,2 --format llm_compressor --output_dir <quantized_dir>",
+        "environment": "AR_DISABLE_META_LOAD=1",
+        "expected_size": "about 29-30 GB; validated export 28.412 GB (26.46 GiB), about 1.82x smaller than BF16 source",
+        "results": {
+          "baseline": {
+            "piqa_acc": 0.822633,
+            "mmlu_acc": 0.743413,
+            "hellaswag_acc": 0.632543,
+            "gsm8k_strict_match": 0.717968,
+            "mean": 0.729139
+          },
+          "mxfp8_fp8_kv": {
+            "piqa_acc": 0.828618,
+            "mmlu_acc": 0.744125,
+            "hellaswag_acc": 0.634734,
+            "gsm8k_strict_match": 0.732373,
+            "mean": 0.734962
+          },
+          "gate": "GO; max_accuracy_drop=0.02; all four paired scores are non-decreasing"
+        },
+        "evaluation": "vLLM 0.29.0, kv_cache_dtype=fp8, max_model_len=131072, TP=1/PP=3; PIQA/MMLU/HellaSwag/GSM8K from repository recipes; GSM8K chat template disabled because the tokenizer has no chat_template",
+        "limitations": "The benchmark prompts are not a 128K stress test; vision, thinking-on, agentic, throughput, and latency were not evaluated."
+      }
+    }
+  },
+  "troubleshooting": {
+    "static_kv_scale_meta_materialization": {
+      "symptom": "AutoRound failed to materialize newly created self_attn.k_scale and self_attn.v_scale parameters from the checkpoint while using the fused-MoE meta skeleton.",
+      "root_cause": "The BF16 source checkpoint has no static KV scale tensors; the meta materializer expected the new parameters to exist in the source checkpoint.",
+      "fix": "Set AR_DISABLE_META_LOAD=1 so Transformers loads the model on CPU and initializes the new parameters normally. Retain the AQA YAML and monitor host RAM; validated peak RAM was about 64.14 GiB.",
+      "evidence": "/home/xuehaosu/aqa_results/Gemma-4-26B-A4B-MXFP8-FP8KV-AutoRound_20260927-180251/logs/retry-03/quantize.log and successful retry-04/quantized/quantize.log"
+    },
+    "gsm8k_missing_chat_template": {
+      "symptom": "lm_eval failed to build GSM8K requests because the official/local tokenizer config has no chat_template.",
+      "fix": "Set apply_chat_template=false and fewshot_as_multiturn=false for this model; preserve the repository GSM8K recipe, 5-shot, seed and generation budget."
+    }
+  },
+  "verification": {
+    "pre_run": "aqa validate <fresh-run.yaml>; aqa run <fresh-run.yaml> --dry-run; inspect selected physical GPUs before execution",
+    "post_export": "Check quantized/ model.safetensors.index.json and safetensors headers; compare output size with the 51.612 GB BF16 source; verify quantization_config.json kv_cache_scheme and nonzero text-layer k/v scales",
+    "eval": "aqa compare <run_dir>/baseline <run_dir>/eval",
+    "gate": "gate.json reports GO",
+    "artifacts": "aqa inspect <run_dir>; aqa artifacts check <run_dir>"
+  },
+  "evidence": [
+    "/home/xuehaosu/aqa_results/Gemma-4-26B-A4B-MXFP8-FP8KV-AutoRound_20260927-180251/run.yaml",
+    "/home/xuehaosu/aqa_results/Gemma-4-26B-A4B-MXFP8-FP8KV-AutoRound_20260927-180251/run_manifest.json",
+    "/home/xuehaosu/aqa_results/Gemma-4-26B-A4B-MXFP8-FP8KV-AutoRound_20260927-180251/gate.json",
+    "/home/xuehaosu/aqa_results/Gemma-4-26B-A4B-MXFP8-FP8KV-AutoRound_20260927-180251/journal.md"
+  ]
+}

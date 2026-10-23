@@ -63,7 +63,8 @@ class QuantConfig(BaseModel):
     # (e.g. ``"auto"`` / ``"0,1"``) to override the automatic choice.
     device_map: str | None = None
     # FP8 KV cache / FP8 attention (--static_kv_dtype fp8 / --static_attention_dtype fp8).
-    # Require calibration, so only valid with method=autoround.
+    # static_kv_fp8 also works with model_free, but still loads the model for KV-scale
+    # calibration forwards; static_attention_fp8 requires method=autoround.
     static_kv_fp8: bool = False
     static_attention_fp8: bool = False
     # Multi-candidate sweep (aqa sweep): built-in candidate set or user-defined.
@@ -213,6 +214,10 @@ class LmEvalOptions(BaseModel):
     needing distinct params (e.g. gsm8k) run separately.
     ``metadata`` is forwarded verbatim as lm_eval's ``--metadata`` JSON object;
     synthetic tasks read their sizing knobs there (RULER: ``max_seq_lengths``).
+    ``apply_chat_template`` and ``fewshot_as_multiturn`` are tri-state recipe
+    overrides; explicit ``false`` disables the corresponding recipe default even
+    for generative tasks. The task remains generative and keeps its generation
+    budget. Few-shot-as-multiturn is only emitted when chat templating is enabled.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -220,7 +225,8 @@ class LmEvalOptions(BaseModel):
     model_args: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     gen_kwargs: dict[str, Any] = Field(default_factory=dict)  # default --gen_kwargs (generative)
-    apply_chat_template: bool | None = None  # global override (None => per-recipe)
+    # None => recipe default; explicit false can disable generative defaults.
+    apply_chat_template: bool | None = None
     fewshot_as_multiturn: bool | None = None
     seed: int = 42
     group: bool = True  # merge compatible tasks into one lm_eval invocation
@@ -247,7 +253,7 @@ class EvalConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     benchmarks: list[str] = Field(default_factory=lambda: ["piqa", "mmlu", "hellaswag"])
-    backend: str = "hf"  # hf | vllm | vllm_xpu
+    backend: str = "hf"  # hf | vllm | local_completions | vllm_xpu
     harness: str = "lm_eval"  # default harness for bare tasks: lm_eval | evalscope | native
     batch_size: str = "auto"
     baseline: bool = False  # also evaluate the un-quantized bf16 model
@@ -256,6 +262,9 @@ class EvalConfig(BaseModel):
     gen_max_toks: int = 2048
     # Thinking-mode handling for reasoning models: auto | both | on | off.
     thinking: str = "auto"
+    thinking_off_model_args: dict[str, Any] = Field(
+        default_factory=lambda: {"enable_thinking": False}
+    )
 
     # Per-harness option blocks (differentiate the eval methods under `eval`).
     lm_eval: LmEvalOptions = Field(default_factory=LmEvalOptions)

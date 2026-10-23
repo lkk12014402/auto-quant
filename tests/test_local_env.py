@@ -6,6 +6,7 @@ provisioning are injected (same style as the lm_eval/stream_subprocess tests).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ import yaml
 
 from aqa import proc
 from aqa.config import parse_run_config
-from aqa.executors import local_env
+from aqa.executors import local, local_env
 from aqa.executors._remote import CONTAINER_HF_CACHE, CONTAINER_REPO, repo_root
 from aqa.executors.local import LocalExecutor
 from aqa.logging_util import AqaError, ConfigError
@@ -85,6 +86,25 @@ def test_required_env_preflight_passes_when_set(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, {"type": "current"}, required_env=["AQA_NEED_A"])
     result = LocalExecutor().run(cfg, dry_run=True)
     assert result.state.value == "done"
+
+
+def test_local_executor_marks_pipeline_exception_failed(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, {"type": "current"})
+
+    def _fail(*args):
+        raise AqaError("evaluation failed")
+
+    monkeypatch.setattr(local, "run_pipeline", _fail)
+
+    with pytest.raises(AqaError, match="evaluation failed"):
+        LocalExecutor().run(cfg)
+
+    meta_path = tmp_path / "out" / "aqa_run.json"
+    assert json.loads(meta_path.read_text()) == {
+        "model": "org/m",
+        "state": "failed",
+    }
+    assert LocalExecutor().status(meta_path.parent).value == "failed"
 
 
 # ── venv dispatch ────────────────────────────────────────────────────────────

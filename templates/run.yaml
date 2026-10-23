@@ -19,7 +19,7 @@ quant:
   export_format: llm_compressor                # vllm 直加载用 llm_compressor
   ignore_layers: "<对着 index.json 逐条核对过的清单；注意子串陷阱>"
   # layer_config: {mlp.experts: {bits: 4, data_type: mx_fp}}   # 混合精度时
-  # static_kv_fp8: true                        # 仅 method: autoround
+  # static_kv_fp8: true                        # model_free 也可用，但仍会加载模型做 KV scale 校准
   # device_map: "0,1"                          # 默认多卡 auto
 
 # ---------- 评估（yaml_reference.md「eval」） ----------

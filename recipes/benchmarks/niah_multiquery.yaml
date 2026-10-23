@@ -13,11 +13,12 @@
 # -1 because no sample was generated at that length), so `scoring.metric` pins
 # the bucket this run asked for — keep it in sync with `max_seq_lengths`.
 #
-# Budget note: the generator reserves tokens_to_generate (128) INSIDE
-# max_seq_lengths, so a 131072 sample is prompt<=130944 raw tokens; after the
-# chat template adds its wrapper the total can land a few tokens over a
-# 131072-token engine window and get left-truncated. Give vLLM headroom
-# (max_model_len > max_seq_lengths) rather than truncating the haystack.
+# Budget note: the generator reserves tokens_to_generate (128) inside
+# max_seq_lengths. When using a completions server, send token IDs from the same
+# tokenizer with add_bos_token enabled; re-tokenizing raw text on the server can
+# shift the boundary prompt length and exceed the model's context window. lm_eval
+# appends gen_prefix after dataset sizing, so its API adapter may left-truncate
+# a few prompt tokens to keep the request within max_model_len.
 name: niah_multiquery
 harness: lm_eval
 type: generative
@@ -25,8 +26,8 @@ type: generative
 apply_chat_template: true      # instruct/thinking model: measure it in its chat format
 fewshot_as_multiturn: false    # 0-shot by construction, nothing to feed as prior turns
 num_fewshot: 0
-gen_kwargs: { max_gen_toks: 128 }   # matches the task's own generation budget
-batch_size: "4"                # 128k-token prompts: keep in-flight requests small
+gen_kwargs: { max_gen_toks: 128 }   # matches the task's internal reserve
+batch_size: "2"                # 128k-token prompts: keep in-flight requests small
 
 scoring:
   metric: "131072,none"

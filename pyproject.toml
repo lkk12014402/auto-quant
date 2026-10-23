@@ -53,6 +53,7 @@ evalscope = "aqa.eval.harness.evalscope:EvalScopeHarness"
 [project.entry-points."aqa.backends"]
 hf = "aqa.backends.hf:HfBackend"
 vllm = "aqa.backends.vllm:VllmBackend"
+local_completions = "aqa.backends.local_completions:LocalCompletionsBackend"
 
 [project.entry-points."aqa.sinks"]
 local_fs = "aqa.report.sinks:LocalFsSink"

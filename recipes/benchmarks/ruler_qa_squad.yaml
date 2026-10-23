@@ -16,7 +16,7 @@ apply_chat_template: true
 fewshot_as_multiturn: false
 num_fewshot: 0
 gen_kwargs: { max_gen_toks: 32 }
-batch_size: "4"
+batch_size: "2"
 
 scoring:
   metric: "131072,none"

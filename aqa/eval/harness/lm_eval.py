@@ -75,21 +75,46 @@ class LmEvalHarness:
             return recipe.type == "generative" or self.apply_chat_template
         return recipe.type == "generative" or recipe.apply_chat_template
 
+    def _use_chat_template(self, recipe: BenchmarkRecipe) -> bool:
+        if self.apply_chat_template is not None:
+            return self.apply_chat_template
+        if recipe.apply_chat_template is not None:
+            return recipe.apply_chat_template
+        return recipe.type == "generative"
+
+    def _use_fewshot_as_multiturn(self, recipe: BenchmarkRecipe) -> bool:
+        if self.fewshot_as_multiturn is not None:
+            requested = self.fewshot_as_multiturn
+        elif recipe.fewshot_as_multiturn is not None:
+            requested = recipe.fewshot_as_multiturn
+        else:
+            requested = self._is_generative(recipe)
+        return bool(requested and self._use_chat_template(recipe))
+
     def _batch_size(self, recipe: BenchmarkRecipe) -> str:
-        """Per-recipe batch size (``recipes/benchmarks/<task>.yaml``) or the global."""
+        """Explicit harness batch size, otherwise the per-task recipe default."""
+        if self.batch_size != "auto":
+            return self.batch_size
         return str(recipe.batch_size if recipe.batch_size is not None else self.batch_size)
 
     def group_key(self, recipe: BenchmarkRecipe) -> tuple:
         """Params that must match for two tasks to share one ``lm_eval`` call."""
         gen = self._is_generative(recipe)
-        fewshot_mt = (
-            self.fewshot_as_multiturn
-            if self.fewshot_as_multiturn is not None
-            else recipe.fewshot_as_multiturn or gen
+        chat_template = self._use_chat_template(recipe)
+        fewshot_mt = self._use_fewshot_as_multiturn(recipe)
+        gk = (
+            self.gen_kwargs
+            or recipe.gen_kwargs
+            or ({"max_gen_toks": self.gen_max_toks} if gen else {})
         )
-        gk = self.gen_kwargs or recipe.gen_kwargs or ({"max_gen_toks": self.gen_max_toks} if gen else {})
-        return (gen, bool(fewshot_mt), recipe.num_fewshot, self._batch_size(recipe),
-                tuple(sorted(gk.items())))
+        return (
+            gen,
+            chat_template,
+            fewshot_mt,
+            recipe.num_fewshot,
+            self._batch_size(recipe),
+            tuple(sorted(gk.items())),
+        )
 
     def build_command(
         self, recipes: BenchmarkRecipe | list[BenchmarkRecipe], model: str, backend, out_dir: Path
@@ -116,17 +141,19 @@ class LmEvalHarness:
         if lead.num_fewshot is not None:
             cmd += ["--num_fewshot", str(lead.num_fewshot)]
         if generative:
-            fewshot_mt = (
-                self.fewshot_as_multiturn
-                if self.fewshot_as_multiturn is not None
-                else lead.fewshot_as_multiturn or True
-            )
-            cmd += ["--apply_chat_template"]
-            if fewshot_mt:
+            if self._use_chat_template(lead):
+                cmd += ["--apply_chat_template"]
+            if self._use_fewshot_as_multiturn(lead):
                 cmd += ["--fewshot_as_multiturn"]
-            if backend.lm_eval_model_flag == "hf":
+            if backend.lm_eval_model_flag in {"hf", "local-completions"}:
                 gen = self.gen_kwargs or lead.gen_kwargs or {"max_gen_toks": self.gen_max_toks}
                 cmd += ["--gen_kwargs", ",".join(f"{k}={v}" for k, v in gen.items())]
+            elif backend.lm_eval_model_flag == "vllm":
+                # vLLM receives max_gen_toks via model_args; forward task overrides such as `until`.
+                gen = self.gen_kwargs or lead.gen_kwargs
+                task_gen = {k: v for k, v in gen.items() if k != "max_gen_toks"}
+                if task_gen:
+                    cmd += ["--gen_kwargs", ",".join(f"{k}={v}" for k, v in task_gen.items())]
         if self.limit is not None:
             cmd += ["--limit", str(self.limit)]
         if self.metadata:
@@ -183,9 +210,16 @@ class LmEvalHarness:
 
     def _result_for(self, recipe: BenchmarkRecipe, data: dict) -> BenchmarkResult:
         task_results = data.get("results", {})
-        task_data = task_results.get(recipe.task_name()) or next(iter(task_results.values()), {})
+        task_name = recipe.task_name()
+        task_data = task_results.get(task_name) or next(iter(task_results.values()), {})
         score, metric = _extract_metric(task_data, recipe)
-        n = int(data.get("n-samples", {}).get(recipe.task_name(), {}).get("effective", 0) or 0)
+        sample_data = data.get("n-samples", {}).get(task_name)
+        if sample_data is not None:
+            n = int(sample_data.get("effective", 0) or 0)
+        else:
+            # Aggregate tasks such as MMLU expose sample_len on their result row,
+            # but may be absent from lm_eval's top-level n-samples mapping.
+            n = int(task_results.get(task_name, {}).get("sample_len", 0) or 0)
         return BenchmarkResult(
             name=recipe.name, score=score, metric=metric, num_samples=n, raw=task_data
         )

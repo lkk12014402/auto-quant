@@ -73,6 +73,20 @@ def test_manifest_accelerator_reflects_ssh_family():
     assert acc["family"] == "xpu" and acc["num_devices"] == 3 and acc["remote"] is True
 
 
+def test_manifest_accelerator_reflects_local_gpu_count(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3,4,5,6,7")
+    cfg = _cfg(executor={"type": "local", "num_gpus": 8})
+
+    m = build_manifest(cfg, _result({"piqa": 1.0}), run_id="r")
+
+    assert m.environment["accelerator"] == {
+        "family": "cuda",
+        "num_devices": 8,
+        "executor": "local",
+        "remote": False,
+    }
+
+
 def test_write_manifest_roundtrip(tmp_path):
     cfg = _cfg()
     m = build_manifest(cfg, _result({"piqa": 0.8}), run_id="rid-9",

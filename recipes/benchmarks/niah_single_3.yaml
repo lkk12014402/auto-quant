@@ -1,0 +1,13 @@
+# RULER NIAH single-needle UUID retrieval.
+name: niah_single_3
+harness: lm_eval
+type: generative
+apply_chat_template: false
+fewshot_as_multiturn: false
+num_fewshot: 0
+gen_kwargs: { max_gen_toks: 128 }
+batch_size: "2"
+scoring:
+  metric: "131072,none"
+  prefer: ["131072,none"]
+description: RULER NIAH single UUID needle in an essay haystack; score the 128K context bucket.
