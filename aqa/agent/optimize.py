@@ -35,90 +35,10 @@ _LAYER_IDX_RE = re.compile(r"\.\d+\.")
 _TRAIL_IDX_RE = re.compile(r"\.\d+$")
 _CMD_BLOCK_RE = re.compile(r"```(?:autoround-cmd|bash|sh)?\s*\n(.*?)```", re.DOTALL)
 
-# Structured recipe document the agent is asked to produce.  Ported from
-# ``local_dispatch/agent/agent_optimize.py`` -- the readable 8-section analysis is
-# what makes the recommendation auditable/intuitive (not just a bare command).
-RECIPE_DOC_TEMPLATE = """# <model> AutoRound Quantization Recipe
-
-## 1. TL;DR
-- Recommended scheme / method(iters) / export format, one-line rationale each
-- Expected accuracy-retention rate
-- Final command: see section 6
-
-## 2. Model structure analysis
-- Architecture / model_type / parameter scale / layer count
-- Dense vs MoE (expert count, experts-per-token, fused 3-D expert or not)
-- Attention type: MHA / GQA / MLA(latent) / linear(Mamba) / sparse(DSA/indexer)
-- Actual router/gate module names (from the safetensors index)
-- Special modules: shared_experts / MTP / multimodal(vision/mm_projector) / indexer
-
-## 3. Module-name inventory (safetensors index, de-indexed)
-- Global / attention / MLP(dense) / MLP(MoE experts) / router / special prefixes
-
-## 4. AutoRound built-in handling for this structure
-- Layers this model_type auto-ignores/special-cases (e.g. `.gate` routers)
-
-## 5. Quantization config decision
-- scheme rationale (MXFP4 vs MXFP4_RCEIL vs MXFP8 vs W4A16/W8A16; MoE often RCEIL)
-- iters / method (RTN=0 / tuning=200 / model_free) vs model scale
-- Layers to KEEP FP16 with per-item rationale: lm_head, embedding, router/gate,
-  self_attn (MLA or FP4 case), shared_experts, vision_tower/mm_projector, linear_attn
-- layer_config mixed precision (e.g. experts->MXFP4, sensitive layers->MXFP8)
-- Quantization target confirmed: routed experts MUST be quantized (bulk of params)
-- Operator-fixed config review: for EACH hard constraint, confirm the command
-  honors it and state whether you agree; if you'd recommend a different value,
-  say so here as advice (the command still obeys the operator).
-
-## 6. Recommended command (auto_round CLI mode)
-```autoround-cmd
-auto-round --model_name <model> --scheme ... --output_dir <REQUIRED> --format ... ...
-```
-
-## 7. Accuracy expectation & validation
-- Expected retention, validation method (lm-eval vs BF16 baseline)
-
-## 8. Optional variants & caveats
-- More aggressive / more conservative options; known pitfalls (ignore-name vs actual
-  weight-name mismatch causing load errors, etc.)
-- If any operator-fixed value looks suboptimal for this model, record your
-  recommended alternative here (advisory only — the command above still obeys it).
-"""
-
-# Concrete auto_round CLI exemplars (tuning / model_free / mixed-precision).  Always
-# pass the model via ``--model_name`` (this auto-round build mis-parses positional).
-CLI_EXAMPLES = """### Example A -- MoE mixed precision + tuning (experts MXFP4, rest MXFP8)
-```bash
-auto-round --model_name <MODEL> --iters 200 --scheme MXFP8 \\
-  --ignore_layers vision_tower,lm_head,block_sparse_moe.gate,embed_tokens,self_attn,multi_modal_projector \\
-  --layer_config "{mlp.experts:{bits:4,data_type:mx_fp}}" \\
-  --format llm_compressor --output_dir <OUT> --device_map auto
-```
-
-### Example B -- huge MoE, pure RTN (iters=0), MXFP4_RCEIL
-```bash
-auto-round --model_name <MODEL> --scheme MXFP4_RCEIL --iters 0 \\
-  --fp_layers lm_head,mlp.gate,self_attn \\
-  --format llm_compressor --output_dir <OUT> --device_map auto
-```
-
-### Example C -- model_free (no model load, cheapest; fp8 source or NON-pre-packed huge weights)
-# NOTE: model_free only dequantizes fp8 sources. NEVER use --model_free when the
-# MoE experts are already MXFP4-packed (weights named `*_blocks`/`*_scales`, e.g.
-# gpt-oss): it cannot dequant that native layout and emits a broken checkpoint.
-# For such models use the model-load path (no --model_free) + --iters 0 (RTN).
-```bash
-auto-round --model_name <MODEL> --model_free \\
-  --scheme W4A16 --ignore_layers lm_head,embed_tokens,mlp.gate \\
-  --format auto_round --output_dir <OUT>
-```
-
-### Example D -- dense small model, tuning(iters=200)
-```bash
-auto-round --model_name <MODEL> --scheme MXFP4 --iters 200 \\
-  --fp_layers lm_head,self_attn \\
-  --format llm_compressor --output_dir <OUT> --device_map auto
-```
-"""
+# The recipe-document template and CLI exemplars live in the single canonical
+# domain document (``recipes/auto_round_recipe.md`` §5/§6/§7).  The prompt below
+# only adds per-run facts + operator constraints; it must never re-embed a second
+# copy of the domain rules (that was the source-drift bug this refactor closes).
 
 MOE_CONFIG_KEYS = (
     "num_experts_per_tok", "n_routed_experts", "num_local_experts",
@@ -243,13 +163,22 @@ def analyze_model(model_id: str, *, revision: str = "main",
 _RECIPE_KNOWLEDGE_PATH = Path(__file__).resolve().parent / "recipes" / "auto_round_recipe.md"
 
 
-def load_recipe_knowledge() -> str:
-    """Return the packaged distilled auto_round recipe knowledge (best-effort).
+def load_recipe_knowledge(knowledge_dir: str | Path | None = None,
+                          *, use_synced: bool = True) -> str:
+    """Return the canonical auto_round recipe knowledge (single source).
 
-    This is the reference corpus that grounds the agent's structured analysis in
-    real-world MXFP4/MoE recipes rather than guesswork.  Missing/unreadable asset
-    degrades gracefully to an empty string (the flow still works, just less informed).
+    Prefers the synced ``references/auto_round_recipe.md`` copy when a
+    ``knowledge_dir`` is supplied and ``use_synced`` is true; otherwise falls
+    back to the packaged document.  Missing/unreadable assets degrade to an
+    empty string (the flow still works, just less informed).
     """
+    if use_synced and knowledge_dir is not None:
+        synced = Path(knowledge_dir) / "references" / "auto_round_recipe.md"
+        try:
+            if synced.is_file():
+                return synced.read_text(encoding="utf-8")
+        except OSError:
+            pass
     try:
         return _RECIPE_KNOWLEDGE_PATH.read_text(encoding="utf-8")
     except OSError:
@@ -298,14 +227,19 @@ def build_optimize_prompt(a: ModelAnalysis, *, scheme: str, method: str,
         parts.append("## Recipe knowledge (auto_quant skill)\n" + skill_recipe)
     if user_context:
         parts.append("## Operator context (HIGH PRIORITY)\n" + user_context)
-    parts.append("## auto-round CLI examples\n" + CLI_EXAMPLES)
-    parts.append("## Recipe document structure (follow this exactly)\n" + RECIPE_DOC_TEMPLATE)
+    parts.append(
+        "## Recipe document template + CLI exemplars\n"
+        "They are §5/§6 of the recipe knowledge above; follow that structure and "
+        "those exemplars exactly.  The knowledge document is the single source — "
+        "do not expect a second copy in this prompt."
+    )
     parts.append(
         "## Hard requirements for your command\n"
         f"- MUST include `--output_dir {output_dir}` exactly.\n"
         f"- MUST include `--format {export_format}` and `--model_name {a.model_id}`.\n"
-        "- For MoE models: FP-protect the ROUTER/GATE only (never the routed experts).\n"
-        "  Only put experts back at low bits via an explicit `--layer_config`.\n"
+        "- Obey the safety rules in §7 of the recipe knowledge (routed experts "
+        "must be quantized; never FP-protect them without an explicit "
+        "`--layer_config` override).\n"
         "- Do not invent flags; use only real auto-round options.\n"
         "- Prefer the simplest command that is correct.\n\n"
         "## Output format (strict)\n"
@@ -575,6 +509,8 @@ def run_agent_optimize(
     recipe_knowledge: str | None = None,
     constraints: list[QuantConstraint] | None = None,
     log_dir: Path | None = None,
+    knowledge_dir: str | Path | None = None,
+    use_synced: bool = True,
 ) -> str | None:
     """Analyse the model, ask the agent for a command, validate it; None on any miss."""
     a = analyze_model(model, revision=revision, token=token)
@@ -582,7 +518,8 @@ def run_agent_optimize(
         _log.warning("agent-optimize: analysis failed: %s", a.error)
         return None
     if recipe_knowledge is None:
-        recipe_knowledge = load_recipe_knowledge()
+        recipe_knowledge = load_recipe_knowledge(
+            knowledge_dir=knowledge_dir, use_synced=use_synced)
     prompt = build_optimize_prompt(
         a, scheme=scheme, method=method, export_format=export_format,
         output_dir=output_dir, skill_recipe=skill_recipe, user_context=user_context,

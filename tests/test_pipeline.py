@@ -274,7 +274,7 @@ def test_baseline_goes_through_agent_fix_wrapper(tmp_path, monkeypatch):
     calls: list[str] = []
 
     def _fake_eval(run_cfg, model, eval_dir, out_dir, num_gpus, knowledge=None,
-                   run_id="", phase_name="evaluate", heal=None):
+                   run_id="", phase_name="evaluate", heal=None, session=None):
         calls.append(phase_name)
         return _result({"piqa": 0.8})
 
@@ -309,7 +309,8 @@ def test_pipeline_records_self_heal_in_manifest(tmp_path, monkeypatch):
         upload = None
 
     # Quantize provider path records a two-attempt agent fix into the tally.
-    def _fake_resolve(run_cfg, out_dir, num_gpus, knowledge=None, run_id="", heal=None):
+    def _fake_resolve(run_cfg, out_dir, num_gpus, knowledge=None, run_id="", heal=None,
+                      hot_start="", session=None):
         if heal is not None:
             heal.record_fix("quantize", FixResult(
                 ok=True, attempts=2, tier_index=0,
@@ -319,7 +320,7 @@ def test_pipeline_records_self_heal_in_manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(P, "_resolve_model", _fake_resolve)
 
     def _fake_eval(run_cfg, model, eval_dir, out_dir, num_gpus, knowledge=None,
-                   run_id="", phase_name="evaluate", heal=None):
+                   run_id="", phase_name="evaluate", heal=None, session=None):
         if heal is not None:
             heal.record_deterministic(phase_name, ["retry_oom"])
         return _result({"piqa": 0.8})

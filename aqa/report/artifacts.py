@@ -5,9 +5,9 @@ artifacts: required files exist, required section headers are present,
 ``report.md``'s gate verdict agrees with ``gate.json``, and
 ``model_card.md`` is present whenever the run publishes weights
 (``provider.upload.repo`` in the run yaml) and ends with a
-``Signed-off-by: Name <email>`` line.  Templates live in
-``templates/``; this module encodes their *contract* so a run can be
-checked instead of trusted.
+``Signed-off-by: Name <email>`` line.  Templates live in ``templates/``;
+this module encodes their *contract* so a run can be checked instead of
+trusted.
 """
 
 from __future__ import annotations
@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+
+from .model_card import signoff_problem
 
 
 @dataclass(frozen=True)
@@ -42,8 +44,6 @@ _SPECS: tuple[ArtifactSpec, ...] = (
 _YAML_SUFFIXES = {".yaml", ".yml"}
 _VERDICTS = ("GO", "NO-GO", "INCONCLUSIVE")
 _VERDICT_RE = re.compile(r"\b(?:NO-GO|INCONCLUSIVE|GO)\b")
-_SIGNOFF_RE = re.compile(r"^Signed-off-by: [^<>{}]*\S <([^<>@\s{}]+@[^<>@\s{}]+\.[^<>@\s{}]+)>$")
-_PLACEHOLDER_DOMAINS = ("example.com", "example.org", "example.net")
 
 
 @dataclass
@@ -69,8 +69,27 @@ def _missing_sections(text: str, keywords: tuple[str, ...]) -> list[str]:
 
 
 def _run_yamls(run_dir: Path) -> list[Path]:
-    return sorted(p for p in run_dir.iterdir()
-                  if p.is_file() and p.suffix in _YAML_SUFFIXES)
+    """Top-level YAMLs that look like run configs, not generated recipe manifests.
+
+    ``recipe.yaml`` and the ``<model.id>.yaml`` strict sidecar are output
+    artifacts; treating them as the run config would lose ``provider.upload``
+    detection and pollute the artifact report.
+    """
+    out: list[Path] = []
+    for path in sorted(p for p in run_dir.iterdir()
+                       if p.is_file() and p.suffix in _YAML_SUFFIXES):
+        if path.name == "recipe.yaml":
+            continue
+        try:
+            data = yaml.safe_load(path.read_text())
+        except (OSError, yaml.YAMLError):
+            out.append(path)
+            continue
+        if (isinstance(data, dict) and data.get("schema_version") == "1.0"
+                and isinstance(data.get("variants"), list)):
+            continue  # INC / aqa recipe manifest
+        out.append(path)
+    return out
 
 
 def _publishes_weights(yamls: list[Path]) -> bool | None:
@@ -115,17 +134,6 @@ def _routing_table_rows(text: str) -> list[list[str]] | None:
     return rows
 
 
-def _signoff_problem(text: str) -> str | None:
-    """Model cards are uploaded by bot accounts, so the last line must name the member."""
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    m = _SIGNOFF_RE.match(lines[-1]) if lines else None
-    if not m:
-        return "model_card.md 末行须为 `Signed-off-by: Name <email>`（身份每次向用户确认）"
-    if m.group(1).rsplit("@", 1)[1].lower() in _PLACEHOLDER_DOMAINS:
-        return "model_card.md 的 Signed-off-by 是占位身份，须填向用户确认的真实成员"
-    return None
-
-
 def check_artifacts(run_dir: str | Path) -> ArtifactsReport:
     """Check ``run_dir`` against the hard-flow owner-artifact contract."""
     run_dir = Path(run_dir)
@@ -156,9 +164,12 @@ def check_artifacts(run_dir: str | Path) -> ArtifactsReport:
 
     card = run_dir / "model_card.md"
     if card.exists():
-        problem = _signoff_problem(card.read_text(errors="replace"))
+        problem = signoff_problem(card.read_text(errors="replace"))
         if problem:
-            report.findings.append(Finding("error", problem))
+            # A draft card (no user-confirmed sign-off) is expected on
+            # non-publishing runs; only a publishing run is a hard error.
+            report.findings.append(Finding("error" if upload is True else "warn",
+                                           problem))
 
     report_md = run_dir / "report.md"
     if report_md.exists():

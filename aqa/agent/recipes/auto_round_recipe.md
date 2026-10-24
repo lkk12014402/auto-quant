@@ -127,8 +127,107 @@ lm_head（100%）> embedding > **router/gate（MoE 100%）** > self_attn（MLA �
 
 ## 4. 通用量化脚本
 
-见同目录 `auto_round_quantize.py`，支持：
+当前确定性命令构建见本仓 `aqa/quantize/__init__.py` 的 `build_autoround_command()`；选型流程见 `skills/quantize/SKILL.md`。以下为调研阶段脚本曾覆盖的能力（以现仓代码为准，不再引用不存在的脚本）：
 - 自动探测 dense / MoE（读 config 的 `num_experts_per_tok`/`n_routed_experts`/`num_local_experts` 等字段）；
 - MoE 自动扫描 router/gate 层名（`.gate`、`router`、`gate_proj` 等后缀）并加入 FP16 保护；
 - 内置 `dense` / `moe` / `moe-aggressive` 三档 ignore 预设，可用 `--extra_ignore_layers` / `--layer_config_json` 覆盖；
 - 一键 MXFP4/MXFP4_RCEIL/W4A16，llm_compressor 导出。
+
+## 5. Agent 输出模板（optimize prompt 的单一来源）
+
+> 下面是 `aqa.agent.optimize` 要求 agent 产出的结构化 recipe 文档骨架。代码只拼接
+> 本次 run 的动态事实与约束，不再内嵌第二份领域规则。
+
+```markdown
+# <model> AutoRound Quantization Recipe
+
+## 1. TL;DR
+- Recommended scheme / method(iters) / export format, one-line rationale each
+- Expected accuracy-retention rate
+- Final command: see section 6
+
+## 2. Model structure analysis
+- Architecture / model_type / parameter scale / layer count
+- Dense vs MoE (expert count, experts-per-token, fused 3-D expert or not)
+- Attention type: MHA / GQA / MLA(latent) / linear(Mamba) / sparse(DSA/indexer)
+- Actual router/gate module names (from the safetensors index)
+- Special modules: shared_experts / MTP / multimodal(vision/mm_projector) / indexer
+
+## 3. Module-name inventory (safetensors index, de-indexed)
+- Global / attention / MLP(dense) / MLP(MoE experts) / router / special prefixes
+
+## 4. AutoRound built-in handling for this structure
+- Layers this model_type auto-ignores/special-cases (e.g. `.gate` routers)
+
+## 5. Quantization config decision
+- scheme rationale (MXFP4 vs MXFP4_RCEIL vs MXFP8 vs W4A16/W8A16; MoE often RCEIL)
+- iters / method (RTN=0 / tuning=200 / model_free) vs model scale
+- Layers to KEEP FP16 with per-item rationale (see §3.2/§3.3)
+- layer_config mixed precision (e.g. experts->MXFP4, sensitive layers->MXFP8)
+- Quantization target confirmed: routed experts MUST be quantized (bulk of params)
+- Operator-fixed config review: for EACH hard constraint, confirm the command
+  honors it and state whether you agree; if you'd recommend a different value,
+  say so here as advice (the command still obeys the operator).
+
+## 6. Recommended command (auto_round CLI mode)
+```autoround-cmd
+auto-round --model_name <model> --scheme ... --output_dir <REQUIRED> --format ... ...
+```
+
+## 7. Accuracy expectation & validation
+- Expected retention, validation method (lm-eval vs BF16 baseline)
+
+## 8. Optional variants & caveats
+- More aggressive / more conservative options; known pitfalls (ignore-name vs actual
+  weight-name mismatch causing load errors, etc.)
+- If any operator-fixed value looks suboptimal for this model, record your
+  recommended alternative here (advisory only — the command above still obeys it).
+```
+
+## 6. auto-round CLI exemplars（optimize prompt 的单一来源）
+
+> 以下示例只用于展示参数组合；**模型-specific 决策仍以 §2/§3 的规则和本次结构分析为准**。
+> 任何示例都不得覆盖用户显式配置（`build_quant_constraints` 会硬校验）。
+
+### Example A -- MoE mixed precision + tuning (experts MXFP4, rest MXFP8)
+```bash
+auto-round --model_name <MODEL> --iters 200 --scheme MXFP8 \
+  --ignore_layers vision_tower,lm_head,block_sparse_moe.gate,embed_tokens,self_attn,multi_modal_projector \
+  --layer_config "{mlp.experts:{bits:4,data_type:mx_fp}}" \
+  --format llm_compressor --output_dir <OUT> --device_map auto
+```
+
+### Example B -- huge MoE, pure RTN (iters=0), MXFP4_RCEIL
+```bash
+auto-round --model_name <MODEL> --scheme MXFP4_RCEIL --iters 0 \
+  --fp_layers lm_head,mlp.gate,self_attn \
+  --format llm_compressor --output_dir <OUT> --device_map auto
+```
+
+### Example C -- model_free (no model load, cheapest; fp8 source or NON-pre-packed huge weights)
+> **警告**：`model_free` 只 dequant fp8 源。MoE experts 已以原生 MX 打包
+>（权重名 `*_blocks`/`*_scales`，典型 gpt-oss）时禁用，否则会导出坏 checkpoint。
+> 这类模型走 model-load 路径（不加 `--model_free`）+ `--iters 0`（RTN）。
+
+```bash
+auto-round --model_name <MODEL> --model_free \
+  --scheme W4A16 --ignore_layers lm_head,embed_tokens,mlp.gate \
+  --format auto_round --output_dir <OUT>
+```
+
+### Example D -- dense small model, tuning(iters=200)
+```bash
+auto-round --model_name <MODEL> --scheme MXFP4 --iters 200 \
+  --fp_layers lm_head,self_attn \
+  --format llm_compressor --output_dir <OUT> --device_map auto
+```
+
+## 7. 硬安全规则（prompt 与 validator 共享）
+
+1. **routed experts 必须量化**——它们是 MoE 的参数主体；不要用 `--fp_layers`/`--ignore_layers`
+   把 experts 整体排除，除非用 `--layer_config` 明确给 experts 指定低比特。
+2. **router/gate、lm_head、embedding、MLA attention、vision tower/mm_projector、
+   shared_experts（保守档）保高精度**；普通 GQA 的 self_attn 可按 §3.2 决定。
+3. **`--model_free` 不适用于原生 MX 打包的 experts**（见 Example C / §1.4）。
+4. 用户显式配置是硬约束：scheme/method/iters/ignore/layer_config/algorithm 等由
+   `build_quant_constraints()` 逐条校验，agent 只能在其范围内优化。

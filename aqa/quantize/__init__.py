@@ -102,6 +102,23 @@ def run_quant_command(cmd: str | list[str], output_dir: Path) -> Path:
     return _run_autoround(argv, output_dir)
 
 
+def run_quant_script(script: str, output_dir: Path) -> Path:
+    """Run a reproduced manifest's quantization script verbatim under ``bash``.
+
+    Unlike :func:`run_quant_command` (one argv, no shell), this supports the
+    INC recipe's multi-line shell scripts, environment prefixes and line
+    continuations.  Callers (``aqa reproduce``) only pass a script the user
+    explicitly asked to replay.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    script_path = output_dir / "reproduce_quant.sh"
+    script_path.write_text("set -euo pipefail\n" + script.rstrip() + "\n",
+                           encoding="utf-8")
+    needs_autoround = ("auto-round" in script) or ("auto_round" in script)
+    return _run_autoround(["bash", str(script_path)], output_dir,
+                          require_autoround=needs_autoround)
+
+
 def resolve_device_map(cfg: QuantConfig, num_gpus: int) -> str | None:
     """The effective ``--device_map`` value: explicit config, else auto on >1 GPU."""
     return cfg.device_map or ("auto" if num_gpus > 1 else None)
@@ -119,9 +136,10 @@ def ensure_device_map(cmd: str, cfg: QuantConfig, num_gpus: int) -> str:
     return f"{cmd} --device_map {shlex.quote(device_map)}"
 
 
-def _run_autoround(cmd: list[str], output_dir: Path) -> Path:
+def _run_autoround(cmd: list[str], output_dir: Path,
+                   *, require_autoround: bool = True) -> Path:
     _log.info("[CMD] %s", " ".join(shlex.quote(c) for c in cmd))
-    if shutil.which("auto-round") is None:
+    if require_autoround and shutil.which("auto-round") is None:
         raise AqaError("auto-round is not installed; `pip install auto-round`")
     log_path = output_dir / "quantize.log"
     from ..proc import stream_subprocess

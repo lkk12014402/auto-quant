@@ -83,6 +83,8 @@ def build_fix_prompt(
     prior_state: str = "",
     prior_diff: str = "",
     trajectories: str = "",
+    state_seed: str = "",
+    allowed_actions: str = "",
 ) -> str:
     """Assemble the full fix prompt for one attempt."""
     parts: list[str] = []
@@ -90,6 +92,27 @@ def build_fix_prompt(
         f"The `{phase_name}` phase failed (attempt {attempt}). Root-cause it from the "
         f"traceback below and fix the NARROWEST layer that owns the bug."
     )
+
+    if state_seed:
+        parts.append(
+            "## Run state (AUTHORITATIVE mission — re-seeded from session state, NOT transcript)\n"
+            "This is the single source of truth for what this run is doing and what has already "
+            "been decided. It is re-derived from `session/state.json` each attempt so a truncated "
+            "or cross-tier transcript cannot drift you off-mission. Honor prior decisions and the "
+            "current best; do not relitigate them:\n"
+            f"{state_seed}"
+        )
+
+    if allowed_actions:
+        parts.append(
+            "## Allowed actions in THIS phase (phase-action guard — stay inside this set)\n"
+            "The Coordinator owns the phase sequence; while it is in the current phase you may "
+            "ONLY propose the actions listed below. Do NOT re-quantize, re-run the gate, publish, "
+            "or jump phases from here — those belong to other phases and the Coordinator decides "
+            "when to move. If the real fix needs an action not listed, say so in your notes "
+            "instead of attempting it:\n"
+            f"{allowed_actions}"
+        )
 
     if user_context:
         parts.append(

@@ -1,6 +1,6 @@
 # run.yaml 字段参考（schema 真源：`aqa/config.py`，extra=forbid，写错字段直接报错）
 
-顶层：`model`（必填，HF id 或本地路径）+ `provider / quant / eval / gate / agent / executor / output / hooks`。
+顶层：`model`（必填，HF id 或本地路径）+ `provider / quant / eval / gate / agent / executor / output / reproduce / hooks`。
 支持 `_base_: 相对路径.yaml`（深合并继承，子键覆盖，`null` 删除继承键）与
 `${VAR}` / `${VAR:-default}` 环境变量展开。
 
@@ -9,7 +9,22 @@
 | 字段 | 类型/默认 | 说明 |
 |---|---|---|
 | `type` | `pretrained` | `pretrained`（原样评估）/ `quantize`（先量化）/ `endpoint`（已部署的 OpenAI 兼容端点） |
-| `upload.repo` / `upload.token_env` | — | 配了才把量化权重推 HF model repo（自动模型卡） |
+| `upload.repo` / `upload.token_env` | — | 配了才把量化权重推 HF model repo |
+| `upload.signoff` | — | 模型卡末行的 `Name <email>`，必须是用户当次确认的身份；缺失时仍写 draft 卡（占位符），但跳过上传 |
+| `upload.model_card` | true | 默认写卡（无 signoff 为 draft）；设为 false 是 legacy opt-out，不生成卡 |
+
+## reproduce（RFC 0002 §5；通常由 `aqa reproduce` 自动生成，不建议手写）
+
+| 字段 | 类型/默认 | 说明 |
+|---|---|---|
+| `reproduce.manifest` | str | 被复现的 INC `recipe.yaml` 路径 |
+| `reproduce.variant` | str | 变体 id（`<family>-vN`） |
+| `reproduce.mode` | `full` | `full` = 量化+评估；`eval-only` = 只评估既有 checkpoint |
+| `reproduce.tolerance.abs` / `.rel` | 0.01 / 0.02 | 评估数值复现容差（abs 或 rel 任一满足） |
+| `reproduce.on_input_mismatch` | `warn` | `warn` = 记录并继续；`fail` = 直接判 not_reproduced |
+
+> 设了 `reproduce:` 的 run 会在 CLOSE 后追加只读 `VERIFY` 相位，写
+> `reproduction_report.json`；普通 `aqa run` 不要手写这一节（用 `aqa reproduce`）。
 
 ## quant（量化，等价于 provider.quantize；顶层写法自动折叠进 provider）
 
@@ -27,7 +42,7 @@
 | `enable_alg_ext` | false | `--enable_alg_ext`（仅 auto_round） |
 | `hadamard_type` | None | hadamard/random_hadamard/quarot_hadamard |
 | `opt_rtn` | None | true→`--enable_opt_rtn`，false→`--disable_opt_rtn` |
-| `static_kv_fp8` / `static_attention_fp8` | false | FP8 KV cache / FP8 attention。当前 schema 允许 `static_kv_fp8` 搭配 `model_free` 或 `autoround`；`model_free + static_kv_fp8` 仍会加载模型并执行 KV scale 校准 forward。`static_attention_fp8` 仍需 `method: autoround` |
+| `static_kv_fp8` / `static_attention_fp8` | false | FP8 KV cache / FP8 attention。`static_kv_fp8` 可配 `model_free`，但仍会加载模型做 KV-scale 校准；`static_attention_fp8` 需要 `method: autoround` |
 | `device_map` | None | 默认多卡 auto；可显式 `"0,1"` 等 |
 | `extra_args` | [] | 原样透传 CLI 的逃生口 |
 | `recipe_sweep` / `recipe_sweep_candidates` | false / None | 多候选对比（`aqa sweep`），见 AGENTS.md §3.2 |
@@ -37,7 +52,7 @@
 | 字段 | 类型/默认 | 说明 |
 |---|---|---|
 | `benchmarks` | `[piqa, mmlu, hellaswag]` | 任务名列表；逐任务参数在 `recipes/benchmarks/<task>.yaml` |
-| `backend` | `hf` | `hf` / `vllm` / `local_completions` / `vllm_xpu` / `vllm_omni`（lm_eval 用；`local_completions` 通过本机已有的 OpenAI-compatible completions 服务评估，默认 `http://127.0.0.1:8000/v1/completions`；evalscope 自起 vllm serve） |
+| `backend` | `hf` | `hf` / `vllm` / `vllm_xpu` / `vllm_omni`（lm_eval 用；evalscope 自起 vllm serve） |
 | `harness` | `lm_eval` | 裸任务的默认 harness：`lm_eval` / `evalscope` / `native` |
 | `batch_size` | `auto` | 全局默认；recipe 可逐任务覆盖 |
 | `baseline` | false | true 先测 bf16 原模型（gate 对比前提） |
@@ -47,7 +62,7 @@
 | `thinking` | `auto` | thinking 双模式：`auto`（检出即双测）/ `both` / `on` / `off` |
 | `thinking_off_model_args` | `{enable_thinking: false}` | "关"模式的传参（特殊模型覆盖） |
 | `lm_eval.model_args` | {} | backend 额外参数（`reasoning_parser`/`max_num_seqs`/`kv_cache_dtype` 等） |
-| `lm_eval.gen_kwargs` / `apply_chat_template` / `fewshot_as_multiturn` / `seed` / `group` | — | 生成参数 / recipe 模板设置覆盖（`null` 沿用 recipe；显式 `false` 可关闭 generative task 的模板默认值）/ 种子(42) / 合并调用(true)。vLLM 的 `max_gen_toks` 由 `model_args` 传入，额外参数（如 `until`）通过 `--gen_kwargs` 覆盖 task recipe；fewshot-as-multiturn 仅在 chat template 启用时传入 |
+| `lm_eval.gen_kwargs` / `apply_chat_template` / `fewshot_as_multiturn` / `seed` / `group` | — | 生成参数 / 模板覆盖 / 种子(42) / 合并调用(true) |
 | `diffusion.*` | — | diffusion harness 参数（步数/guidance/分辨率/scorer 等） |
 | `evalscope` | {} | evalscope harness 透传：`repeats` / `eval_batch_size` / `generation_config` / `dataset_args` / `server_args` / `port` / `startup_timeout` |
 

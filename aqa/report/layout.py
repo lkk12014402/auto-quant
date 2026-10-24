@@ -28,6 +28,7 @@ class LayoutEntry:
     when: str
     sink: bool
     desc: str
+    phase: str = ""
 
 
 @dataclass
@@ -45,7 +46,8 @@ class InspectReport:
 def load_layout(spec_path: Path | None = None) -> list[LayoutEntry]:
     data = yaml.safe_load((spec_path or _SPEC_PATH).read_text())
     return [LayoutEntry(path=e["path"], kind=e["kind"], when=e["when"],
-                        sink=bool(e.get("sink", True)), desc=e.get("desc", ""))
+                        sink=bool(e.get("sink", True)), desc=e.get("desc", ""),
+                        phase=e.get("phase", "") or "")
             for e in data["layout"]]
 
 
@@ -59,6 +61,14 @@ def _conditions(run_dir: Path) -> set[str]:
         pass
     if state == "done":
         conds.add("done")
+    try:
+        manifest = json.loads((run_dir / "run_manifest.json").read_text())
+        if (manifest.get("provider") or {}).get("upload"):
+            conds.add("upload")
+        if manifest.get("reproduction"):
+            conds.add("reproduce")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
     for name, cond in (
         ("quantized", "quantize"), ("eval_thinking_off", "thinking_dual"),
         ("baseline", "baseline"), ("baseline_thinking_off", "thinking_dual"),
@@ -71,6 +81,14 @@ def _conditions(run_dir: Path) -> set[str]:
     if any(p.is_dir() and (p / "run_meta.json").is_file()
            for p in run_dir.iterdir() if p.is_dir()):
         conds.add("local_fs_sink")
+    # P1+ session runs: machine-readable phase artifacts are only contracted
+    # when the run actually went through the session state machine.
+    if (run_dir / "session").exists():
+        conds.add("session")
+        if "quantize" in conds:
+            conds.add("session_quantize")
+        if "done" in conds:
+            conds.add("session_done")
     return conds
 
 
@@ -107,10 +125,37 @@ def inspect_run_dir(run_dir: str | Path,
     return report
 
 
+_PHASE_ORDER = ("PLAN", "ANALYZE", "ENV", "BASELINE", "QUANT",
+                "EVAL", "GATE", "CLOSE", "VERIFY", "PUBLISH")
+
+
 def format_report(report: InspectReport) -> str:
-    lines = [f"run dir: {report.run_dir}", f"status: {'OK' if report.ok else 'INCOMPLETE'}"]
+    lines = [f"run dir: {report.run_dir}",
+             f"status: {'OK' if report.ok else 'INCOMPLETE'}"]
+
+    # Per-phase roll-up: how many contracted artifacts each phase has /
+    # is missing (not_applicable entries are excluded — they don't apply here).
+    counts: dict[str, list[int]] = {}
+    for e in report.present:
+        counts.setdefault(e.phase or "", [0, 0])[0] += 1
+    for e in report.missing:
+        counts.setdefault(e.phase or "", [0, 0])[1] += 1
+    if counts:
+        lines.append("phases:")
+        ordered = [p for p in _PHASE_ORDER if p in counts]
+        ordered += [p for p in counts if p and p not in _PHASE_ORDER]
+        if "" in counts:
+            ordered.append("")
+        for phase in ordered:
+            present, missing = counts[phase]
+            label = phase or "(cross)"
+            tail = f"{present} present" + (f", {missing} MISSING" if missing else "")
+            lines.append(f"  {label:<9}: {tail}")
+
     for tag, entries in (("present", report.present),
                          ("MISSING", report.missing)):
         for e in entries:
-            lines.append(f"  [{tag:<7}] {e.path:<28} ({e.when}) {e.desc.split('；')[0].split('——')[0]}")
+            ph = f"{e.phase}/" if e.phase else ""
+            lines.append(f"  [{tag:<7}] {ph}{e.path:<28} ({e.when}) "
+                         f"{e.desc.split('；')[0].split('——')[0]}")
     return "\n".join(lines)

@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>aqa · Reproducible Quantization Pipeline — Phase &amp; Artifact Contract (v1)</title>
+<style>
+  :root{
+    --bg:#0b1020; --bg2:#10182e; --panel:#141d33; --panel2:#18233d;
+    --ink:#e8eefb; --muted:#9fb0cf; --faint:#6c7ea0;
+    --line:#26324f; --line2:#334163;
+    --aqa:#4f8cff; --aqa-d:#2f6fe6;
+    --teal:#2dd4bf; --green:#34d399; --yellow:#fbbf24; --orange:#fb923c;
+    --red:#f87171; --purple:#c084fc; --pink:#f472b6;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:"Inter",system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:var(--sans); color:var(--ink);
+    background:radial-gradient(1200px 700px at 80% -10%,#1b2951 0%,transparent 60%),
+               radial-gradient(1000px 600px at -10% 110%,#17233f 0%,transparent 55%),
+               var(--bg);
+    overflow:hidden;
+  }
+  .deck{height:100vh;width:100vw;position:relative}
+  .slide{
+    position:absolute;inset:0;display:none;flex-direction:column;
+    padding:46px 64px 72px;animation:fade .32s ease;overflow:auto;
+  }
+  .slide.active{display:flex}
+  @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  h1,h2,h3{margin:0;line-height:1.15;font-weight:700}
+  h2.title{font-size:30px;letter-spacing:-.4px}
+  h2.title .n{color:var(--aqa);font-variant-numeric:tabular-nums;margin-right:12px}
+  .sub{color:var(--muted);font-size:15px;margin-top:8px;max-width:1100px}
+  .kicker{font-family:var(--mono);font-size:12.5px;letter-spacing:2px;text-transform:uppercase;color:var(--aqa);margin-bottom:14px}
+  hr.rule{border:0;border-top:1px solid var(--line);margin:18px 0}
+  .body{margin-top:22px;flex:1}
+  p{line-height:1.5}
+  code,.mono{font-family:var(--mono)}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px}
+  .card.accent{border-left:3px solid var(--aqa)}
+  .card.green{border-left:3px solid var(--green)}
+  .card.purple{border-left:3px solid var(--purple)}
+  .card.teal{border-left:3px solid var(--teal)}
+  .card.yellow{border-left:3px solid var(--yellow)}
+  .card.red{border-left:3px solid var(--red)}
+  .card h3{font-size:16px;margin-bottom:8px}
+  .card p,.card li{font-size:13.5px;color:var(--muted);line-height:1.5}
+  .card ul{margin:6px 0 0;padding-left:18px}
+  .lead{font-size:16px;color:var(--ink);line-height:1.55}
+  .badge{display:inline-block;font-family:var(--mono);font-size:11px;padding:2px 9px;border-radius:999px;border:1px solid var(--line2);color:var(--muted);letter-spacing:.3px}
+  .b-blue{background:rgba(79,140,255,.14);color:#9ec1ff;border-color:rgba(79,140,255,.4)}
+  .b-green{background:rgba(52,211,153,.13);color:#8ef0cc;border-color:rgba(52,211,153,.4)}
+  .b-yellow{background:rgba(251,191,36,.13);color:#f6d58a;border-color:rgba(251,191,36,.4)}
+  .b-orange{background:rgba(251,146,60,.13);color:#f7bf93;border-color:rgba(251,146,60,.4)}
+  .b-red{background:rgba(248,113,113,.13);color:#f3a7a7;border-color:rgba(248,113,113,.4)}
+  .b-purple{background:rgba(192,132,252,.13);color:#dcb8fe;border-color:rgba(192,132,252,.4)}
+  .b-teal{background:rgba(45,212,191,.13);color:#9af0e4;border-color:rgba(45,212,191,.4)}
+  table{width:100%;border-collapse:separate;border-spacing:0;font-size:13px;margin-top:4px}
+  thead th{background:var(--panel2);color:#cdd9f3;text-align:left;font-weight:600;padding:9px 12px;font-size:12px;letter-spacing:.3px}
+  thead th:first-child{border-top-left-radius:10px}
+  thead th:last-child{border-top-right-radius:10px}
+  tbody td{padding:8px 12px;border-top:1px solid var(--line);color:var(--muted);vertical-align:top}
+  tbody tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+  tbody td .mono{color:#cfe0ff;font-size:12px}
+  pre{background:#0a1226;border:1px solid var(--line2);border-radius:12px;padding:14px 16px;overflow:auto;margin:0}
+  pre code{font-family:var(--mono);font-size:12.5px;line-height:1.55;color:#cfe0ff}
+  .k{color:#7fb0ff}.s{color:#9af0b4}.c{color:#6c7ea0;font-style:italic}.num{color:#f6d58a}.p{color:#dcb8fe}
+  .flow{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;margin-top:8px}
+  .step{background:var(--panel);border:1px solid var(--line2);border-radius:12px;padding:10px 14px;min-width:96px;text-align:center}
+  .step .nm{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--ink)}
+  .step .ar{font-size:10.5px;color:var(--faint);margin-top:3px}
+  .step.cond{border-style:dashed;opacity:.92}
+  .arrow{display:flex;align-items:center;color:var(--aqa);font-size:18px;padding:0 8px}
+  .io{display:grid;grid-template-columns:70px 1fr;gap:6px 12px;font-size:13.5px;align-items:start}
+  .io .lbl{font-family:var(--mono);font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.5px;padding-top:2px}
+  .io .val{color:var(--muted);line-height:1.5}
+  .io .val b{color:var(--ink);font-weight:600}
+  .keymsg{margin-top:14px;background:linear-gradient(90deg,rgba(79,140,255,.12),transparent);border:1px solid rgba(79,140,255,.3);border-left:3px solid var(--aqa);border-radius:10px;padding:12px 16px;font-size:14px;color:#dbe6ff}
+  .keymsg::before{content:"🔑  ";}
+  .pill-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+  .tiny{font-size:12px;color:var(--faint)}
+  .footer{position:absolute;left:0;right:0;bottom:0;height:46px;display:flex;align-items:center;justify-content:space-between;padding:0 24px;border-top:1px solid var(--line);background:rgba(10,16,34,.6);backdrop-filter:blur(6px)}
+  .footer .brand{font-family:var(--mono);font-size:12px;color:var(--faint)}
+  .footer .brand b{color:var(--aqa)}
+  .dots{display:flex;gap:6px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--line2);cursor:pointer;transition:.2s}
+  .dot.on{background:var(--aqa);transform:scale(1.25)}
+  .counter{font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .progress{position:absolute;top:0;left:0;height:3px;background:linear-gradient(90deg,var(--aqa),var(--teal));transition:width .3s}
+  /* title slide */
+  .title-slide{justify-content:center}
+  .title-slide .big{font-size:50px;letter-spacing:-1.2px;line-height:1.05}
+  .title-slide .big .hl{background:linear-gradient(90deg,var(--aqa),var(--teal));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .title-slide .tag{font-size:19px;color:var(--muted);margin-top:18px;max-width:900px;line-height:1.5}
+  .meta-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:28px}
+  .layer{display:flex;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:8px}
+  .layer .tag2{font-family:var(--mono);font-size:11px;min-width:58px;text-align:center;padding:3px 8px;border-radius:6px;background:var(--panel2);color:var(--muted)}
+  .layer .txt{font-size:13px;color:var(--muted)}
+  .layer .txt b{color:var(--ink)}
+  .two-col{columns:2;column-gap:28px}
+  ul.clean{list-style:none;padding:0;margin:0}
+  ul.clean li{padding:6px 0;border-bottom:1px dashed var(--line);font-size:13.5px;color:var(--muted)}
+  ul.clean li b{color:var(--ink)}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--faint);margin-top:10px}
+  .nav-hint{position:absolute;right:24px;top:22px;font-family:var(--mono);font-size:11px;color:var(--faint)}
+</style>
+</head>
+<body>
+<div class="progress" id="prog"></div>
+<div class="deck" id="deck">
+
+<!-- 1 TITLE -->
+<section class="slide active title-slide">
+  <div class="kicker">aqa · auto-quant · RFC 0001</div>
+  <div class="big">Reproducible Quantization<br>as a <span class="hl">Phase &amp; Artifact Contract</span></div>
+  <div class="tag">每一次 <code>aqa run</code> 都是一台确定性状态机：九个相位、每个相位<b>固定的输入 → 过程 → 输出 → 产物 → 产物内容 schema</b>。产物即契约，契约即可复现、可恢复、可复用。</div>
+  <div class="meta-row">
+    <span class="badge b-blue">P0–P4 + S3 shipped</span>
+    <span class="badge b-green">Hyperloom-inspired</span>
+    <span class="badge b-purple">session = manifest · state · events</span>
+    <span class="badge b-teal">aqa inspect = artifact gate</span>
+    <span class="badge b-yellow">resume-safe</span>
+  </div>
+  <div class="nav-hint">← / →  ·  Space  ·  click edges</div>
+</section>
+
+<!-- 2 WHY / MAP -->
+<section class="slide">
+  <div class="kicker">Motivation</div>
+  <h2 class="title"><span class="n">01</span>从「不可控的 agent 跑批」到「可复现的状态机」</h2>
+  <div class="sub">优化前：中间产物散落在 executor log / transcript 里，结构不固定、知识无法复用、session 无法 resume。优化后对标 Hyperloom 的六根支柱，把过程结构化、固定化。</div>
+  <div class="body grid-2">
+    <div>
+      <table>
+        <thead><tr><th>支柱</th><th>Hyperloom 对应</th><th>aqa 落地</th></tr></thead>
+        <tbody>
+          <tr><td><b>S1</b> Session triplet</td><td>session/manifest·state·events</td><td class="mono">aqa/session/{manifest,state,events}.py</td></tr>
+          <tr><td><b>S2</b> Resume</td><td>manifest 缺失即拒绝</td><td class="mono">should_skip() + load_session_manifest()</td></tr>
+          <tr><td><b>S3</b> Phase machine + guard</td><td>相位→允许动作</td><td class="mono">aqa/session/actions.py + requant loop</td></tr>
+          <tr><td><b>S4</b> Recipe KB</td><td>验证过的配方复用</td><td class="mono">aqa/agent/recipe_kb.py</td></tr>
+          <tr><td><b>S5</b> Critic / PolicyGate</td><td>自愈 + 策略护栏</td><td class="mono">aqa/agent/{critic,policy_gate}.py</td></tr>
+          <tr><td><b>S6</b> Patch / CLI 上行</td><td>改动可回收</td><td class="mono">capture/publish-patch（部分）</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card accent">
+      <h3>一句话设计原则</h3>
+      <p class="lead">把「agent 做了什么」从不可审计的对话里<b>搬进有序、机器可读的产物流</b>。</p>
+      <ul>
+        <li>每个相位的产物<b>提前约定</b>（<code>layout.yaml</code> 为单一事实源）。</li>
+        <li>产物带 <code>schema_version / run_id / created_at</code>，可 diff、可校验。</li>
+        <li><code>aqa inspect</code> 把「产物是否齐全/合法」变成一道<b>硬门</b>。</li>
+        <li>没有产物 = 相位没完成；resume 据此决定跳过还是重跑。</li>
+      </ul>
+      <div class="keymsg">能把每个相位的输入/输出说清楚，代码才稳。本 deck 即该规格。</div>
+    </div>
+  </div>
+</section>
+
+<!-- 3 PHASE MACHINE OVERVIEW -->
+<section class="slide">
+  <div class="kicker">The machine</div>
+  <h2 class="title"><span class="n">02</span>九相位状态机 · 运行时计划是条件子集</h2>
+  <div class="sub"><code>build_phase_plan()</code> 按 run.yaml 解析出本次运行的有序相位。ANALYZE/ENV/PLAN 是 <code>aqa run</code> 启动时确定性写入的前置相位；其余相位按条件进入。</div>
+  <div class="body">
+    <div class="flow">
+      <div class="step"><div class="nm">ANALYZE</div><div class="ar">model intent</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="nm">ENV</div><div class="ar">stack lock</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="nm">PLAN</div><div class="ar">open session</div></div>
+      <div class="arrow">→</div>
+      <div class="step cond"><div class="nm">BASELINE</div><div class="ar">if eval.baseline</div></div>
+      <div class="arrow">→</div>
+      <div class="step cond"><div class="nm">QUANT</div><div class="ar">if quantize</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="nm">EVAL</div><div class="ar">always</div></div>
+      <div class="arrow">→</div>
+      <div class="step cond"><div class="nm">GATE</div><div class="ar">if gate cfg</div></div>
+      <div class="arrow">→</div>
+      <div class="step"><div class="nm">CLOSE</div><div class="ar">always</div></div>
+      <div class="arrow">→</div>
+      <div class="step cond"><div class="nm">PUBLISH</div><div class="ar">if upload</div></div>
+    </div>
+    <div style="margin-top:14px" class="grid-3">
+      <div class="card teal"><h3>前置（确定性）</h3><p><code>ANALYZE · ENV · PLAN</code> —— 只读 config.json、冻结软硬件栈、打开 session 三件套，不碰权重、不联网、不占卡。</p></div>
+      <div class="card accent"><h3>运行时（条件）</h3><p><code>BASELINE? · QUANT? · EVAL · GATE? · CLOSE · PUBLISH?</code> —— 每个都被 <code>enter→run→done</code> 包裹，对 <code>session/</code> 留痕。</p></div>
+      <div class="card yellow"><h3>内循环（opt-in）</h3><p><code>GATE → QUANT</code> 有界回环：gate 未 GO 且开启 requant 时，在 <code>requant/cycle_n/</code> 里重试并择优晋升。</p></div>
+    </div>
+    <div class="legend">
+      <span>实线框 = 总是进入</span><span>虚线框 = 条件进入</span><span>相位名 = <code>Phase</code> 枚举值</span>
+    </div>
+  </div>
+</section>
+
+<!-- 4 PHASE LIFECYCLE CONTRACT -->
+<section class="slide">
+  <div class="kicker">Lifecycle contract</div>
+  <h2 class="title"><span class="n">03</span>每个相位的通用生命周期：enter → run → done</h2>
+  <div class="sub">相位不是自由代码块，而是带前置/后置条件的事务。守卫、留痕、产物校验对所有相位统一生效。</div>
+  <div class="body grid-2">
+    <div class="card">
+      <h3>统一时序</h3>
+      <pre><code><span class="k">with</span> session.phase(<span class="p">Phase.QUANT</span>):     <span class="c"># enter</span>
+    guard = allowed_actions_for(phase) <span class="c"># S3 precondition</span>
+    artifact = run_phase(...)          <span class="c"># 过程</span>
+    write_phase_artifact(artifact)     <span class="c"># 固定产物</span>
+<span class="c"># done: state.phases[QUANT]=DONE,</span>
+<span class="c">#       events += phase_done</span></code></pre>
+      <ul class="clean" style="margin-top:12px">
+        <li><b>enter</b> → <code>state.phase=cur</code>, status=RUNNING, events += <code>phase_enter</code> + <code>phase_transition{from,to,allowed,loopback}</code></li>
+        <li><b>run</b> → 执行该相位动作（受 S3 守卫），shell 出 auto-round / lm_eval</li>
+        <li><b>done</b> → 写产物、status=DONE、events += <code>phase_done</code>；异常 → FAILED + <code>phase_fail</code></li>
+      </ul>
+    </div>
+    <div class="card accent">
+      <h3>三条不变量</h3>
+      <ul>
+        <li><b>Precondition</b>：进入相位前，S3 校验「本相位允许的动作」与「转移是否合法」。</li>
+        <li><b>Postcondition</b>：相位结束必须留下其<b>约定产物</b>（见 layout.yaml）；否则 resume 视为未完成。</li>
+        <li><b>Idempotent resume</b>：<code>should_skip(phase) = state.is_done(phase) AND artifact_present</code>。两者缺一即重跑。</li>
+      </ul>
+      <div class="keymsg">产物 = 相位的「收据」。有收据才算做完，才可被下游/resume 信任。</div>
+      <div class="pill-row" style="margin-top:12px">
+        <span class="badge b-green">DONE</span><span class="badge b-blue">RUNNING</span>
+        <span class="badge b-red">FAILED</span><span class="badge b-yellow">SKIPPED</span>
+        <span class="badge">PENDING</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 5 ANALYZE -->
+<section class="slide">
+  <div class="kicker">Phase · pre-runtime</div>
+  <h2 class="title"><span class="n">04</span>ANALYZE —— 模型意图 &amp; 配方热启动</h2>
+  <div class="body grid-2">
+    <div>
+      <div class="io">
+        <div class="lbl">Input</div><div class="val"><b>model</b>(id/path) 的本地 <code>config.json</code>（只读，不读权重、不联网）；可选 Recipe KB</div>
+        <div class="lbl">Process</div><div class="val">解析架构/类型/层数/多模态；推导计划内 <code>quant_scope</code>；若 <code>optimize+recipe_kb</code> 开，查最近的已验证配方做热启动</div>
+        <div class="lbl">Output</div><div class="val"><b>analysis.json</b> + 可选 <b>recipe_kb.json</b>；若命中 → 写入 <code>state.decisions</code> + <code>recipe_kb_hit</code> 事件</div>
+        <div class="lbl">Actions</div><div class="val"><span class="badge b-blue">target_analysis</span> <span class="badge b-blue">recipe_kb_lookup</span></div>
+      </div>
+      <div class="keymsg">多模态感知：从 <code>text_config</code> 读层数；config 读不到不编造，落 <code>note</code>。</div>
+    </div>
+    <div class="card accent">
+      <h3>analysis.json</h3>
+      <pre><code>{
+  <span class="k">"schema_version"</span>:<span class="num">1</span>, <span class="k">"run_id"</span>:<span class="s">"..."</span>, <span class="k">"created_at"</span>:<span class="s">"..."</span>,
+  <span class="k">"model"</span>:<span class="s">"Qwen/Qwen3-8B"</span>,
+  <span class="k">"architectures"</span>:[<span class="s">"Qwen3ForCausalLM"</span>],
+  <span class="k">"model_type"</span>:<span class="s">"qwen3"</span>,
+  <span class="k">"num_hidden_layers"</span>:<span class="num">36</span>,
+  <span class="k">"multimodal"</span>:<span class="p">false</span>,
+  <span class="k">"quant_scope"</span>:{
+    <span class="k">"scheme"</span>:<span class="s">"W4A16"</span>, <span class="k">"method"</span>:<span class="s">"auto-round"</span>,
+    <span class="k">"ignore_layers"</span>:[<span class="s">"lm_head"</span>], <span class="k">"quant_lm_head"</span>:<span class="p">false</span>
+  },
+  <span class="k">"note"</span>:<span class="s">null</span>
+}</code></pre>
+      <p class="tiny" style="margin-top:8px"><code>quant_scope=null</code> 当 provider 非 quantize。recipe_kb.json 记录 <code>{query,hit,used_as_hot_start}</code>，命中与否都留痕。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 6 ENV -->
+<section class="slide">
+  <div class="kicker">Phase · pre-runtime</div>
+  <h2 class="title"><span class="n">05</span>ENV —— 冻结软硬件栈</h2>
+  <div class="body grid-2">
+    <div>
+      <div class="io">
+        <div class="lbl">Input</div><div class="val">当前 Python / platform / 已安装包；<code>run_cfg</code>（加速器配置）</div>
+        <div class="lbl">Process</div><div class="val"><code>_package_versions()</code> 快照关键依赖；<code>_accelerator()</code> 真实探测 CUDA/XPU（家族 + 卡数 + 设备名）</div>
+        <div class="lbl">Output</div><div class="val"><b>env_lock.json</b> —— 与 <code>session/manifest.json</code> 的 env 同源</div>
+        <div class="lbl">Actions</div><div class="val"><span class="badge b-blue">env_lock</span></div>
+      </div>
+      <div class="keymsg">accelerator 不再写死：本机真跑 CUDA → <code>{family:"cuda", num_devices:8, device_name:"NVIDIA H200"}</code>。</div>
+      <p class="tiny" style="margin-top:12px">同一份 env 探针被 <code>session/manifest.json</code> 复用，保证「不可变意图」里的栈锁和 ENV 产物字节一致。</p>
+    </div>
+    <div class="card teal">
+      <h3>env_lock.json</h3>
+      <pre><code>{
+  <span class="k">"schema_version"</span>:<span class="num">1</span>, <span class="k">"run_id"</span>:<span class="s">"..."</span>, <span class="k">"created_at"</span>:<span class="s">"..."</span>,
+  <span class="k">"python"</span>:<span class="s">"3.11.9"</span>,
+  <span class="k">"platform"</span>:<span class="s">"Linux-5.15...-x86_64"</span>,
+  <span class="k">"packages"</span>:{
+    <span class="k">"torch"</span>:<span class="s">"2.6.0"</span>, <span class="k">"transformers"</span>:<span class="s">"4.53.0"</span>,
+    <span class="k">"auto-round"</span>:<span class="s">"0.9.0"</span>, <span class="k">"lm-eval"</span>:<span class="s">"0.4.9"</span>,
+    <span class="k">"vllm"</span>:<span class="s">"0.11.0"</span>
+  },
+  <span class="k">"accelerator"</span>:{
+    <span class="k">"family"</span>:<span class="s">"cuda"</span>, <span class="k">"num_devices"</span>:<span class="num">8</span>,
+    <span class="k">"device_name"</span>:<span class="s">"NVIDIA H200"</span>
+  }
+}</code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- 7 PLAN + session open -->
+<section class="slide">
+  <div class="kicker">Phase · pre-runtime</div>
+  <h2 class="title"><span class="n">06</span>PLAN —— 定计划 &amp; 打开 session 三件套</h2>
+  <div class="body grid-2">
+    <div>
+      <div class="io">
+        <div class="lbl">Input</div><div class="val"><code>run_cfg</code>：provider.type、eval.baseline、gate、upload</div>
+        <div class="lbl">Process</div><div class="val"><code>build_phase_plan()</code> 解析有序相位；<code>open_session()</code> 写入不可变 manifest、可变 state、事件流、S3 动作契约</div>
+        <div class="lbl">Output</div><div class="val"><b>aqa_run.json</b> + <b>session/{manifest,state,events,allowed_actions}</b></div>
+        <div class="lbl">Actions</div><div class="val"><span class="badge b-blue">build_plan</span></div>
+      </div>
+      <div class="card accent" style="margin-top:14px">
+        <h3>aqa_run.json（顶层状态机指针）</h3>
+        <pre><code>{ <span class="k">"model"</span>:<span class="s">"Qwen/Qwen3-8B"</span>,
+  <span class="k">"state"</span>:<span class="s">"running"</span> <span class="c">// running|done|failed</span> }</code></pre>
+      </div>
+    </div>
+    <div class="card purple">
+      <h3>session/ 三件套 + 契约（本相位开出）</h3>
+      <ul class="clean">
+        <li><b>manifest.json</b> —— 不可变意图：完整 resolved run.yaml + env 锁 + 加速器。写一次。</li>
+        <li><b>state.json</b> —— 可变进度：当前相位 + 各相位 status + baseline + current_best + decisions + gate。</li>
+        <li><b>events.jsonl</b> —— 追加式有序事件流（每行一条）。</li>
+        <li><b>allowed_actions.json</b> —— S3 相位→动作契约 + loopback 边。</li>
+      </ul>
+      <div class="keymsg">manifest 缺失即<b>拒绝 resume</b>（<code>load_session_manifest</code> 抛错）—— 宁可响亮失败也不伪造恢复。</div>
+    </div>
+  </div>
+</section>
+
+<!-- 8 BASELINE -->
+<section class="slide">
+  <div class="kicker">Phase · runtime · if eval.baseline</div>
+  <h2 class="title"><span class="n">07</span>BASELINE —— 未量化参照分</h2>
+  <div class="body grid-2">
+    <div>
+      <div class="io">
+        <div class="lbl">Input</div><div class="val"><b>model</b>（bf16 原模型）+ eval 配置（benchmarks/backend/limit/...）</div>
+        <div class="lbl">Process</div><div class="val"><code>run_evaluation()</code> 跑 lm_eval / vllm；fix-loop 包裹（若 agent.fix_loop）</div>
+        <div class="lbl">Output</div><div class="val"><b>baseline/accuracy.json</b> + lm_eval 原始输出；<code>state.baseline</code> 落位</div>
+        <div class="lbl">Actions</div><div class="val"><span class="badge b-blue">evaluate</span></div>
+      </div>
+      <p class="tiny" style="margin-top:12px">BASELINE 是 GATE 的参照项：没有它，gap/相对判据无从计算，GATE 只能用绝对阈值。</p>
+    </div>
+    <div class="card green">
+      <h3>baseline/accuracy.json（EvalResult 序列化）</h3>
+      <pre><code>{
+  <span class="k">"mean_score"</span>:<span class="num">0.7421</span>,
+  <span class="k">"backend"</span>:<span class="s">"vllm"</span>,
+  <span class="k">"benchmarks"</span>:{
+    <span class="k">"gsm8k"</span>:{<span class="k">"score"</span>:<span class="num">0.802</span>,<span class="k">"metric"</span>:<span class="s">"exact_match"</span>,
+             <span class="k">"num_samples"</span>:<span class="num">1319</span>},
+    <span class="k">"mmlu"</span>: {<span class="k">"score"</span>:<span class="num">0.682</span>,<span class="k">"metric"</span>:<span class="s">"acc"</span>,
+             <span class="k">"num_samples"</span>:<span class="num">14042</span>}
+  }
+}</code></pre>
+      <p class="tiny" style="margin-top:8px">同一 EvalResult 结构被 EVAL 复用；原始 lm_eval json 同目录留存以备审计。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 9 QUANT -->
+<section class="slide">
+  <div class="kicker">Phase · runtime · if provider=quantize</div>
+  <h2 class="title"><span class="n">08</span>QUANT —— 冻结配方、执行、落 checkpoint</h2>
+  <div class="body grid-2">
+    <div>
+      <div class="io">
+        <div class="lbl">Input</div><div class="val"><b>model</b> + 配方（scheme/method/ignore/iters/nsamples...）；可选热启动块 / agent-optimize 后的命令</div>
+        <div class="lbl">Process</div><div class="val"><code>record_quant_command</code> 冻结命令 → 执行 auto-round；fix-loop 包裹（若 agent.fix_loop）</div>
+        <div class="lbl">Output</div><div class="val"><b>quantized/</b> checkpoint + <b>.quant_command.json</b> + <b>quant_plan.json</b>；<code>state.current_best</code> 落位</div>
+        <div class="lbl">Actions</div><div class="val"><span class="badge b-blue">quantize</span> <span class="badge b-blue">requantize</span> <span class="badge b-blue">integrate_recipe</span></div>
+      </div>
+      <div class="keymsg">意图 vs 事实分离：quant_plan 记录<b>计划</b>，.quant_command.json 记录<b>真正执行</b>的命令 + 来源（builder / agent）。</div>
+    </div>
+    <div class="card accent">
+      <h3>quant_plan.json</h3>
+      <pre><code>{
+  <span class="k">"schema_version"</span>:<span class="num">1</span>, <span class="k">"run_id"</span>:<span class="s">"..."</span>, <span class="k">"created_at"</span>:<span class="s">"..."</span>,
+  <span class="k">"scheme"</span>:<span class="s">"W4A16"</span>, <span class="k">"method"</span>:<span class="s">"auto-round"</span>,
+  <span class="k">"export_format"</span>:<span class="s">"auto_round"</span>, <span class="k">"algorithm"</span>:<span class="s">"auto-round"</span>,
+  <span class="k">"iters"</span>:<span class="num">200</span>, <span class="k">"nsamples"</span>:<span class="num">128</span>,
+  <span class="k">"ignore_layers"</span>:[<span class="s">"lm_head"</span>], <span class="k">"quant_lm_head"</span>:<span class="p">false</span>,
+  <span class="k">"device_map"</span>:<span class="s">"auto"</span>,
+  <span class="k">"command"</span>:<span class="s">"auto-round --model ... --scheme W4A16 ..."</span>,
+  <span class="k">"command_source"</span>:<span class="s">"builder"</span> <span class="c">// or "agent"</span>
+}</code></pre>
+      <p class="tiny" style="margin-top:8px"><code>.quant_command.json = {command, source}</code>。<code>quantized/</code> 是检查点目录（含 config.json + quantization_config），不入 sink。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 10 EVAL -->
+<section class="slide">
+  <div class="kicker">Phase · runtime · always</div>
+  <h2 class="title"><span class="n">09</span>EVAL —— 打分 &amp; 量化 vs 源的差距报告</h2>
+  <div class="body grid-2">
+    <div>
+      <div class="io">
+        <div class="lbl">Input</div><div class="val">解析后的被测对象（quantized checkpoint / pretrained / endpoint）+ eval 配置</div>
+        <div class="lbl">Process</div><div class="val"><code>run_evaluation()</code>；fix-loop 包裹；若无 benchmark 或全 0 → 相位失败</div>
+        <div class="lbl">Output</div><div class="val"><b>eval/accuracy.json</b> + 原始输出；<b>eval_report.json</b>（源 vs 量化 gap）；<code>current_best.mean_score</code></div>
+        <div class="lbl">Actions</div><div class="val"><span class="badge b-blue">evaluate</span></div>
+      </div>
+      <p class="tiny" style="margin-top:12px">EVAL 总是进入 —— 即使纯评估（无量化）也要有打分产物。gate 字段在 GATE 相位回填。</p>
+    </div>
+    <div class="card accent">
+      <h3>eval_report.json</h3>
+      <pre><code>{
+  <span class="k">"schema_version"</span>:<span class="num">1</span>, <span class="k">"run_id"</span>:<span class="s">"..."</span>, <span class="k">"created_at"</span>:<span class="s">"..."</span>,
+  <span class="k">"model"</span>:<span class="s">"Qwen/Qwen3-8B"</span>, <span class="k">"backend"</span>:<span class="s">"vllm"</span>,
+  <span class="k">"quant"</span>: {<span class="k">"mean_score"</span>:<span class="num">0.731</span>, <span class="k">"results"</span>:{...}},
+  <span class="k">"source"</span>:{<span class="k">"mean_score"</span>:<span class="num">0.742</span>, <span class="k">"results"</span>:{...}}, <span class="c">// 或 null</span>
+  <span class="k">"gap"</span>:  {<span class="k">"mean_score"</span>:-<span class="num">0.011</span>,
+           <span class="k">"per_benchmark"</span>:{<span class="k">"gsm8k"</span>:-<span class="num">0.009</span>,...}}, <span class="c">// 或 null</span>
+  <span class="k">"gate"</span>: {<span class="k">"verdict"</span>:<span class="s">"GO"</span>,<span class="k">"reasons"</span>:[...]} <span class="c">// GATE 回填, 或 null</span>
+}</code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- 11 GATE -->
+<section class="slide">
+  <div class="kicker">Phase · runtime · if gate configured</div>
+  <h2 class="title"><span class="n">10</span>GATE —— 裁决 GO / NO-GO &amp; 有界回环触发点</h2>
+  <div class="body grid-2">
+    <div>
+      <div class="io">
+        <div class="lbl">Input</div><div class="val">eval 结果 + baseline + gate 配置（max_accuracy_drop / min_accuracy / significance / alpha）</div>
+        <div class="lbl">Process</div><div class="val"><code>evaluate_gate()</code> → GO / NO-GO / INCONCLUSIVE；若 <code>gate.requant.enabled</code> 且非 GO → 触发有界 re-QUANT 回环</div>
+        <div class="lbl">Output</div><div class="val"><b>gate.json</b>；<code>state.gate</code>；回环时 <code>requant/cycle_n/</code> + 晋升 + <code>.requant_done</code></div>
+        <div class="lbl">Actions</div><div class="val"><span class="badge b-red">∅ Coordinator-reserved</span></div>
+      </div>
+      <div class="keymsg">GATE 是唯一允许「<code>GATE→QUANT</code>」回退边的相位；<code>EVAL→QUANT</code> 非法——不许绕过裁决私自重做。</div>
+    </div>
+    <div class="card yellow">
+      <h3>gate.json</h3>
+      <pre><code>{
+  <span class="k">"verdict"</span>:<span class="s">"GO"</span>, <span class="c">// GO | NO-GO | INCONCLUSIVE</span>
+  <span class="k">"reasons"</span>:[
+    <span class="s">"mean drop -1.1% ≤ 2.0% threshold"</span>,
+    <span class="s">"gsm8k within significance band (α=0.05)"</span>
+  ]
+}</code></pre>
+      <p class="tiny" style="margin-top:10px">动作集为空：裁决与重试由 Coordinator 持有，agent 不能在 GATE 内自行发起量化/评估。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 12 CLOSE -->
+<section class="slide">
+  <div class="kicker">Phase · runtime · always</div>
+  <h2 class="title"><span class="n">11</span>CLOSE —— 可复现 manifest &amp; 配方回写</h2>
+  <div class="body grid-2">
+    <div>
+      <div class="io">
+        <div class="lbl">Input</div><div class="val">全部前置结果 + 配置 + env</div>
+        <div class="lbl">Process</div><div class="val">补写 eval_report（如缺）；gate=GO 时严格 pin-back 配方到 Recipe KB；<code>build_manifest()</code> → run_manifest.json；分发 sinks</div>
+        <div class="lbl">Output</div><div class="val"><b>run_manifest.json</b> + sink <code>run_meta.json</code> + KB <code>auto/</code> pin</div>
+        <div class="lbl">Actions</div><div class="val"><span class="badge b-blue">report</span> <span class="badge b-blue">pin_recipe</span></div>
+      </div>
+      <div class="keymsg">run_manifest 的 <code>commands</code> 记录<b>真正执行</b>的 quant/eval/self-heal 命令 → 分数可逐字节复现。</div>
+    </div>
+    <div class="card accent">
+      <h3>run_manifest.json（骨架）</h3>
+      <pre><code>{
+  <span class="k">"schema_version"</span>:<span class="num">1</span>,<span class="k">"created_at"</span>:..., <span class="k">"run_id"</span>:...,
+  <span class="k">"model"</span>:{<span class="k">"id"</span>:...,<span class="k">"provider"</span>:<span class="s">"quantize"</span>},
+  <span class="k">"quant"</span>:{...}, <span class="k">"eval"</span>:{benchmarks,backend,seed,...},
+  <span class="k">"environment"</span>:{python,platform,packages,accelerator},
+  <span class="k">"results"</span>:{<span class="k">"mean_score"</span>,<span class="k">"benchmarks"</span>,
+             <span class="k">"baseline"</span>?,<span class="k">"efficiency"</span>?,<span class="k">"self_heal"</span>?},
+  <span class="k">"gate"</span>:{<span class="k">"verdict"</span>},
+  <span class="k">"commands"</span>:{quantize,quantize_source,evaluate[],healed[]},
+  <span class="k">"reproduce"</span>:{<span class="k">"command"</span>,<span class="k">"config"</span>}
+}</code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- 13 PUBLISH -->
+<section class="slide">
+  <div class="kicker">Phase · runtime · if quantize + upload</div>
+  <h2 class="title"><span class="n">12</span>PUBLISH —— 上传量化模型</h2>
+  <div class="body grid-2">
+    <div>
+      <div class="io">
+        <div class="lbl">Input</div><div class="val"><code>quantized/</code> checkpoint + upload 配置（目标仓 / 可见性）</div>
+        <div class="lbl">Process</div><div class="val">推送到模型仓（HF）；代码改动 / patch 产物（S6，规划中）归档到输出目录</div>
+        <div class="lbl">Output</div><div class="val">已上传模型；（patch 产物，S6）</div>
+        <div class="lbl">Actions</div><div class="val"><span class="badge b-blue">upload</span></div>
+      </div>
+      <p class="tiny" style="margin-top:12px">仅当 provider=quantize 且配置了 upload 才进入。纯评估/本地量化运行不触发。</p>
+    </div>
+    <div class="card teal">
+      <h3>相位–动作总表（S3 契约）</h3>
+      <table>
+        <thead><tr><th>Phase</th><th>allowed actions</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">ANALYZE</td><td>target_analysis · recipe_kb_lookup</td></tr>
+          <tr><td class="mono">ENV</td><td>env_lock</td></tr>
+          <tr><td class="mono">PLAN</td><td>build_plan</td></tr>
+          <tr><td class="mono">BASELINE</td><td>evaluate</td></tr>
+          <tr><td class="mono">QUANT</td><td>quantize · requantize · integrate_recipe</td></tr>
+          <tr><td class="mono">EVAL</td><td>evaluate</td></tr>
+          <tr><td class="mono">GATE</td><td><span class="b-red badge">∅</span></td></tr>
+          <tr><td class="mono">CLOSE</td><td>report · pin_recipe</td></tr>
+          <tr><td class="mono">PUBLISH</td><td>upload</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- 14 SESSION TRIPLET -->
+<section class="slide">
+  <div class="kicker">Cross-phase · session layer</div>
+  <h2 class="title"><span class="n">13</span>Session 三件套 + 动作契约 —— 状态机的持久层</h2>
+  <div class="sub">贯穿所有相位的 <code>session/</code> 目录。不可变意图、可变进度、追加事件、相位动作契约各司其职。</div>
+  <div class="body grid-2">
+    <div class="card purple">
+      <h3>state.json（可变进度）</h3>
+      <pre><code>{
+  <span class="k">"schema_version"</span>:<span class="num">1</span>,<span class="k">"run_id"</span>:...,
+  <span class="k">"phase"</span>:<span class="s">"EVAL"</span>,         <span class="c">// 当前相位</span>
+  <span class="k">"phases"</span>:{<span class="k">"ANALYZE"</span>:<span class="s">"DONE"</span>,<span class="k">"ENV"</span>:<span class="s">"DONE"</span>,
+            <span class="k">"QUANT"</span>:<span class="s">"DONE"</span>,<span class="k">"EVAL"</span>:<span class="s">"RUNNING"</span>,...},
+  <span class="k">"baseline"</span>:{mean_score,...},
+  <span class="k">"current_best"</span>:{mean_score,...},
+  <span class="k">"decisions"</span>:[{phase,what,why,ref,ts}],
+  <span class="k">"gate"</span>:{verdict,reasons},
+  <span class="k">"created_at"</span>,<span class="k">"updated_at"</span>
+}</code></pre>
+    </div>
+    <div>
+      <div class="card accent" style="margin-bottom:12px">
+        <h3>manifest.json（不可变意图）</h3>
+        <pre><code>{ schema_version, run_id, created_at, model,
+  <span class="k">"run_config"</span>: &lt;完整 resolved run.yaml&gt;,
+  <span class="k">"env_lock"</span>: {packages...},
+  <span class="k">"accelerator"</span>: {family,num_devices,device_name} }</code></pre>
+      </div>
+      <div class="card green">
+        <h3>allowed_actions.json（S3 契约）</h3>
+        <pre><code>{ <span class="k">"schema_version"</span>:<span class="num">1</span>,
+  <span class="k">"phases"</span>:{<span class="k">"QUANT"</span>:[<span class="s">"quantize"</span>,<span class="s">"requantize"</span>,
+                    <span class="s">"integrate_recipe"</span>],...},
+  <span class="k">"loopback_edges"</span>:[[<span class="s">"GATE"</span>,<span class="s">"QUANT"</span>]],
+  <span class="k">"note"</span>:<span class="s">"forward-along-plan + GATE→QUANT"</span> }</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 15 EVENT VOCAB -->
+<section class="slide">
+  <div class="kicker">Cross-phase · events.jsonl</div>
+  <h2 class="title"><span class="n">14</span>事件词表 —— 一条有序、机器可读的「发生了什么」</h2>
+  <div class="sub"><code>events.jsonl</code> 每行一条 <code>{ts, type, ...fields}</code>，追加写入。按能力分组的完整事件类型：</div>
+  <div class="body grid-3">
+    <div class="card accent">
+      <h3>P1 · 核心相位</h3>
+      <ul class="clean">
+        <li><b>session_start</b> run_id · plan</li>
+        <li><b>phase_enter</b> phase</li>
+        <li><b>phase_transition</b> from·to·allowed·loopback</li>
+        <li><b>phase_done</b> phase · results</li>
+        <li><b>phase_skip</b> phase · reason</li>
+        <li><b>phase_fail</b> phase · error</li>
+      </ul>
+    </div>
+    <div class="card green">
+      <h3>P3/P4 · 知识 &amp; 自愈</h3>
+      <ul class="clean">
+        <li><b>recipe_kb_hit</b> key·level·reason·source·scheme</li>
+        <li><b>critic_calibration</b></li>
+        <li><b>policy_violation</b></li>
+        <li><b>policy_revert</b></li>
+      </ul>
+      <p class="tiny" style="margin-top:8px">配方命中、critic 校准、策略护栏触发/回退都留痕。</p>
+    </div>
+    <div class="card yellow">
+      <h3>S3 · 守卫 &amp; 回环</h3>
+      <ul class="clean">
+        <li><b>phase_action_denied</b> phase·action·allowed·enforced</li>
+        <li><b>requant_start</b></li>
+        <li><b>requant_cycle</b> n · score · gate</li>
+        <li><b>requant_stop</b> reason</li>
+      </ul>
+      <div class="keymsg">denied 事件总是记录，即便 enforce=false（advisory 也留证据）。</div>
+    </div>
+  </div>
+</section>
+
+<!-- 16 S3 GUARD -->
+<section class="slide">
+  <div class="kicker">S3 · precondition guard</div>
+  <h2 class="title"><span class="n">15</span>相位动作守卫 —— allowed_actions_for(phase)</h2>
+  <div class="sub"><code>aqa/session/actions.py</code>：纯函数、可单测。把「某相位能做什么、能往哪转」固化成契约，Coordinator 据此守卫。</div>
+  <div class="body grid-2">
+    <div class="card accent">
+      <h3>契约 API</h3>
+      <ul class="clean">
+        <li><b>allowed_actions_for(phase)</b> → 该相位动作集</li>
+        <li><b>is_action_allowed(phase, action)</b></li>
+        <li><b>is_transition_allowed(from, to)</b> —— 沿计划前进 + 唯一 <code>GATE→QUANT</code> 回退；<code>EVAL→QUANT</code> 非法</li>
+        <li><b>is_loopback(from, to)</b> · <b>action_contract()</b></li>
+      </ul>
+      <h3 style="margin-top:14px">守卫语义</h3>
+      <pre><code>session.guard_action(action, phase=current, **ctx)
+<span class="c"># 记录 phase_action_denied + decision</span>
+<span class="c"># guard_enforce=True → 抛 PhaseActionDenied</span>
+<span class="c"># guard_enforce=False → advisory（仅留痕）</span></code></pre>
+    </div>
+    <div>
+      <div class="card green">
+        <h3>配置开关</h3>
+        <pre><code><span class="k">agent.action_guard</span>:
+  enabled: <span class="p">true</span>   <span class="c"># 记录 denied 事件</span>
+  enforce: <span class="p">false</span>  <span class="c"># 默认 advisory，不阻断</span></code></pre>
+      </div>
+      <div class="keymsg" style="margin-top:14px">为什么默认 advisory？外部 agent 作为 proposer 时，先观测 + 留痕，不贸然阻断已在跑的流程；团队信任契约后再切 enforce。</div>
+      <div class="card" style="margin-top:14px">
+        <h3>守卫注入 agent 提示</h3>
+        <p><code>build_fix_prompt(..., allowed_actions)</code> 渲染「本相位允许的动作」块；fix-loop 两处调用点都带上 → agent 自我约束在契约内。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 17 REQUANT LOOP -->
+<section class="slide">
+  <div class="kicker">S3 · bounded loopback</div>
+  <h2 class="title"><span class="n">16</span>有界 re-QUANT 回环 —— 当 EVAL 发现配方不行</h2>
+  <div class="sub">QUANT 做完、EVAL/GATE 发现配方不合适需要重做的场景：由 Coordinator 持有一个<b>有界</b>的 <code>GATE→QUANT</code> 内循环，而非让 agent 自由回退。</div>
+  <div class="body grid-2">
+    <div>
+      <div class="flow" style="margin-bottom:12px">
+        <div class="step"><div class="nm">GATE</div><div class="ar">≠ GO</div></div>
+        <div class="arrow">↺</div>
+        <div class="step cond"><div class="nm">cycle_n</div><div class="ar">re-QUANT</div></div>
+        <div class="arrow">→</div>
+        <div class="step cond"><div class="nm">EVAL</div><div class="ar">re-score</div></div>
+        <div class="arrow">→</div>
+        <div class="step"><div class="nm">promote</div><div class="ar">best→canonical</div></div>
+      </div>
+      <div class="card accent">
+        <h3>_RequantController（纯控制器 · 可单测）</h3>
+        <ul>
+          <li><b>next_index / observe</b> 推进候选、记录最佳</li>
+          <li>停机原因：<code>go</code> · <code>max_cycles</code> · <code>candidates_exhausted</code> · <code>no_gain_convergence</code></li>
+        </ul>
+      </div>
+    </div>
+    <div>
+      <div class="card yellow">
+        <h3>产物布局</h3>
+        <pre><code>requant/
+  .requant_done            <span class="c"># 哨兵: 已跑过, 不重入</span>
+  cycle_1/{quantized, eval,
+           gate.json, .quant_command.json}
+  cycle_2/...
+<span class="c"># 胜者晋升到 canonical:</span>
+out_dir/{quantized, eval, .quant_command.json}</code></pre>
+      </div>
+      <div class="card green" style="margin-top:12px">
+        <h3>护栏配置</h3>
+        <pre><code><span class="k">gate.requant</span>:
+  enabled: <span class="p">false</span>      <span class="c"># 默认关</span>
+  max_cycles: <span class="num">3</span>
+  min_gain: <span class="num">0.0</span>
+  no_gain_patience: <span class="num">1</span></code></pre>
+      </div>
+      <div class="keymsg" style="margin-top:12px">触发条件：<code>requant.enabled 且 is_quantize 且 gate≠GO 且无 .requant_done 哨兵</code> → 第一次 gate 之后进入。</div>
+    </div>
+  </div>
+</section>
+
+<!-- 18 RESUME -->
+<section class="slide">
+  <div class="kicker">Reproducibility · resume</div>
+  <h2 class="title"><span class="n">17</span>Resume 语义 —— 跳过还是重跑？</h2>
+  <div class="body grid-2">
+    <div class="card accent">
+      <h3>跳过判据</h3>
+      <pre><code>should_skip(phase) =
+    state.is_done(phase)
+    <span class="k">AND</span> artifact_present(phase)</code></pre>
+      <ul style="margin-top:10px">
+        <li>两者都满足 → 标 <code>SKIPPED</code>，emit <code>phase_skip</code>，复用已有产物。</li>
+        <li>status=DONE 但产物缺失（半成品 / 被清理）→ <b>重跑</b>，不信任状态。</li>
+        <li>manifest.json 缺失 → <code>load_session_manifest</code> 抛错，<b>拒绝 resume</b>。</li>
+      </ul>
+    </div>
+    <div>
+      <div class="card green">
+        <h3>为什么「产物在场」是硬条件</h3>
+        <p>状态可能被写坏/中断，但产物是相位真正完成的物证。以产物为准，resume 永不基于谎言前进。</p>
+      </div>
+      <div class="card yellow" style="margin-top:12px">
+        <h3>已知边界</h3>
+        <ul>
+          <li><b>ssh resume</b>：远端执行中断 / 连接丢失时的续跑仍是待完善项（规划中）。</li>
+          <li>并发写同一 run_dir 未加锁 —— 约定单 writer。</li>
+        </ul>
+      </div>
+      <div class="keymsg" style="margin-top:12px">宁可响亮失败，也不伪造恢复 —— 与 Hyperloom 的 resume 前置一致。</div>
+    </div>
+  </div>
+</section>
+
+<!-- 19 ARTIFACT CONTRACT / inspect -->
+<section class="slide">
+  <div class="kicker">Single source of truth</div>
+  <h2 class="title"><span class="n">18</span>产物契约 layout.yaml &amp; <code>aqa inspect</code> 硬门</h2>
+  <div class="sub"><code>aqa/report/layout.yaml</code> 是所有产物的<b>唯一事实源</b>：每条 <code>{path, kind, phase, when, sink, desc}</code>；<code>when</code> 条件由 <code>layout.py:_conditions</code> 解析。</div>
+  <div class="body grid-2">
+    <div>
+      <table>
+        <thead><tr><th>字段</th><th>含义</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">path</td><td>产物相对路径</td></tr>
+          <tr><td class="mono">kind</td><td>json / dir / jsonl / raw</td></tr>
+          <tr><td class="mono">phase</td><td>归属相位（"" = session 级）</td></tr>
+          <tr><td class="mono">when</td><td>出现条件（quantize / baseline / gate / session...）</td></tr>
+          <tr><td class="mono">sink</td><td>是否随结果分发</td></tr>
+          <tr><td class="mono">desc</td><td>人类可读说明</td></tr>
+        </tbody>
+      </table>
+      <div class="keymsg" style="margin-top:12px">改产物先改 layout.yaml —— 契约先行，代码跟随。</div>
+    </div>
+    <div class="card accent">
+      <h3><code>aqa inspect</code> = 产物门</h3>
+      <p>把「本次 run 该有的产物是否齐全 / schema 是否合法」从主观检查变成一道可自动化的门：</p>
+      <ul>
+        <li>按 layout.yaml + 本次 when 条件，枚举应有产物。</li>
+        <li>缺失 / schema_version 不符 / 字段缺 → 失败。</li>
+        <li>CI / fix-loop 可挂此门，产物不合契约就不放行。</li>
+      </ul>
+      <p class="tiny" style="margin-top:8px">配合相位 postcondition：相位结束→产物落盘→inspect 可验证→resume 可信任，闭环。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 20 RUN DIR TREE -->
+<section class="slide">
+  <div class="kicker">Putting it together</div>
+  <h2 class="title"><span class="n">19</span>一次完整 run 的目录全景</h2>
+  <div class="body grid-2">
+    <div>
+      <pre><code>&lt;run_dir&gt;/
+├─ aqa_run.json            <span class="c"># PLAN 顶层指针</span>
+├─ analysis.json           <span class="c"># ANALYZE</span>
+├─ recipe_kb.json          <span class="c"># ANALYZE (optimize+kb)</span>
+├─ env_lock.json           <span class="c"># ENV</span>
+├─ quant_plan.json         <span class="c"># QUANT</span>
+├─ .quant_command.json     <span class="c"># QUANT 冻结命令</span>
+├─ quantized/              <span class="c"># QUANT checkpoint</span>
+├─ baseline/accuracy.json  <span class="c"># BASELINE</span>
+├─ eval/accuracy.json      <span class="c"># EVAL</span>
+├─ eval_report.json        <span class="c"># EVAL gap</span>
+├─ gate.json               <span class="c"># GATE</span>
+├─ requant/                <span class="c"># GATE 回环 (opt-in)</span>
+│  ├─ .requant_done
+│  └─ cycle_n/{quantized,eval,gate.json}
+├─ run_manifest.json       <span class="c"># CLOSE 可复现</span>
+└─ session/
+   ├─ manifest.json        <span class="c"># 不可变意图</span>
+   ├─ state.json           <span class="c"># 可变进度</span>
+   ├─ events.jsonl         <span class="c"># 事件流</span>
+   └─ allowed_actions.json <span class="c"># S3 契约</span></code></pre>
+    </div>
+    <div>
+      <div class="card accent">
+        <h3>读图法</h3>
+        <ul>
+          <li>顶层 <code>*.json</code> = 各相位的「收据」，一一对应 layout.yaml。</li>
+          <li><code>quantized/ · baseline/ · eval/ · requant/</code> = 重产物目录（部分不入 sink）。</li>
+          <li><code>session/</code> = 状态机持久层，resume 的依据。</li>
+          <li>隐藏文件 <code>.quant_command.json · .requant_done</code> = 内部哨兵/冻结。</li>
+        </ul>
+      </div>
+      <div class="keymsg" style="margin-top:12px">同一棵树在 BASELINE/gate/upload 不同配置下按 <code>when</code> 收缩 —— 但「有的产物必合契约」永真。</div>
+    </div>
+  </div>
+</section>
+
+<!-- 21 CAPABILITY MAP -->
+<section class="slide">
+  <div class="kicker">Shipped capabilities</div>
+  <h2 class="title"><span class="n">20</span>能力地图 · P0–P4 + S3</h2>
+  <div class="body">
+    <table>
+      <thead><tr><th>能力</th><th>落地</th><th>关键产物 / 事件</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td><b>P0</b> 产物 schema 固定</td><td class="mono">report/phase_artifacts.py · layout.yaml</td><td>analysis/env_lock/quant_plan/eval_report</td><td><span class="badge b-green">shipped</span></td></tr>
+        <tr><td><b>P1</b> Session 状态机</td><td class="mono">session/{manifest,state,events}.py</td><td>三件套 + phase_* 事件</td><td><span class="badge b-green">shipped</span></td></tr>
+        <tr><td><b>P2</b> 相位门 + inspect</td><td class="mono">report/layout.py · aqa inspect</td><td>产物契约校验</td><td><span class="badge b-green">shipped</span></td></tr>
+        <tr><td><b>P3</b> Recipe KB 热启动</td><td class="mono">agent/recipe_kb.py</td><td>recipe_kb.json · recipe_kb_hit</td><td><span class="badge b-green">shipped</span></td></tr>
+        <tr><td><b>P4</b> Critic / PolicyGate</td><td class="mono">agent/{critic,policy_gate}.py</td><td>critic_calibration · policy_*</td><td><span class="badge b-green">shipped</span></td></tr>
+        <tr><td><b>S3</b> 动作守卫 + re-QUANT 回环</td><td class="mono">session/actions.py · pipeline 回环</td><td>allowed_actions.json · phase_action_denied · requant_*</td><td><span class="badge b-green">shipped</span></td></tr>
+        <tr><td><b>S6</b> Patch / CLI 上行</td><td class="mono">capture/publish-patch</td><td>patch → out_dir</td><td><span class="badge b-yellow">planned</span></td></tr>
+      </tbody>
+    </table>
+    <div class="legend"><span>143 targeted tests pass · 新增零回归</span><span>test_actions.py 19 例覆盖 S3 守卫/转移/回环控制器</span></div>
+  </div>
+</section>
+
+<!-- 22 CLOSING -->
+<section class="slide">
+  <div class="kicker">Invariants</div>
+  <h2 class="title"><span class="n">21</span>五条不变量 —— 为什么这套设计稳</h2>
+  <div class="body grid-2">
+    <div>
+      <ul class="clean">
+        <li><b>1 · 契约先行</b> —— layout.yaml 是产物唯一事实源；改产物先改契约。</li>
+        <li><b>2 · 产物即收据</b> —— 相位完成当且仅当其约定产物落盘且合 schema。</li>
+        <li><b>3 · 意图 vs 事实分离</b> —— manifest/quant_plan 记录计划；.quant_command/commands 记录真正执行。</li>
+        <li><b>4 · 守卫沿契约</b> —— 相位只能做允许动作；只允许 GATE→QUANT 有界回退。</li>
+        <li><b>5 · 宁可响亮失败</b> —— manifest 缺失拒绝 resume；产物缺失重跑而非伪造。</li>
+      </ul>
+    </div>
+    <div class="card accent">
+      <h3>一句话</h3>
+      <p class="lead">把量化/评估从「agent 自由发挥的黑盒」变成<b>九相位、带收据、可守卫、可恢复、可复用</b>的状态机。</p>
+      <div class="keymsg">规格说清楚了，代码才鲁棒 —— 这份 deck 就是可执行的规格。</div>
+      <div class="pill-row" style="margin-top:14px">
+        <span class="badge b-blue">reproducible</span>
+        <span class="badge b-green">resumable</span>
+        <span class="badge b-purple">auditable</span>
+        <span class="badge b-teal">reusable</span>
+        <span class="badge b-yellow">guardrailed</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<div class="footer">
+  <div class="brand"><b>aqa</b> · auto-quant · pipeline &amp; artifact contract v1</div>
+  <div class="dots" id="dots"></div>
+  <div class="counter"><span id="cur">1</span> / <span id="tot">22</span></div>
+</div>
+
+<script>
+(function(){
+  const slides=[...document.querySelectorAll('.slide')];
+  const dotsBox=document.getElementById('dots');
+  const prog=document.getElementById('prog');
+  const cur=document.getElementById('cur'), tot=document.getElementById('tot');
+  let i=0; tot.textContent=slides.length;
+  slides.forEach((_,k)=>{const d=document.createElement('div');d.className='dot';d.onclick=()=>go(k);dotsBox.appendChild(d);});
+  const dots=[...dotsBox.children];
+  function go(n){
+    i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    dots.forEach((d,k)=>d.classList.toggle('on',k===i));
+    cur.textContent=i+1;
+    prog.style.width=((i+1)/slides.length*100)+'%';
+    slides[i].scrollTop=0;
+  }
+  function next(){go(i+1);} function prev(){go(i-1);}
+  document.addEventListener('keydown',e=>{
+    if(['ArrowRight','PageDown',' '].includes(e.key)){e.preventDefault();next();}
+    else if(['ArrowLeft','PageUp'].includes(e.key)){e.preventDefault();prev();}
+    else if(e.key==='Home'){go(0);} else if(e.key==='End'){go(slides.length-1);}
+  });
+  document.getElementById('deck').addEventListener('click',e=>{
+    if(e.target.closest('a,button,.dot,pre,table'))return;
+    const x=e.clientX, w=window.innerWidth;
+    if(x> w*0.72) next(); else if(x< w*0.28) prev();
+  });
+  go(0);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+{
+  "model": "Qwen/Qwen3.6-35B-A3B",
+  "architecture": "qwen3_5_moe (Qwen3_5MoeForConditionalGeneration, VL, MoE 256e/8-per-tok + shared_expert)",
+  "validated_on": "2026-10-15",
+  "status": {
+    "scheme_run": "MXFP4-Mixed（MoE experts=MXFP4 + 其余 Linear=MXFP8 + static KV=fp8），model_free RTN，e2e 实跑并过 gate",
+    "verdict": "GO（max_accuracy_drop 内，mean 0.8148->0.8090 = -0.57pp）"
+  },
+  "identity": {
+    "model_type": "qwen3_5_moe",
+    "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+    "num_hidden_layers": 40,
+    "multimodal": true,
+    "moe": {"num_experts": 256, "experts_per_tok": 8, "moe_intermediate_size": 512, "shared_expert": true}
+  },
+  "ignore_layers": "visual,lm_head,shared_expert_gate",
+  "ignore_layers_rationale": "MoE：visual(视觉塔，文本评测不走且无量化 kernel)、lm_head(输出头保高精度) 走 BF16；shared_expert_gate 是 router/gate 的门控投影，量化会放大专家选择噪声，必须 ignore。禁止写裸 'mlp.gate' 子串 —— 会误伤 experts 的 gate_up_proj。",
+  "schemes": {
+    "MXFP4-Mixed-FP8KV": {
+      "model_free_rtn": {
+        "command": "auto-round --model_name Qwen/Qwen3.6-35B-A3B --scheme MXFP8 --static_kv_dtype fp8 --ignore_layers visual,lm_head,shared_expert_gate --layer_config '{\"mlp.experts\":{\"bits\":4,\"data_type\":\"mx_fp\"}}' --format llm_compressor --output_dir <OUT> --batch_size 8",
+        "expected": "MoE experts(32.2B, 89.6% 权重)=MXFP4 g32 + 其余 Linear(attn/shared_expert/mlp 非 expert)=MXFP8 + static KV=fp8；导出 format=mixed-precision，权重路径 Qwen3.6-35B-A3B-mxfp-w8g32",
+        "gate": "max_accuracy_drop 内通过（GO）",
+        "result": {
+          "bf16": {"gsm8k": 0.9629, "mmlu": 0.8369, "piqa": 0.8254, "hellaswag": 0.6339, "mean": 0.8148},
+          "mxfp4_mixed": {"gsm8k": 0.9606, "mmlu": 0.8320, "piqa": 0.8177, "hellaswag": 0.6259, "mean": 0.8090},
+          "delta_pp": {"gsm8k": -0.23, "mmlu": -0.49, "piqa": -0.76, "hellaswag": -0.81, "mean": -0.57}
+        },
+        "note": "scheme 名为 MXFP8 但 layer_config 把 89.6% 权重的 experts 降到 MXFP4，故实际是 MXFP4-Mixed；ignore 优先于 layer_config 正则键，shared_expert_gate/lm_head/visual 仍 BF16。"
+      }
+    }
+  },
+  "eval_parity": {
+    "thinking": "off",
+    "thinking_off_model_args": {"enable_thinking": false, "reasoning_parser": "qwen3"},
+    "generative_tasks": ["gsm8k"],
+    "note": "thinking-capable 模型（qwen3_5_moe）默认带 <think>，gsm8k strict-match 会被思维链痕迹击穿导致失真。标准基准口径必须 enable_thinking=False + reasoning_parser=qwen3，gsm8k 用 --apply_chat_template --fewshot_as_multiturn --num_fewshot 5 --seed 42。此 eval_parity 为结构化字段，下一次同族运行 pipeline 的 ANALYZE 阶段会自动灌入 eval 配置（见 _apply_recipe_eval_parity）。"
+  },
+  "lessons": [
+    "GSM8K 基线失真修复：thinking-capable 模型评 gsm8k 等生成式 strict-match 任务时，必须关 thinking（enable_thinking=False + reasoning_parser=qwen3），否则 <think> 链会把 strict-match 打到接近 0 —— 表现为'量化没问题但分数神秘暴跌'。",
+    "MoE MXFP4-Mixed（experts=MXFP4，其余=MXFP8，KV=fp8）在本模型近无损：mean -0.57pp，gsm8k 仅 -0.23pp。",
+    "ignore 必须含 shared_expert_gate；量化 router/gate 投影会放大专家选择噪声。"
+  ],
+  "verification": {
+    "eval_parity": "enable_thinking=False, reasoning_parser=qwen3, seed=42；gsm8k 用 --apply_chat_template --fewshot_as_multiturn --num_fewshot 5；其余 (mmlu/piqa/hellaswag) acc,none。",
+    "load_smoke": "先 vLLM 加载+生成冒烟（MoE/MXFP4 kernel 维度问题在此暴露），再跑 gsm8k / mmlu,piqa,hellaswag。"
+  },
+  "provenance": {
+    "source_run": "qwen3.6-35b-a3b-mxfp4moe",
+    "backend": "vllm",
+    "note": "本 recipe 由 e2e 实跑（results/qwen3.6-35b-a3b-mxfp4moe）人工回写：curated 侧的结构化 eval_parity + 掉点对照 + thinking 教训，供下一次同族运行热启动与 eval 口径自动复用。"
+  }
+}

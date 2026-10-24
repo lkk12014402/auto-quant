@@ -273,3 +273,20 @@ def test_run_agent_optimize_rejects_constraint_violating_command(monkeypatch, tm
     )
     assert cmd is None
 
+
+def test_recipe_template_and_cli_examples_live_only_in_canonical_doc():
+    from pathlib import Path
+
+    from aqa.agent.optimize import load_recipe_knowledge
+
+    knowledge = load_recipe_knowledge()
+    assert "## 5. Agent 输出模板" in knowledge
+    assert "## 6. auto-round CLI exemplars" in knowledge
+    assert "Example C -- model_free" in knowledge
+    assert "gpt-oss" in knowledge
+    # The code module must not re-embed the template/examples (source-drift bug).
+    src = Path("aqa/agent/optimize.py").read_text()
+    assert "RECIPE_DOC_TEMPLATE =" not in src
+    assert "CLI_EXAMPLES =" not in src
+    assert "Example A -- MoE mixed precision" not in src
+

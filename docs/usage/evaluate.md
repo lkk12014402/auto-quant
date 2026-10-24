@@ -57,4 +57,7 @@ humaneval/drawbench_clip/drawbench_metrics/geneval/dpgbench。没食谱的任务
 - 本地：`output.dir/{eval,baseline}/accuracy.json` + `run_manifest.json`（完整复现清单）+ `gate.json`；
 - HF dataset 归档：`output.sinks: [{type: hf_dataset, repo: org/ds, token_env: HF_TOKEN}]`
   ——整树上传（日志/patch/根因/逐样本），失败 run 也会带状态写回（不会静默消失）；
-- 量化模型上传：`provider.upload: {repo: MyOrg, token_env: HF_TOKEN}`。
+- 量化模型上传：`provider.upload: {repo: MyOrg, token_env: HF_TOKEN, signoff: "Name <email>"}`。
+  量化 run 有 eval 结果时 CLOSE 就会写 `model_card.md`（模板 `templates/model_card.md`）；
+  无 signoff 时写 draft（`{base_repo_id}`/身份占位符），发布时再原样作为 model repo 的
+  `README.md` 上传。`signoff` 缺失或仍是占位身份时跳过上传。

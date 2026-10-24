@@ -24,6 +24,29 @@ def write_accuracy_json(result: EvalResult, out_dir: Path) -> Path:
     return path
 
 
+def read_eval_result(out_dir: Path) -> EvalResult:
+    """Reconstruct an :class:`EvalResult` from a prior ``accuracy.json``.
+
+    Used by resume to reuse a completed eval/baseline without re-running it. Only
+    the gate-/manifest-relevant fields are restored (scores, metrics, sample
+    counts, commands, healed list); agentic efficiency provenance — ``stats`` /
+    ``turns`` — is not persisted in ``accuracy.json`` and is intentionally lost on
+    a resumed run.
+    """
+    from ..eval.registry import BenchmarkResult
+
+    path = Path(out_dir) / "accuracy.json"
+    data = json.loads(path.read_text())
+    result = EvalResult(model=data.get("model", ""), backend=data.get("backend", ""),
+                        healed=list(data.get("healed", [])))
+    for name, row in (data.get("results") or {}).items():
+        result.benchmarks[name] = BenchmarkResult(
+            name=name, score=float(row.get("score", 0.0)),
+            metric=row.get("metric", ""), num_samples=int(row.get("num_samples", 0)))
+    result.commands = list(data.get("commands", []))
+    return result
+
+
 def evaluate_gate(
     quantized: EvalResult, baseline: EvalResult | None, gate: GateConfig
 ) -> GateDecision:

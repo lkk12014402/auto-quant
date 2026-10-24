@@ -63,13 +63,17 @@ class QuantConfig(BaseModel):
     # (e.g. ``"auto"`` / ``"0,1"``) to override the automatic choice.
     device_map: str | None = None
     # FP8 KV cache / FP8 attention (--static_kv_dtype fp8 / --static_attention_dtype fp8).
-    # static_kv_fp8 also works with model_free, but still loads the model for KV-scale
-    # calibration forwards; static_attention_fp8 requires method=autoround.
+    # Require calibration, so only valid with method=autoround.
     static_kv_fp8: bool = False
     static_attention_fp8: bool = False
     # Multi-candidate sweep (aqa sweep): built-in candidate set or user-defined.
     recipe_sweep: bool = False
     recipe_sweep_candidates: list[dict[str, Any]] | None = None
+    # Frozen shell script from a reproduce manifest (RFC 0002 §5). When set, the
+    # pipeline runs it verbatim instead of the deterministic builder or
+    # agent-optimize. A normal run leaves this None; reproduce sets it from a
+    # reviewed recipe variant.
+    command_override: str | None = None
     extra_args: list[str] = Field(default_factory=list)
 
     _ALG_TOKENS = {
@@ -163,6 +167,12 @@ class ModelUploadConfig(BaseModel):
     endpoint: str | None = None
     disable_xet: bool = False
     model_card: bool = True
+    # Operator identity for the model card's final `Signed-off-by: Name <email>`
+    # line. Uploads normally run under a bot account, so this is never inferred
+    # (git config / HF whoami / env / previous cards); the user must confirm it
+    # for each generation. Without it, model-card generation and upload are
+    # refused rather than publishing a card with a placeholder identity.
+    signoff: str | None = None
 
 
 class ProviderConfig(BaseModel):
@@ -194,6 +204,26 @@ class ProviderConfig(BaseModel):
     served_model: str | None = None
 
 
+class RequantConfig(BaseModel):
+    """Bounded re-QUANT loop-back on a NO-GO gate verdict (RFC 0001 §S3).
+
+    Hyperloom-style macro-cycle reloop: when the gate fails, the Coordinator may
+    loop back to ``QUANT`` with the next recipe-sweep candidate, re-EVAL and
+    re-GATE, keeping the best cycle. Bounded by ``max_cycles`` (Hyperloom's
+    ``MAX_MACRO_CYCLES``) and a no-gain convergence stop (a cycle that does not
+    improve the best ``mean_score`` by at least ``min_gain`` ends the loop,
+    mirroring ``GLOBAL_CONVERGENCE_NO_GAIN_CYCLES``). Default off, so today's
+    single-pass behaviour is unchanged.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False      # opt-in: loop back to QUANT on a NO-GO verdict
+    max_cycles: int = 3        # hard ceiling on re-QUANT cycles
+    min_gain: float = 0.0      # min mean_score improvement to justify another cycle
+    no_gain_patience: int = 1  # consecutive no-gain cycles tolerated before stopping
+
+
 class GateConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -201,6 +231,7 @@ class GateConfig(BaseModel):
     min_accuracy: float | None = None
     significance: bool = False  # require the drop to be statistically significant
     alpha: float = 0.05  # significance level for the paired/unpaired test
+    requant: RequantConfig = Field(default_factory=RequantConfig)  # bounded re-QUANT loop-back
 
 
 class LmEvalOptions(BaseModel):
@@ -262,6 +293,10 @@ class EvalConfig(BaseModel):
     gen_max_toks: int = 2048
     # Thinking-mode handling for reasoning models: auto | both | on | off.
     thinking: str = "auto"
+    # Extra lm_eval model_args merged in for the thinking-``off`` pass (user
+    # ``lm_eval.model_args`` win on conflict). The default disables the chat
+    # template's reasoning switch so generative tasks (gsm8k) emit a bare answer
+    # instead of a ``<think>`` trace that strict-match cannot parse.
     thinking_off_model_args: dict[str, Any] = Field(
         default_factory=lambda: {"enable_thinking": False}
     )
@@ -300,6 +335,95 @@ class KnowledgeConfig(BaseModel):
     local_dir: str | None = None     # local cache; default ~/.cache/aqa/knowledge
     replay: bool = True              # try recorded patches before invoking the agent
     push: bool = True                # upload new lessons/patches back to the repo
+    # Optimize prompt knowledge: prefer a synced references/auto_round_recipe.md
+    # over the packaged copy. False pins the run to the packaged version (useful
+    # for reproducible experiments that must not drift with shared knowledge).
+    use_references: bool = True
+
+
+class RecipeKBConfig(BaseModel):
+    """Recipe knowledge base: hot-start lookup + strict pin-back (RFC §3.4).
+
+    A recipe KB row is keyed by model identity (model id, else architecture /
+    model_type) and carries the *validated* quant recipe plus the lessons and
+    past failures learned for it.  ``lookup`` finds the closest match (progressive
+    field relaxation) to (a) seed the eval phase with the recipe's proven eval
+    parity and (b) hot-start agent-optimize; ``pin`` writes a run's recipe back
+    **only when it passed the gate**.  Both sides are **independent of
+    ``agent.optimize``** (Hyperloom's loop reads the KB before every run and
+    writes it after) so an external-agent run still consumes + enriches the KB.
+    Curated recipes live in the versioned ``recipes/quant/`` tree; auto-pinned
+    recipes go to ``<root>/<auto_subdir>/`` so they never clobber hand-authored ones.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True        # read: lookup + write recipe_kb.json + bridge eval parity
+    pin: bool = True            # write: CLOSE pins the validated recipe back (gate GO only)
+    root: str | None = None     # curated recipe dir; default repo ``recipes/quant``
+    auto_subdir: str = "auto"   # auto-pinned recipes live under ``<root>/<auto_subdir>``
+
+
+class PolicyGateConfig(BaseModel):
+    """PolicyGate over captured source edits (RFC §3.5).
+
+    Reviews the agent's captured unified diff against named deny-rules (editing
+    tests, skip/xfail, disabling CUDA, VCS/CI edits, mass deletion) and records
+    any violation to ``events.jsonl``.  ``enforce`` additionally reverts a
+    violating edit (via the pristine snapshot) before the phase re-run, so a
+    policy-breaking "fix" never becomes the baseline; default off (advisory).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True          # review captured diffs + record named violations
+    enforce: bool = False         # also REVERT a violating edit (restore snapshot)
+    max_net_deletions: int = 200  # net-removed-line budget before mass_deletion fires
+
+
+class ActionGuardConfig(BaseModel):
+    """Coordinator guard over per-phase proposable actions + transitions (RFC 0001 §S3).
+
+    Mirrors Hyperloom's ``PHASE_ALLOWED_ACTIONS`` / ``allowed_actions_for``: a
+    proposer (the internal fix-loop/optimize agent OR an external agent driving
+    through ``aqa``) may only act within the current phase's allowed-action set,
+    and the phase chain may only advance along the plan or take the sanctioned
+    ``GATE->QUANT`` loop-back. Violations are always recorded to ``events.jsonl``
+    as ``phase_action_denied``; ``enforce`` additionally *rejects* the move
+    (raises ``PhaseActionDenied``). Default advisory (enforce off) to preserve
+    behaviour; set ``enforce: true`` for Coordinator-owned hard enforcement.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True   # evaluate + record phase_action_denied events
+    enforce: bool = False  # also REJECT an out-of-phase action/transition
+
+
+class ReproduceTolerance(BaseModel):
+    """Absolute + relative tolerance for the evaluation-reproduction check."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    abs: float = 0.01
+    rel: float = 0.02
+
+
+class ReproduceConfig(BaseModel):
+    """Reproduce a recipe variant and verify it (RFC 0002 §5).
+
+    Set by ``aqa reproduce`` / the programmatic API; a normal ``aqa run`` leaves
+    it ``None``.  ``build_phase_plan`` appends ``VERIFY`` when present, and the
+    pipeline writes ``reproduction_report.json`` after CLOSE.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    manifest: str
+    variant: str
+    mode: Literal["full", "eval-only"] = "full"
+    tolerance: ReproduceTolerance = Field(default_factory=ReproduceTolerance)
+    on_input_mismatch: Literal["warn", "fail"] = "warn"
 
 
 class AgentConfig(BaseModel):
@@ -315,6 +439,10 @@ class AgentConfig(BaseModel):
     context: str | None = None  # inline text or "@file" (resolved by loader)
     patch: PatchConfig = Field(default_factory=PatchConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
+    recipe_kb: RecipeKBConfig = Field(default_factory=RecipeKBConfig)
+    critic: bool = True  # record agent-claim vs authoritative-rerun calibration (RFC §3.5)
+    policy_gate: PolicyGateConfig = Field(default_factory=PolicyGateConfig)
+    action_guard: ActionGuardConfig = Field(default_factory=ActionGuardConfig)  # RFC §S3
 
 
 class SshAuth(BaseModel):
@@ -428,6 +556,9 @@ class RunConfig(BaseModel):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
+    # RFC 0002 §5: reproduce mode. None for normal runs; when set, the pipeline
+    # appends a read-only VERIFY phase and writes reproduction_report.json.
+    reproduce: ReproduceConfig | None = None
 
     @property
     def quant(self) -> QuantConfig | None:

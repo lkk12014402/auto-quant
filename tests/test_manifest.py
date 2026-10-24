@@ -79,12 +79,12 @@ def test_manifest_accelerator_reflects_local_gpu_count(monkeypatch):
 
     m = build_manifest(cfg, _result({"piqa": 1.0}), run_id="r")
 
-    assert m.environment["accelerator"] == {
-        "family": "cuda",
-        "num_devices": 8,
-        "executor": "local",
-        "remote": False,
-    }
+    acc = m.environment["accelerator"]
+    assert acc["family"] == "cuda"
+    assert acc["num_devices"] == 8
+    assert acc["executor"] == "local" and acc["remote"] is False
+    # ``device_name`` is an optional probe detail (not present under mocks).
+    assert set(acc) <= {"family", "num_devices", "executor", "remote", "device_name"}
 
 
 def test_write_manifest_roundtrip(tmp_path):

@@ -132,8 +132,69 @@ class KnowledgeStore:
         (self.local_dir / "lessons").mkdir(parents=True, exist_ok=True)
         (self.local_dir / "patches").mkdir(parents=True, exist_ok=True)
         (self.local_dir / "trajectories").mkdir(parents=True, exist_ok=True)
+        (self.local_dir / "references").mkdir(parents=True, exist_ok=True)
         self.lessons = LessonStore(self.local_dir / "lessons")
         self.trajectories = TrajectoryStore(self.local_dir / "trajectories")
+
+    @property
+    def references_dir(self) -> Path:
+        """Synced incremental knowledge layer (``references/`` subtree)."""
+        return self.local_dir / "references"
+
+    def push_references(self, src_dir: str | Path, *,
+                        file: str | None = None,
+                        auto_round_ref: str | None = None,
+                        note: str = "") -> bool:
+        """Publish a refreshed ``references/`` tree (owner-driven knowledge refresh).
+
+        Copies files from ``src_dir`` into ``references/`` (incremental overwrite;
+        ``file`` limits the update to one relative path), updates the per-file
+        freshness ledger in ``MANIFEST.json``, then best-effort pushes the whole
+        knowledge dir.  Returns False when the source dir is missing.
+        """
+        src = Path(src_dir)
+        if not src.is_dir():
+            return False
+        dest = self.references_dir
+        dest.mkdir(parents=True, exist_ok=True)
+        manifest_path = dest / "MANIFEST.json"
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            if not isinstance(manifest, dict):
+                manifest = {}
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
+        files = manifest.get("files")
+        if not isinstance(files, dict):
+            files = {}
+        selected = [src / file] if file else [
+            p for p in sorted(src.rglob("*")) if p.is_file()]
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        for path in selected:
+            if not path.is_file():
+                continue
+            rel = path.relative_to(src)
+            target = dest / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+            files[str(rel)] = {
+                "auto_round_ref": auto_round_ref,
+                "note": note,
+                "updated_at": ts,
+            }
+        manifest.update({
+            "schema_version": 1,
+            "auto_round_ref": auto_round_ref,
+            "files": files,
+            "note": note,
+            "updated_at": ts,
+        })
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2))
+        self.push_up()
+        _log.info("knowledge: references updated (%d file(s), auto_round_ref=%s)",
+                  len(selected), auto_round_ref)
+        return True
 
     @classmethod
     def from_config(cls, cfg) -> KnowledgeStore | None:
@@ -237,6 +298,36 @@ class KnowledgeStore:
             _log.warning("knowledge: push_up to %s failed: %s", self.repo, exc)
             return False
         _log.info("knowledge: pushed lessons/patches to %s", self.repo)
+        return True
+
+    def push_sessions(self, session_dir: str | Path) -> bool:
+        """Upload staged session trajectories to ``<dataset>/trajectories/``.
+
+        Session sedimentation is best-effort like the rest of the knowledge
+        store: no repo/token or a failed upload returns False, never raises.
+        """
+        if not self.repo or not self.push:
+            return False
+        token = resolve_hf_token(None, self.token_env)
+        if not token:
+            _log.info("knowledge: no write token; not pushing sessions to %s", self.repo)
+            return False
+        try:
+            from huggingface_hub import HfApi
+        except ImportError:
+            return False
+        try:
+            api = HfApi(token=token, endpoint=self.endpoint)
+            api.upload_folder(
+                repo_id=self.repo, repo_type="dataset",
+                folder_path=str(Path(session_dir)),
+                path_in_repo="trajectories", token=token,
+                commit_message="aqa: update session trajectories",
+            )
+        except Exception as exc:  # noqa: BLE001 - never fail a run on a push
+            _log.warning("knowledge: push_sessions to %s failed: %s", self.repo, exc)
+            return False
+        _log.info("knowledge: pushed session trajectories to %s", self.repo)
         return True
 
     # -- patch archive ---------------------------------------------------

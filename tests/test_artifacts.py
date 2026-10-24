@@ -135,8 +135,25 @@ def test_model_card_required_only_when_upload(tmp_path: Path) -> None:
     ("# card\n\nSigned-off-by: {Name} <{email}>\n", "末行须为"),
     ("# card\n\nSigned-off-by: Full Name <full.name@example.com>\n", "占位身份"),
 ])
-def test_model_card_requires_signoff_last_line(tmp_path: Path, card: str, needle: str) -> None:
+def test_model_card_draft_is_warning_without_upload(
+        tmp_path: Path, card: str, needle: str) -> None:
     _fill_run_dir(tmp_path)
+    (tmp_path / "model_card.md").write_text(card)
+    report = check_artifacts(tmp_path)
+    assert report.ok
+    assert any(needle in m for m in _warns(report))
+
+
+@pytest.mark.parametrize("card, needle", [
+    ("# card\n", "末行须为"),
+    ("# card\n\nSigned-off-by: {Name} <{email}>\n", "末行须为"),
+    ("# card\n\nSigned-off-by: Full Name <full.name@example.com>\n", "占位身份"),
+])
+def test_model_card_bad_signoff_is_error_when_upload(
+        tmp_path: Path, card: str, needle: str) -> None:
+    _fill_run_dir(
+        tmp_path,
+        run_yaml="model: org/X\nprovider:\n  upload: {repo: org/X}\n")
     (tmp_path / "model_card.md").write_text(card)
     report = check_artifacts(tmp_path)
     assert not report.ok
@@ -161,3 +178,24 @@ def test_any_top_level_yaml_counts(tmp_path: Path, name: str) -> None:
     _fill_run_dir(tmp_path)
     (tmp_path / "run.yaml").rename(tmp_path / name)
     assert check_artifacts(tmp_path).ok
+
+
+def test_recipe_manifests_are_not_treated_as_run_config(tmp_path: Path) -> None:
+    _fill_run_dir(tmp_path)
+    (tmp_path / "qwen3-8-27b.yaml").write_text(
+        "schema_version: '1.0'\nmodel: {id: qwen3-8-27b, source: x}\n"
+        "environments: {}\noperations: {}\nvariants: []\nresult_tables: []\n")
+    report = check_artifacts(tmp_path)
+    assert report.ok
+    assert "qwen3-8-27b.yaml" not in report.present
+
+
+def test_upload_detected_with_recipe_sidecar(tmp_path: Path) -> None:
+    _fill_run_dir(
+        tmp_path,
+        run_yaml="model: org/X\nprovider:\n  upload: {repo: org/X}\n")
+    (tmp_path / "qwen3-8-27b.yaml").write_text(
+        "schema_version: '1.0'\nmodel: {id: qwen3-8-27b, source: x}\n"
+        "environments: {}\noperations: {}\nvariants: []\nresult_tables: []\n")
+    report = check_artifacts(tmp_path)
+    assert any("model_card.md 缺失" in m for m in _errors(report))

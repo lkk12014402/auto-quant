@@ -6,6 +6,24 @@
 
 **新任务入口：直接按下面「硬流程」五步建 plan 开工，不要从中间章节开始。**
 
+> **命令可用性（动手前先看，一切以 `aqa --help` 为准）。** 本仓当前已注册、可直接用：
+> `run`（含 `--dry-run` / `--resume`）、`validate`、`eval`、`compare`、`list`、
+> `swebench`、`inspect <run_dir>`、`session {state|report|events} <run_dir>`、
+> `artifacts check <run_dir>`、`recipe {list|show <model>|lookup <model>}`（只读
+> Recipe KB：外部 agent 无 agent.optimize 时的热启动查询，见 §文档地图）、
+> `journal {add|show} -r <run_dir>`（把 plan/推理/改方案落进 run 的 `journal.md`，见 §文档地图）、
+> `reproduce <manifest> --variant <id> [--mode full|eval-only] [--dry-run]`
+> （复现已发布 recipe 并做输入/结构/数值三面校验，产物 `reproduction_report.json`；
+> 也可从 Python 调用 `aqa.reproduce.reproduce_manifest`，见 §文档地图）、
+> `log-action <run_dir> --kind ... --text ...`（owner 动作写入 `owner_actions.jsonl` 并并入 manifest）、
+> `capture-patch <run_dir> --repo <git仓>`（把工作区 tracked diff 存入 `patches/owner/`）。
+> **下文引用但当前尚未接入 CLI、勿直接执行**的命令
+> （按 [RFC 0001](docs/rfc/0001-reproducible-session-state-machine.md) 分期补齐）：
+> `sweep`（候选生成逻辑已在 `aqa/quantize/candidates.py`，CLI 未接）、
+> `knowledge show|diff|push-references`（P3 Recipe KB）、
+> `publish-patch`（补丁上行）。碰到未接入命令：按该节描述的**意图**
+> 手工完成并在 journal 记一笔，**不要"幻觉执行"**。
+
 ## 硬流程：每个模型必走的五步 + 产物契约
 
 **接到任何量化/评估任务，先读这段。** 后面各节是知识库，本段是执行顺序。
@@ -20,7 +38,7 @@
 | ① 结构分析与量化方案 | 不下载权重读 config+index；**先查 skill / recipe / knowledge**（查阅清单是硬章节，逐条记采纳或偏离）；三件套探针定推理路径；出逐模块精度表 | `analysis.md` | 查阅清单填满；量化范围对 index.json 逐条核对，ignore 名称另与 AutoRound 实际模块名/前缀映射核对；给出量化命令 + 评估计划 + 预期体积 |
 | ② 环境 | 按①的推理路径结论：先找本机现有环境，没有则新建 venv（uv 优先，conda 优先于系统 python） | `setup_venv.sh` + `requirements.txt` | 自检通过（架构 registry 命中 = 硬门槛）；自检后 `uv pip freeze` 冻结；**之后每次换依赖必须重跑自检并重冻结** |
 | ③ yaml 定稿 | 从 `templates/run.yaml` 出发按①②结论填全（baseline/quant/eval/gate/sink） | `run.yaml`（实际文件名可另起） | `aqa validate` 过 + 回传字段补全（§0 铁律）；后续单跑某环节也从此 yaml 派生 |
-| ④ 运行与输出 | `aqa run`；输出结构守 layout 契约；发布权重（`provider.upload`）时写 model card | `model_card.md`（仅发布时必填） | 输出符合 `aqa/report/layout.yaml`（`aqa inspect` 核对）；card 按 `templates/model_card.md` 的生成规则与禁写清单填写（只写用户部署所需，审计与证据留在 report），末行 `Signed-off-by: Name <email>`（身份每次向用户确认，不得推断），并作为模型 repo README |
+| ④ 运行与输出 | `aqa run`；输出结构守 layout 契约；量化 run 只要产出了评估精度就写 model card（发布时用真实 signoff） | `model_card.md`（量化 run 有 eval 即写；无 signoff 为 draft） | 输出符合 `aqa/report/layout.yaml`（`aqa inspect` 核对）；card 按 `templates/model_card.md` 的生成规则与禁写清单填写（只写用户部署所需，审计与证据留在 report）；缺失的 `base_repo_id`/signoff 用模板占位符留空，发布时末行必须是用户确认的 `Signed-off-by: Name <email>`（不得推断），并作为模型 repo README |
 | ⑤ 回溯 | 对照产物写报告（不凭记忆）；经验全部路由落点 | `report.md` | sanity check 达标（体积/键 dtype/完备性）；经验路由表无空行；`aqa artifacts check <run_dir>` 全过 |
 
 贯穿全程另有两份产物：`journal.md`（叙事日志：每步命令+依据+坑，**随手记
@@ -51,6 +69,12 @@
 | knowledge/session 沉淀机制 | `docs/usage/knowledge_sessions.md` |
 | owner 收尾 skill（session 沉淀） | `skills/session-sediment/SKILL.md` |
 | owner 回写 recipe 站 skill（量化完更新 INC-Quantization-Recipes） | `skills/recipe-page/SKILL.md` |
+| **复现已发布 recipe（三面校验 + 报告）** | `skills/reproduce/SKILL.md`；CLI `aqa reproduce <manifest> --variant <id>`；API `aqa.reproduce.reproduce_manifest` / `plan_reproduction` |
+| **外部 agent 技能路由目录（intent→skill）** | `skills/SKILLS.md` |
+| **技能交互契约（五段循环 Intake→Route→Plan→Confirm→Execute + 相位产物 IO）** | `skills/CONTRACT.md` |
+| **外部 agent 技能自动发现**（`.claude/skills/`、`.agents/skills/` 瘦 stub + 根 `CLAUDE.md`=@AGENTS.md） | `scripts/sync_skill_stubs.py`（生成器，改 skill frontmatter 后重跑） |
+| **Recipe KB 查询（外部 agent 热启动，GPU-free）** | `aqa recipe {list\|show\|lookup}`（语料在 `recipes/quant/*.json`） |
+| **Run journal（plan/推理/改方案落进 run，append-only，GPU-free）** | `aqa journal {add\|show} -r <run_dir>`（实现 `aqa/session/journal.py`；产物 `journal.md` + session `events.jsonl`） |
 | day-0 新架构 playbook | `docs/day0_quantization_recipe.md` |
 | auto-round 全参数参考（file:line 引用） | `docs/autoround_full_reference.md` |
 | 结构分析 skill（逐模块精度判定） | autoround-quant-analysis/SKILL.md（部署机本地文件，不在本仓，向 owner 要路径） |
@@ -350,6 +374,25 @@ recipe）：harness 自动 `vllm serve`（TP=num_gpus）→ `evalscope eval` →
 `aqa/swebench/`，轨迹为 Harbor ATIF 兼容格式）；详见各自模块 docstring 与
 `aqa swebench --help`。
 
+### 5.5 复现已发布 recipe（`aqa reproduce`）
+
+有 `recipe.yaml`（INC schema 1.0）时，不要手工拼命令复跑；用复现路径：
+
+```bash
+aqa reproduce recipe.yaml --variant mxfp4-v1 --dry-run        # 先审 resolved plan
+aqa reproduce recipe.yaml --variant mxfp4-v1 --mode full \
+    --out ./reproduce/mxfp4-v1
+aqa reproduce recipe.yaml --variant mxfp4-v1 --mode eval-only \
+    --checkpoint org/Model-MXFP4-AutoRound --out ./reproduce/eval-only
+```
+
+它会复用 `QUANT→EVAL→CLOSE→VERIFY` 相位机，**只读**（不 pin KB、不上传权重、
+不跑 fix-loop），并写 `reproduction_report.json`：输入等价（model/命令/包版本）、
+量化结构（逐 module scheme）、评估数值（abs+rel 容差）。退出码：0 reproduced、
+1 not_reproduced、2 inconclusive。外部 agent 可直接调用
+`aqa.reproduce.reproduce_manifest(...)` 拿同一个 dict 报告；详见
+`skills/reproduce/SKILL.md`。
+
 ## 6. 结果落盘与回传（sink）
 
 ### 6.1 落盘结构契约
@@ -357,6 +400,10 @@ recipe）：harness 自动 `vllm serve`（TP=num_gpus）→ `evalscope eval` →
 - **落盘结构是显式契约**：机器可读定义在 `aqa/report/layout.yaml`（single
   source of truth），任何 run 目录用 `aqa inspect <run_dir>` 校验完整性，
   不要凭记忆核对。人类可读版见 `docs/run_layout.md`。
+- 量化 run 的 CLOSE 还会写 `<model_id>.yaml`：`to_inc_strict()` 投影后的
+  INC-strict recipe（无 `quantization_details`/`provenance`），文件名等于
+  `model.id`，可直接拷进 `INC-Quantization-Recipes/_data/recipes/` 并用其
+  Ruby 校验器验证；`recipe.yaml` 保留 aqa 扩展版供本仓审计。
 - 本地：`output.dir`（`unique_dir: true` 自动加时间戳并维护 `latest` 软链）。
 
 ### 6.2 sink 什么时候触发（pipeline.py 精确时点）
@@ -433,11 +480,15 @@ output:
 
 ### 6.5 量化模型权重
 
-默认**不外传**。需要发布时配 `provider.upload: {repo, token_env}` →
-`HfModelSink` 推到 HF **model** repo（自动创建仓库 + 生成模型卡）。
-模型卡除精度表外带 **Reproduce & Environment** 章节：实际量化命令、评估命令、
-关键包版本（auto-round/lm_eval/transformers/torch/vllm，取自本次 run 的
-manifest）与推理提示；评估失败但量化成功时也会兜底推送。
+默认**不外传**。量化 run 只要产出了评估精度，CLOSE 就会写 `model_card.md`
+（模板与生成规则见 `templates/model_card.md`）：有 `provider.upload.signoff` 时
+写可发布卡；没有时写 **draft**，`base_repo_id`/signoff 留模板占位符
+（`{base_repo_id}` / `{member name} <{member email}>`），评估表按实际 task 全量
+写入。需要发布时配 `provider.upload: {repo, token_env, signoff}`，`HfModelSink`
+把该卡原样作为 model repo 的 `README.md`。`signoff` 为 `"Name <email>"`，必须是
+用户当次确认的身份——upload 通常走 bot 账号，代码不会从 git config/HF whoami/
+环境变量推断；缺 `signoff` 或仍是占位身份时**跳过上传**。评估失败但量化成功时，
+只有已存在合格 `model_card.md` 才会兜底推送。
 
 ### 6.6 密钥链（env.sh → yaml → sink）
 

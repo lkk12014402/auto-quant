@@ -8,137 +8,235 @@
 # 字段：
 #   path     相对 run 目录的路径（<...> 为变量段）
 #   kind     file | dir
+#   phase    产物归属的 Phase（ANALYZE|ENV|PLAN|BASELINE|QUANT|EVAL|GATE|PUBLISH|CLOSE；
+#            空 = 跨阶段/执行器级）。RFC 0001 §4 的阶段产物契约。
 #   when     always | done | quantize | gate | baseline | thinking_dual | fix_loop |
-#            patch_capture | local_fs_sink | sweep | staged_docker | staged_venv
+#            patch_capture | local_fs_sink | sweep | staged_docker | staged_venv |
+#            session | session_quantize | session_done | optional
 #   sink     true = 进 dataset sink 上传包（脱敏后）；false = 权重/大文件，不上传
 #   desc     内容与用途
 
 layout:
+  # ── PLAN ────────────────────────────────────────────────────────────────
   - path: aqa_run.json
     kind: file
+    phase: PLAN
     when: always
     sink: true
     desc: '运行状态机（{"model", "state": running|done|failed}）；sink 上传前刷新终态。'
 
-  - path: run_manifest.json
+  # ── ANALYZE ─────────────────────────────────────────────────────────────
+  - path: analysis.json
     kind: file
-    when: done
+    phase: ANALYZE
+    when: session
     sink: true
-    desc: 复现清单——model/quant/eval 配置、环境版本、实际执行的量化与评估命令、结果分数、self-heal 记录。
+    desc: 模型身份（architectures/model_type/层数/多模态）+ 计划量化范围（scheme/method/ignore）。确定性骨架，不下载权重；完整逐模块精度表需 agent-optimize。
+
+  - path: recipe_kb.json
+    kind: file
+    phase: ANALYZE
+    when: optional
+    sink: true
+    desc: Recipe KB 热启动审计（query + 命中的历史验证配方 / 未命中为 null）。仅在 agent.optimize+recipe_kb.enabled 的量化 run 写出；命中即注入 agent-optimize 作为起点，优化不改复现。
+
+  # ── ENV ─────────────────────────────────────────────────────────────────
+  - path: env_lock.json
+    kind: file
+    phase: ENV
+    when: session
+    sink: true
+    desc: 冻结的软硬件栈（python/platform/tracked 包版本/accelerator），复用 manifest 探针；复现与排查漂移看这里。
+
+  # ── QUANT ───────────────────────────────────────────────────────────────
+  - path: quant_plan.json
+    kind: file
+    phase: QUANT
+    when: session_quantize
+    sink: true
+    desc: 量化方案机读版——scheme/method/algorithm/iters/ignore + 实际冻结命令及来源。与 .quant_command.json 互为"计划/命令"两面。
 
   - path: .quant_command.json
     kind: file
+    phase: QUANT
     when: quantize
     sink: true
     desc: 实际执行的 auto-round 命令及来源（builder | agent-optimize）。排查"量化命令是什么"看这里。
 
-  - path: gate.json
-    kind: file
-    when: gate
-    sink: true
-    desc: GO/NO-GO/INCONCLUSIVE 判定 + 理由；thinking 双模式时含 modes 逐模式明细。
-
   - path: quantized/
     kind: dir
+    phase: QUANT
     when: quantize
     sink: false
     desc: 量化 checkpoint（权重）。dataset sink 结构性排除；上传 HF 需 provider.upload（HF model repo）。
 
   - path: quantized/quantize.log
     kind: file
+    phase: QUANT
     when: quantize
     sink: true
     desc: auto-round 全程日志（层进度、量化摘要、导出问题）。
 
-  - path: eval/
-    kind: dir
-    when: done
-    sink: true
-    desc: 评估产物（单模式或 thinking=on）。accuracy.json（mean_score + 逐 benchmark 分数与命令）+ <task_group>/（lm_eval 输出与 .eval.log）。
-
-  - path: eval/accuracy.json
-    kind: file
-    when: done
-    sink: true
-    desc: '{model, backend, mean_score, results{task: {score, metric, num_samples}}, commands, healed}。'
-
-  - path: eval_thinking_off/
-    kind: dir
-    when: thinking_dual
-    sink: true
-    desc: thinking=off 模式的评估产物，结构同 eval/。
-
+  # ── BASELINE ────────────────────────────────────────────────────────────
   - path: baseline/
     kind: dir
+    phase: BASELINE
     when: baseline
     sink: true
     desc: 'bf16 基线评估（eval.baseline: true），accuracy.json 同构；gate 对比的一侧。'
 
   - path: baseline_thinking_off/
     kind: dir
+    phase: BASELINE
     when: thinking_dual
     sink: true
     desc: bf16 基线的 thinking=off 评估。
 
+  # ── EVAL ────────────────────────────────────────────────────────────────
+  - path: eval/
+    kind: dir
+    phase: EVAL
+    when: done
+    sink: true
+    desc: 评估产物（单模式或 thinking=on）。accuracy.json（mean_score + 逐 benchmark 分数与命令）+ <task_group>/（lm_eval 输出与 .eval.log）。
+
+  - path: eval/accuracy.json
+    kind: file
+    phase: EVAL
+    when: done
+    sink: true
+    desc: '{model, backend, mean_score, results{task: {score, metric, num_samples}}, commands, healed}。'
+
+  - path: eval_thinking_off/
+    kind: dir
+    phase: EVAL
+    when: thinking_dual
+    sink: true
+    desc: thinking=off 模式的评估产物，结构同 eval/。
+
+  - path: eval_report.json
+    kind: file
+    phase: EVAL
+    when: session_done
+    sink: true
+    desc: 合成报告——source(bf16) vs quant 的 mean_score 与逐 benchmark gap + gate 结论。一眼看量化掉了多少。
+
+  - path: sweep_report.json
+    kind: file
+    phase: EVAL
+    when: sweep
+    sink: true
+    desc: aqa sweep 多候选对比：各档命令、状态、逐 benchmark 分数、baseline。
+
+  # ── GATE ────────────────────────────────────────────────────────────────
+  - path: gate.json
+    kind: file
+    phase: GATE
+    when: gate
+    sink: true
+    desc: GO/NO-GO/INCONCLUSIVE 判定 + 理由；thinking 双模式时含 modes 逐模式明细。
+
+  # ── CLOSE ───────────────────────────────────────────────────────────────
+  - path: run_manifest.json
+    kind: file
+    phase: CLOSE
+    when: done
+    sink: true
+    desc: 复现清单——model/quant/eval 配置、环境版本、实际执行的量化与评估命令、结果分数、self-heal 记录。
+
+  - path: model_card.md
+    kind: file
+    phase: CLOSE
+    when: upload
+    sink: true
+    desc: "量化模型卡（有 eval 即写；无 signoff 为 draft，base_repo_id/身份留模板占位符；发布时作为 HF model repo 的 README.md 上传）。只写部署所需内容，发布时末行必须是用户确认的 Signed-off-by: Name <email>。"
+
+  - path: recipe.yaml
+    kind: file
+    phase: CLOSE
+    when: session_quantize
+    sink: true
+    desc: INC-Recipes 兼容的 model-recipe 清单（schema 1.0）——model/environments/operations/variants/result_tables + aqa 扩展（quantization_details 逐模块精度覆盖 + provenance）。可经 to_inc_strict() 剥离扩展后直接回灌 recipe 站。
+
+  # ── VERIFY (RFC 0002 §5; only aqa reproduce) ───────────────────────────
+  - path: reproduction_report.json
+    kind: file
+    phase: VERIFY
+    when: reproduce
+    sink: true
+    desc: 复现校验报告——输入等价（model/命令/环境）、量化结构（逐分组 scheme）、评估数值（abs+rel 容差）+ verdict(reproduced/not_reproduced/inconclusive)。
+
+  - path: <artifact_name>/
+    kind: dir
+    phase: CLOSE
+    when: local_fs_sink
+    sink: true
+    desc: local_fs sink 的产物拷贝（<model>-AutoRound-<scheme>-<method>/），含 run_meta.json。
+
+  # ── 跨阶段 / 执行器级 ────────────────────────────────────────────────────
   - path: logs/
     kind: dir
+    phase: ""
     when: always
     sink: true
-    desc: 执行器日志（executor_*.log）+ agent 产物（agent_optimize/ 推荐过程、agent_fixes/<phase>/ 每轮修复记录）。
+    desc: 执行器/相位日志。`pipeline.log` 始终写出（run logger 的 tee，逐相位 enter/done + quant/eval banner + heal 记录，全程留痕）；`run.console.log` 是整轮完整 console 转录（fd 级 tee：logger stderr + 子进程 stdout —— lm_eval 结果表、auto-round 进度；best-effort，捕获 stdio 下缺省），评估/量化原始输出的可发现入口；`executor_*.log`（venv/docker 置备时）+ agent 产物（`agent_optimize/` 推荐过程、`agent_fixes/<phase>/` 每轮修复记录）按需出现。
 
   - path: patches/
     kind: dir
+    phase: ""
     when: fix_loop
     sink: true
     desc: fix-loop 产出的可用补丁（<phase>/ 下 patch 文件 + 说明）；owner 复查补丁的落点。
 
   - path: patch_snapshot/
     kind: dir
+    phase: ""
     when: patch_capture
     sink: true
     desc: 'patch.capture: true 时工作区改动的快照（量化/评估前环境状态的 diff）。'
 
-  - path: <artifact_name>/
-    kind: dir
-    when: local_fs_sink
-    sink: true
-    desc: local_fs sink 的产物拷贝（<model>-AutoRound-<scheme>-<method>/），含 run_meta.json。
-
-  - path: sweep_report.json
-    kind: file
-    when: sweep
-    sink: true
-    desc: aqa sweep 多候选对比：各档命令、状态、逐 benchmark 分数、baseline。
-
   - path: .aqa_local_docker/
     kind: dir
+    phase: ""
     when: staged_docker
     sink: false
     desc: local docker staged inner run 工件（_run.yaml 等），调试用。
 
   - path: .aqa_local_venv/
     kind: dir
+    phase: ""
     when: staged_venv
     sink: false
     desc: local venv staged inner run 工件。
 
   - path: owner_actions.jsonl
     kind: file
+    phase: ""
     when: optional
     sink: true
     desc: 'owner/人工在 run 期间的动作记录（`aqa log-action` 追加：env/command/patch/note/decision）；run 结束时并入 run_manifest.json 的 owner_actions 段。'
 
+  - path: session/allowed_actions.json
+    kind: file
+    phase: ""
+    when: session
+    sink: true
+    desc: 'Coordinator 的 phase→允许动作 + 合法转移契约（RFC §S3，对标 Hyperloom PHASE_ALLOWED_ACTIONS）。proposer（内部 agent / 外部驱动）据此知道每个 phase 能做什么；唯一回边 GATE→QUANT（有界 re-QUANT）。'
+
 # when 条件的判定规则（inspect 据此决定"该不该有"）：
-#   always        每个 run 都有
-#   done          run 正常完成（aqa_run.json.state == done）
-#   quantize      provider.type == quantize
-#   gate          配置了 gate（max_accuracy_drop 或 min_accuracy）
-#   baseline      eval.baseline: true
-#   thinking_dual eval.thinking 判定为双模式（auto 检出 thinking 或 both）
-#   fix_loop      agent.fix_loop: true
-#   patch_capture patch.capture: true
-#   local_fs_sink output.sinks 含 local_fs
-#   sweep         aqa sweep 编排（quant.recipe_sweep: true）
-#   staged_docker executor local + env.type == docker
-#   staged_venv   executor local + env.type == venv
-#   optional      从不强制（存在即 present，缺失不算 incomplete；如 owner_actions.jsonl）
+#   always          每个 run 都有
+#   done            run 正常完成（aqa_run.json.state == done）
+#   quantize        provider.type == quantize（检出 quantized/）
+#   gate            配置了 gate（max_accuracy_drop 或 min_accuracy）
+#   baseline        eval.baseline: true
+#   thinking_dual   eval.thinking 判定为双模式（auto 检出 thinking 或 both）
+#   fix_loop        agent.fix_loop: true
+#   patch_capture   patch.capture: true
+#   local_fs_sink   output.sinks 含 local_fs
+#   sweep           aqa sweep 编排（quant.recipe_sweep: true）
+#   staged_docker   executor local + env.type == docker
+#   staged_venv     executor local + env.type == venv
+#   session         走了 session 状态机（存在 session/）——P1+ run 的机读产物前提
+#   session_quantize session 且 quantize（quant_plan.json 的前提）
+#   session_done    session 且 done（eval_report.json 的前提）
+#   optional        从不强制（存在即 present，缺失不算 incomplete；如 owner_actions.jsonl）

@@ -1,7 +1,7 @@
 """``aqa`` command-line interface.
 
-Verbs mirror NeMo Evaluator's ``nel``: run / eval / quant / validate / inspect /
-list / compare / gate / report -- a clear, declarative surface over the pipeline.
+Verbs mirror NeMo Evaluator's ``nel``: run / eval / quant / validate / list /
+compare / gate / report -- a clear, declarative surface over the pipeline.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from .eval.registry import BenchmarkRegistry
 from .logging_util import AqaError, get_logger
 from .registry import EXECUTORS, all_registries
 from .report.owner_actions import OWNER_ACTION_KINDS, append_owner_action
+from .session.journal import KINDS as _JOURNAL_KINDS
 
 _log = get_logger("cli")
 
@@ -33,7 +34,10 @@ def main() -> None:
 @main.command()
 @click.argument("config", type=click.Path(exists=True, dir_okay=False))
 @click.option("--dry-run", is_flag=True, help="Validate and print the plan without executing.")
-@click.option("--resume", is_flag=True, help="Resume an interrupted run if detected.")
+@click.option("--resume", is_flag=True,
+              help="Resume from <output.dir>/session: skip phases whose artifacts "
+                   "already exist (e.g. don't re-quantize). Requires a prior session; "
+                   "errors if none is found (local executor only).")
 def run(config: str, dry_run: bool, resume: bool) -> None:
     """Run a full quantize -> evaluate -> gate pipeline from a run.yaml."""
     cfg = load_run_config(config)
@@ -58,6 +62,72 @@ def validate(config: str) -> None:
         raise click.ClickException(f"unknown executor {cfg.executor.type!r}")
     if cfg.eval.backend not in _backend_names():
         raise click.ClickException(f"unknown backend {cfg.eval.backend!r}")
+
+
+@main.command()
+@click.argument("manifest", type=click.Path(exists=True, dir_okay=False))
+@click.option("--variant", default=None,
+              help="Variant id (auto-selected when the manifest has one).")
+@click.option("--mode", type=click.Choice(["full", "eval-only"]), default="full",
+              help="full = replay quantization + evaluation; eval-only = evaluate an existing checkpoint.")
+@click.option("--out", "out_dir", type=click.Path(file_okay=False), default=None,
+              help="Reproduce run directory (default: ./reproduce/<manifest>-<variant>).")
+@click.option("--checkpoint", default=None,
+              help="eval-only checkpoint (default: variant hf_url / MODEL_PATH.default).")
+@click.option("--abs-tol", type=float, default=0.01, help="Absolute score tolerance.")
+@click.option("--rel-tol", type=float, default=0.02, help="Relative score tolerance.")
+@click.option("--on-input-mismatch", type=click.Choice(["warn", "fail"]), default="warn",
+              help="warn = record mismatch and continue; fail = verdict not_reproduced.")
+@click.option("--dry-run", is_flag=True, help="Print the resolved plan; no execution.")
+@click.option("--force", is_flag=True,
+              help="If --out is non-empty, use a timestamped sibling instead of failing.")
+@click.option("--json", "as_json", is_flag=True, help="Print the full JSON report.")
+def reproduce(
+    manifest: str, variant: str | None, mode: str, out_dir: str | None,
+    checkpoint: str | None, abs_tol: float, rel_tol: float,
+    on_input_mismatch: str, dry_run: bool, force: bool, as_json: bool,
+) -> None:
+    """Reproduce one INC recipe variant and verify input/structure/numbers.
+
+    Exit codes: 0 reproduced, 1 not_reproduced, 2 inconclusive.  The JSON report
+    is also written to <out>/reproduction_report.json (except for --dry-run).
+    """
+    from .reproduce import reproduce_manifest
+
+    try:
+        report = reproduce_manifest(
+            manifest, variant=variant, mode=mode, out_dir=out_dir,
+            checkpoint=checkpoint, abs_tol=abs_tol, rel_tol=rel_tol,
+            on_input_mismatch=on_input_mismatch, dry_run=dry_run, force=force)
+    except AqaError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if dry_run or as_json:
+        click.echo(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        click.echo(f"verdict={report.get('verdict')} mode={report.get('mode')} "
+                   f"variant={report.get('variant')} out={report.get('output_dir')}")
+        inp = report.get("input_equivalence") or {}
+        quant = report.get("quantization_reproduction") or {}
+        ev = report.get("evaluation_reproduction") or {}
+        click.echo(f"  input:  {inp.get('status')}")
+        for diff in inp.get("diffs") or []:
+            click.echo(f"    - {diff}")
+        click.echo(f"  quant:  {quant.get('status')}"
+                   + (f"  ({len(quant.get('group_mismatches') or [])} mismatch(es))"
+                      if quant.get("group_mismatches") else ""))
+        click.echo(f"  eval:   {ev.get('status')}")
+        for row in ev.get("per_benchmark") or []:
+            mark = "ok" if row.get("within") else "MISS"
+            click.echo(f"    [{mark}] {row.get('id')}: expected={row.get('expected')} "
+                       f"got={row.get('got')}")
+        if report.get("error"):
+            click.echo(f"  error:  {report['error']}")
+    if not dry_run:
+        code = {"reproduced": 0, "not_reproduced": 1,
+                "inconclusive": 2}.get(str(report.get("verdict")), 2)
+        if code:
+            raise SystemExit(code)
 
 
 @main.command()
@@ -170,17 +240,13 @@ def capture_patch(run_dir: Path, repo: Path) -> None:
     try:
         root = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            check=False,
+            capture_output=True, text=True, check=False,
         )
         if root.returncode:
             raise click.ClickException(root.stderr.strip() or f"{repo} is not a git repository")
         diff = subprocess.run(
             ["git", "-C", str(root.stdout.strip()), "diff", "--binary", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
+            capture_output=True, text=True, check=False,
         )
     except OSError as exc:
         raise click.ClickException(f"could not run git diff: {exc}") from exc
@@ -197,8 +263,7 @@ def capture_patch(run_dir: Path, repo: Path) -> None:
     patch_path.write_text(diff.stdout, encoding="utf-8")
     try:
         append_owner_action(
-            run_dir,
-            kind="patch",
+            run_dir, kind="patch",
             text=f"Captured tracked working-tree diff from {root.stdout.strip()}",
             command=f"git -C {root.stdout.strip()} diff --binary HEAD",
         )
@@ -207,6 +272,87 @@ def capture_patch(run_dir: Path, repo: Path) -> None:
             f"patch saved at {patch_path}, but action log failed: {exc}"
         ) from exc
     click.echo(f"captured patch -> {patch_path}")
+
+
+@main.command()
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False))
+def inspect(run_dir: str) -> None:
+    """Validate a run dir against the artifact layout contract (aqa/report/layout.yaml).
+
+    Reports which expected entries are present / missing for this run (the
+    ``when`` conditions are detected from the dir itself). Exits non-zero when
+    the run is INCOMPLETE, so owners (human or agent) can gate on it instead of
+    eyeballing the layout.
+    """
+    from .report.layout import format_report, inspect_run_dir
+
+    report = inspect_run_dir(Path(run_dir))
+    click.echo(format_report(report))
+    if not report.ok:
+        raise SystemExit(1)
+
+
+@main.group()
+def session() -> None:
+    """Operator tools for a run's session/ (state machine, events, resume status).
+
+    Mirrors Hyperloom's ``session <state|report|events>`` operator surface: the
+    observable session artifacts are the contract.
+    """
+
+
+def _session_dir(run_dir: str) -> Path:
+    d = Path(run_dir)
+    return d / "session" if (d / "session").exists() else d
+
+
+@session.command(name="state")
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False))
+def session_state(run_dir: str) -> None:
+    """Print the raw session state.json (phase statuses + decisions + gate)."""
+    from .session.state import state_path
+
+    path = state_path(_session_dir(run_dir))
+    if not path.exists():
+        raise click.ClickException(f"no session state at {path}")
+    click.echo(path.read_text().rstrip())
+
+
+@session.command(name="report")
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False))
+def session_report(run_dir: str) -> None:
+    """Human-readable phase progress + current best + decisions."""
+    from .session.state import SessionState, state_path
+
+    path = state_path(_session_dir(run_dir))
+    if not path.exists():
+        raise click.ClickException(f"no session state at {path}")
+    st = SessionState.from_dict(json.loads(path.read_text()))
+    lines = [f"run_id: {st.run_id}", f"current phase: {st.phase}", "phases:"]
+    for name, status in st.phases.items():
+        lines.append(f"  [{status:<8}] {name}")
+    if st.baseline:
+        lines.append(f"baseline: mean={_fmt(st.baseline.get('mean_score'))}")
+    if st.current_best:
+        lines.append(f"current_best: {json.dumps(st.current_best, ensure_ascii=False)}")
+    if st.gate:
+        lines.append(f"gate: {st.gate.get('verdict')} "
+                     f"({'; '.join(st.gate.get('reasons', []))})")
+    for d in st.decisions:
+        lines.append(f"decision[{d.get('phase')}]: {d.get('what')} — {d.get('why')}")
+    click.echo("\n".join(lines))
+
+
+@session.command(name="events")
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False))
+def session_events(run_dir: str) -> None:
+    """Print the append-only session events.jsonl (one event per line)."""
+    from .session.events import events_path
+
+    path = events_path(_session_dir(run_dir))
+    if not path.exists():
+        raise click.ClickException(f"no session events at {path}")
+    click.echo(path.read_text().rstrip())
 
 
 @main.group()
@@ -226,16 +372,141 @@ def artifacts_check(run_dir: str) -> None:
         raise SystemExit(1)
 
 
-@main.command()
-@click.argument("run_dir", type=click.Path(exists=True, file_okay=False))
-def inspect(run_dir: str) -> None:
-    """Check a run directory against the artifact layout contract."""
-    from .report.layout import format_report, inspect_run_dir
+@main.group()
+def recipe() -> None:
+    """Read-only Recipe KB: consult validated quant recipes before a run.
 
-    report = inspect_run_dir(Path(run_dir))
-    click.echo(format_report(report))
-    if not report.ok:
-        raise SystemExit(1)
+    External-agent analog of Hyperloom's ``hyperloom-kb`` CLI. Exposes the pinned
+    ``recipes/quant/*.json`` corpus and ``RecipeKB`` progressive-relaxation
+    lookup, so an agent driving aqa with ``agent.optimize`` *off* can still
+    hot-start from a validated recipe. GPU-free; no model load.
+    """
+
+
+def _recipe_kb():
+    from .agent.recipe_kb import RecipeKB
+
+    return RecipeKB.from_config(None)
+
+
+@recipe.command(name="list")
+def recipe_list() -> None:
+    """List every known recipe (source, model, family, schemes)."""
+    rows = _recipe_kb().entries_summary()
+    if not rows:
+        click.echo("no recipes found")
+        return
+    for r in rows:
+        schemes = ",".join(r["schemes"]) if r["schemes"] else "-"
+        click.echo(f"{r['source']:<7} {r['model']:<42} "
+                   f"family={r['family'] or '-':<14} schemes={schemes}")
+
+
+@recipe.command(name="show")
+@click.argument("model")
+def recipe_show(model: str) -> None:
+    """Print the full pinned recipe JSON for an exact model id."""
+    rec = _recipe_kb().show(model)
+    if rec is None:
+        raise click.ClickException(
+            f"no exact-model recipe for {model!r} — try "
+            f"`aqa recipe lookup {model}` for a relaxed (family) match, "
+            f"or `aqa recipe list`.")
+    click.echo(json.dumps(rec, ensure_ascii=False, indent=2))
+
+
+@recipe.command(name="lookup")
+@click.argument("model")
+@click.option("--scheme", default=None, help="Requested scheme (e.g. mxfp8, W4A16).")
+@click.option("--model-type", default=None,
+              help="Architecture-family hint for relaxed matching (e.g. qwen3).")
+@click.option("--json", "as_json", is_flag=True,
+              help="Emit the machine-readable hit dict instead of the prose block.")
+def recipe_lookup(model: str, scheme: str | None, model_type: str | None,
+                  as_json: bool) -> None:
+    """Closest validated recipe via progressive relaxation (hot-start block).
+
+    Prints the ADVISORY hot-start context (validated command, ignore_layers,
+    lessons, past failures) the agent should ADAPT to this run's paths and
+    re-validate — never copy blindly. Exits non-zero on a cold start (no match).
+    """
+    from .agent.recipe_kb import RecipeKB
+
+    hit = _recipe_kb().lookup(model, scheme=scheme, model_type=model_type)
+    if hit is None:
+        raise click.ClickException(
+            f"no recipe matched {model!r}"
+            + (f" (scheme={scheme})" if scheme else "")
+            + " — cold start. See `aqa recipe list` for the corpus.")
+    if as_json:
+        click.echo(json.dumps(hit.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        click.echo(RecipeKB.as_hot_start_context(hit))
+
+
+@main.group()
+def journal() -> None:
+    """External-agent run journal: capture plan + reasoning + revisions as artifacts.
+
+    The pipeline writes structured per-phase artifacts and an internal decisions
+    log, but the driving agent's *narrative* — the plan, and the plan-then-revise
+    history as pits are hit — otherwise lived only in the chat. ``journal add``
+    persists it into the run (``journal.md`` + session ``events.jsonl``),
+    append-only, so provenance travels with ``results/``. GPU-free.
+    """
+
+
+def _read_body(body: str | None) -> str:
+    """Resolve a ``--body`` value: ``@file`` reads a file, ``-`` reads stdin."""
+    if not body:
+        return ""
+    if body == "-":
+        import sys
+        return sys.stdin.read()
+    if body.startswith("@"):
+        return Path(body[1:]).read_text(encoding="utf-8")
+    return body
+
+
+@journal.command(name="add")
+@click.option("--run", "-r", "run_dir", required=True,
+              type=click.Path(file_okay=False),
+              help="Run output dir (bootstrapped if absent; the pipeline appends here).")
+@click.option("--title", "-t", required=True, help="One-line entry title.")
+@click.option("--body", "-b", default="",
+              help="Entry body. '@file' reads a file; '-' reads stdin.")
+@click.option("--kind", "-k", type=click.Choice(list(_JOURNAL_KINDS)), default="note",
+              help="plan | revise | decision | note | observation.")
+@click.option("--phase", "-p", default="", help="Phase tag (e.g. ANALYZE, PLAN, QUANT).")
+@click.option("--author", default="external-agent", help="Who wrote this entry.")
+@click.option("--ref", default="", help="Optional reference (path, URL, prior run).")
+@click.option("--supersedes", default="",
+              help="For kind=revise: the entry id this one corrects (e.g. j002).")
+@click.option("--decision", "as_decision", is_flag=True,
+              help="Also mirror into state.json decisions[] (shows in session report).")
+def journal_add(run_dir: str, title: str, body: str, kind: str, phase: str,
+                author: str, ref: str, supersedes: str, as_decision: bool) -> None:
+    """Append one journal entry to a run and rebuild journal.md."""
+    from .session.journal import append_journal, mirror_decision
+
+    entry = append_journal(run_dir, title=title, body=_read_body(body), kind=kind,
+                           phase=phase, author=author, ref=ref, supersedes=supersedes)
+    msg = f"journaled {entry['id']} ({kind}) -> {Path(run_dir) / 'journal.md'}"
+    if as_decision:
+        ok = mirror_decision(run_dir, phase=phase, what=title,
+                             why=entry["body"] or title, ref=ref)
+        msg += "  [+state.json]" if ok else "  [state.json absent — event only]"
+    click.echo(msg)
+
+
+@journal.command(name="show")
+@click.option("--run", "-r", "run_dir", required=True,
+              type=click.Path(exists=True, file_okay=False), help="Run output dir.")
+def journal_show(run_dir: str) -> None:
+    """Print the run journal (rebuilt from the session event stream)."""
+    from .session.journal import render_markdown
+
+    click.echo(render_markdown(run_dir).rstrip())
 
 
 def _fmt(v):

@@ -75,13 +75,15 @@ class RunMeta:
         """Owner slug derived from ``org/name`` model ids (else ``unknown``).
 
         An explicit ``org`` override wins; otherwise derive from ``model``.
-        Local model paths (e.g. ``/models/...``) yield an empty first segment and
-        fall back to ``unknown`` — callers should set ``org`` (or ``report_model``)
-        for local-path runs.
+        Local model paths (``/models/...`` or ``./models/...``) bucket under
+        ``local``; bare ids without an org bucket under ``unknown``.
         """
         if self.org_override:
             return self.org_override
-        return self.model.split("/", 1)[0] if "/" in self.model else "unknown"
+        if "/" not in self.model:
+            return "unknown"
+        first = self.model.split("/", 1)[0]
+        return first if first not in ("", ".") else "local"
 
 
 @runtime_checkable
@@ -524,6 +526,22 @@ class HfModelSink:
         return commands, versions
 
     def _write_model_card(self, model_dir: Path, meta: RunMeta, repo_name: str) -> None:
+        # Prefer the run's reviewed model_card.md (hard-flow step ④, signed by
+        # the operator).  Only fall back to the compact generated card for
+        # direct API callers that have no run directory.
+        run_root = getattr(meta, "run_root", None)
+        run_card = (Path(run_root) / "model_card.md") if run_root else None
+        if run_card is not None and run_card.is_file():
+            from .model_card import signoff_problem
+
+            problem = signoff_problem(run_card.read_text(errors="replace"))
+            if problem:
+                raise AqaError(problem)
+            try:
+                shutil.copy2(run_card, model_dir / "README.md")
+                return
+            except OSError as exc:  # never block the upload on a card write
+                _log.warning("hf_model: could not copy model_card.md: %s", exc)
         results = meta.extra.get("results") if isinstance(meta.extra, dict) else None
         commands, versions = self._card_commands_versions(meta)
         try:

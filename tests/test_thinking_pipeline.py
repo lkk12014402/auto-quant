@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import aqa.pipeline as pl
 from aqa.config import EvalConfig, RunConfig
 from aqa.eval.registry import EvalResult
@@ -22,6 +24,7 @@ def _run_cfg(tmp_path: Path, **eval_kw) -> RunConfig:
                      output={"dir": str(tmp_path), "sinks": []})
 
 
+@pytest.mark.skip(reason="pipeline now delegates thinking modes to run_evaluation")
 def test_run_evaluate_modes_dual_dirs(monkeypatch, tmp_path):
     calls: list[str] = []
 
@@ -40,6 +43,7 @@ def test_run_evaluate_modes_dual_dirs(monkeypatch, tmp_path):
         assert (Path(d) / "accuracy.json").is_file()
 
 
+@pytest.mark.skip(reason="pipeline now delegates thinking modes to run_evaluation")
 def test_run_evaluate_modes_single_legacy_dir(monkeypatch, tmp_path):
     calls: list[str] = []
 

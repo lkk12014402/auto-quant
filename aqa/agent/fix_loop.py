@@ -35,8 +35,10 @@ from .verdict import AgentAnalysis, Verdict
 
 if TYPE_CHECKING:
     from ..agent_eval.stats import TokenStats
+    from .critic import Critic
     from .knowledge import KnowledgeStore
     from .patch import PatchCapture
+    from .policy_gate import PolicyGate
 
 _log = get_logger("agent.fixloop")
 
@@ -156,6 +158,11 @@ class FixLoop:
         knowledge: KnowledgeStore | None = None,
         replay: bool = True,
         run_id: str = "",
+        critic: Critic | None = None,
+        policy_gate: PolicyGate | None = None,
+        on_event: Callable[[str, dict], None] | None = None,
+        state_seed: str = "",
+        allowed_actions: str = "",
     ):
         self.phase_name = phase_name
         self.run_phase = run_phase
@@ -179,11 +186,73 @@ class FixLoop:
         self.method = method
         self.cuda_guard = cuda_guard
         self.patch_capture = patch_capture
+        # P4 (RFC §3.5): propose/decide separation + named-rule gating. All three
+        # are advisory observers by default (None/"" => byte-identical old behavior);
+        # the deterministic keep/revert still comes from the run_phase re-run.
+        self.critic = critic
+        self.policy_gate = policy_gate
+        self.on_event = on_event
+        self.state_seed = state_seed
+        self.allowed_actions = allowed_actions
 
         self.tiers: list[Tier] = resolve_tiers(self.cfg.tiers)
         self.session_id = f"fix_{phase_name}_{uuid.uuid4().hex[:8]}"
 
     # -- helpers ---------------------------------------------------------
+    def _emit(self, type: str, **fields) -> None:
+        """Forward a structured event to the injected sink (best-effort)."""
+        if self.on_event is None:
+            return
+        try:
+            self.on_event(type, {"phase": self.phase_name, **fields})
+        except Exception as exc:  # noqa: BLE001 - telemetry must never break a fix
+            _log.debug("event sink failed (%s): %s", type, exc)
+
+    def _policy_review(self, attempt: int) -> bool:
+        """Review the captured edits against PolicyGate; return True if reverted.
+
+        On any violation the named rules are recorded to ``events.jsonl``.  When the
+        gate is in ``enforce`` mode the violating edits are rolled back to the
+        pristine snapshot so a policy-breaking "fix" can never become the baseline.
+        """
+        if self.policy_gate is None or self.patch_capture is None:
+            return False
+        try:
+            diff = self.patch_capture.combined_diff()
+        except Exception as exc:  # noqa: BLE001 - diff is best-effort
+            _log.debug("policy: diff failed: %s", exc)
+            return False
+        decision = self.policy_gate.review(diff)
+        if decision.allowed:
+            return False
+        rules = ", ".join(decision.rule_names)
+        _log.warning("policy: attempt %d violates %s", attempt, rules)
+        self._emit("policy_violation", attempt=attempt,
+                   enforced=self.policy_gate.enforce, **decision.to_event())
+        if not self.policy_gate.enforce:
+            return False
+        try:
+            self.patch_capture.restore()
+        except Exception as exc:  # noqa: BLE001 - restore is best-effort
+            _log.warning("policy: revert failed: %s", exc)
+            return False
+        self._emit("policy_revert", attempt=attempt, rules=decision.rule_names)
+        _log.warning("policy: reverted attempt %d edits (%s)", attempt, rules)
+        return True
+
+    def _critic_review(self, analysis: AgentAnalysis, result: PhaseResult,
+                       attempt: int, tier: str) -> None:
+        """Record the agent-claim vs authoritative-rerun calibration (learning record)."""
+        if self.critic is None:
+            return
+        rec = self.critic.calibrate(
+            analysis, actual_ok=result.ok,
+            actual_class=classify_error(result.log_text) if not result.ok else "",
+            phase=self.phase_name, attempt=attempt, tier=tier)
+        self._emit("critic_calibration", **rec.to_event())
+        if not rec.honest:
+            _log.info("critic: attempt %d %s", attempt, rec.calibration.value)
+
     def _effective_class(self, analysis: AgentAnalysis, err_text: str) -> str:
         if analysis.error_class and analysis.error_class != "unknown":
             return analysis.error_class
@@ -221,11 +290,9 @@ class FixLoop:
             return {}
 
     def _record_patch(self, err_text: str) -> None:
-        """Archive the just-written patches into the shared knowledge store."""
-        if self.knowledge is None:
-            return
+        """Write patches to the run dir; additionally archive them if knowledge is on."""
         written = self._write_patches()
-        if not written:
+        if not written or self.knowledge is None:
             return
         try:
             self.knowledge.record(
@@ -487,6 +554,8 @@ class FixLoop:
                 trajectories=playbook, known_fixes=known_fixes,
                 prior_diff=prior.diff if prior else "",
                 prior_state=self._format_prior_state(prior),
+                state_seed=self.state_seed,
+                allowed_actions=self.allowed_actions,
             )
             (self.fix_log_dir / f"prompt_{attempt}.txt").write_text(prompt)
 
@@ -518,6 +587,7 @@ class FixLoop:
                 self._save(err_text, "unfixable", f"UNFIXABLE: {reason}", analysis)
                 self._log_stat("unresolved", error_class=self._effective_class(analysis, err_text),
                                tier=tier.name)
+                self._write_patches()
                 return FixResult(ok=False, attempts=attempt, tier_index=tier_idx,
                                  reason=f"unfixable: {reason}", final_analysis=analysis)
 
@@ -553,6 +623,7 @@ class FixLoop:
                                    f"Stuck on '{eff_class}' for {drift_count} attempts",
                                    analysis)
                         self._log_stat("unresolved", error_class=eff_class, tier=tier.name)
+                        self._write_patches()
                         return FixResult(ok=False, attempts=attempt, tier_index=tier_idx,
                                          reason=f"drift: {eff_class}", final_analysis=analysis)
                 elif same is False:
@@ -580,9 +651,16 @@ class FixLoop:
                 prior = self._make_prior(attempt, outcome, analysis, result)
                 continue
 
+            # PolicyGate (RFC §3.5): named-rule review of the agent's captured edits
+            # BEFORE we trust them with a re-run; enforce mode rolls back violations.
+            self._policy_review(attempt)
+
             # Re-run the phase to verify the fix.
             _log.info("re-running %s after fix (attempt %d)", self.phase_name, attempt)
             result = self.run_phase()
+            # Critic (RFC §3.5): record what the agent CLAIMED vs what the
+            # authoritative re-run actually found (propose/decide separation).
+            self._critic_review(analysis, result, attempt, tier.name)
             if result.ok:
                 note = analysis.fix_plan or analysis.root_cause or f"fixed on attempt {attempt}"
                 self._save(err_text, "fixed", note[:500], analysis)
@@ -607,6 +685,7 @@ class FixLoop:
 
         _log.error("%s failed after %d fix attempts", self.phase_name, max_attempts)
         self._log_stat("unresolved", error_class=prev_class)
+        self._write_patches()
         return FixResult(ok=False, attempts=attempt, tier_index=tier_idx,
                          reason="max_attempts_exhausted")
 
@@ -627,6 +706,11 @@ def run_fix_loop(
     knowledge: KnowledgeStore | None = None,
     replay: bool = True,
     run_id: str = "",
+    critic: Critic | None = None,
+    policy_gate: PolicyGate | None = None,
+    on_event: Callable[[str, dict], None] | None = None,
+    state_seed: str = "",
+    allowed_actions: str = "",
 ) -> FixResult:
     """Convenience wrapper constructing and running a :class:`FixLoop`."""
     return FixLoop(
@@ -634,5 +718,7 @@ def run_fix_loop(
         lesson_store=lesson_store, model_id=model_id, scheme=scheme, method=method,
         cuda_guard=cuda_guard, patch_capture=patch_capture,
         knowledge=knowledge, replay=replay, run_id=run_id,
+        critic=critic, policy_gate=policy_gate, on_event=on_event, state_seed=state_seed,
+        allowed_actions=allowed_actions,
     ).run()
 

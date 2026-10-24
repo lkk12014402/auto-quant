@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:inc-quantization-recipes:model-recipe:1.0",
+  "title": "Current quantization recipes for one model",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "model", "environments", "operations", "variants", "result_tables"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "model": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "name", "source"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "name": {"$ref": "#/$defs/text"},
+        "source": {"$ref": "#/$defs/text"},
+        "revision": {"$ref": "#/$defs/text"},
+        "comments": {"$ref": "#/$defs/comments"}
+      }
+    },
+    "environments": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/id"},
+      "additionalProperties": {"$ref": "#/$defs/environment"}
+    },
+    "operations": {
+      "description": "Shared operation settings, referenced by ID from variant recipes.",
+      "type": "object", "minProperties": 1,
+      "propertyNames": {"$ref": "#/$defs/id"},
+      "additionalProperties": {"$ref": "#/$defs/operation"}
+    },
+    "variants": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/variant"}},
+    "baselines": {"type": "array", "items": {"$ref": "#/$defs/baseline"}},
+    "result_tables": {"type": "array", "items": {"$ref": "#/$defs/table"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "text": {"type": "string", "minLength": 1},
+    "notes": {"description": "Shown on the website; keep it concise.", "$ref": "#/$defs/text"},
+    "comments": {"description": "Kept in YAML only; never shown on the website.", "$ref": "#/$defs/text"},
+    "issues": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/text"}},
+    "value": {
+      "oneOf": [
+        {"type": ["string", "number", "boolean"]},
+        {"type": "array", "items": {"type": ["string", "number", "boolean"]}}
+      ]
+    },
+    "setting": {
+      "type": "object", "additionalProperties": false,
+      "required": ["key", "label", "value"],
+      "properties": {
+        "key": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]*$"},
+        "label": {"$ref": "#/$defs/text"},
+        "value": {"$ref": "#/$defs/value"},
+        "unit": {"$ref": "#/$defs/text"}
+      }
+    },
+    "operation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["label", "settings"],
+      "properties": {
+        "label": {"$ref": "#/$defs/text"},
+        "settings": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/setting"}}
+      }
+    },
+    "environment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["packages"],
+      "properties": {
+        "packages": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*(\\[[A-Za-z0-9_,.-]+\\])?==[A-Za-z0-9][A-Za-z0-9_.+!-]*$"}
+        },
+        "python": {"$ref": "#/$defs/text"},
+        "accelerator": {"$ref": "#/$defs/text"},
+        "hardware": {"$ref": "#/$defs/text"},
+        "container": {"$ref": "#/$defs/text"},
+        "lockfile": {"$ref": "#/$defs/text"},
+        "comments": {"$ref": "#/$defs/comments"}
+      }
+    },
+    "binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "description"],
+      "properties": {
+        "kind": {"enum": ["input_model", "output_dir", "checkpoint", "parameter"]},
+        "description": {"$ref": "#/$defs/text"},
+        "default": {"$ref": "#/$defs/text"},
+        "from": {"enum": ["model.source", "variant.avg_bits", "quantization.output_dir"]}
+      }
+    },
+    "command": {
+      "type": "object", "additionalProperties": false,
+      "required": ["environment", "shell", "variables", "script"],
+      "properties": {
+        "environment": {"$ref": "#/$defs/id"},
+        "shell": {"const": "bash"},
+        "variables": {
+          "type": "object", "propertyNames": {"pattern": "^[A-Z][A-Z0-9_]*$"},
+          "additionalProperties": {"$ref": "#/$defs/binding"}
+        },
+        "script": {"$ref": "#/$defs/text"},
+        "notes": {"$ref": "#/$defs/notes"},
+        "comments": {"$ref": "#/$defs/comments"}
+      }
+    },
+    "evaluation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["environment", "shell", "variables", "script"],
+      "properties": {
+        "environment": {"$ref": "#/$defs/id"},
+        "shell": {"const": "bash"},
+        "variables": {
+          "type": "object", "propertyNames": {"pattern": "^[A-Z][A-Z0-9_]*$"},
+          "additionalProperties": {"$ref": "#/$defs/binding"}
+        },
+        "script": {"$ref": "#/$defs/text"},
+        "notes": {"$ref": "#/$defs/notes"},
+        "comments": {"$ref": "#/$defs/comments"},
+        "script_url": {"type": "string", "pattern": "^https://"}
+      }
+    },
+    "recipe": {
+      "type": "object", "additionalProperties": false,
+      "required": ["approach", "algorithm", "operations"],
+      "properties": {
+        "approach": {"$ref": "#/$defs/text"},
+        "algorithm": {"$ref": "#/$defs/text"},
+        "operations": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "extensions": {
+          "description": "Descriptive namespaced settings, not hidden execution requirements.",
+          "type": "array", "items": {
+            "allOf": [{"$ref": "#/$defs/setting"}, {"properties": {"key": {"pattern": "^[a-z][a-z0-9_-]*\\.[a-z][a-z0-9_.-]*$"}}}]
+          }
+        },
+        "comments": {"$ref": "#/$defs/comments"}
+      }
+    },
+    "variant": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "family", "label", "recipe", "quantization", "evaluation"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "family": {"$ref": "#/$defs/id"},
+        "label": {"$ref": "#/$defs/text"},
+        "issues": {"$ref": "#/$defs/issues"},
+        "avg_bits": {"type": "number", "exclusiveMinimum": 0},
+        "hf_url": {"type": "string", "pattern": "^https://huggingface\\.co/[^/\\s]+/[^/\\s]+$"},
+        "recommended": {"type": "boolean"},
+        "private": {"type": "boolean"},
+        "recipe": {"$ref": "#/$defs/recipe"},
+        "quantization": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/command"}]},
+        "evaluation": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/evaluation"}]}
+      },
+      "if": {"properties": {"quantization": {"type": "null"}}},
+      "then": {"required": ["issues"]},
+      "else": {"if": {"properties": {"evaluation": {"type": "null"}}}, "then": {"required": ["issues"]}}
+    },
+    "baseline": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "label", "evaluation"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "label": {"$ref": "#/$defs/text"},
+        "evaluation": {"$ref": "#/$defs/evaluation"}
+      }
+    },
+    "column": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "label", "kind", "unit"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "label": {"$ref": "#/$defs/text"},
+        "kind": {"enum": ["metric", "reported_summary", "bits"]},
+        "unit": {"enum": ["fraction", "percent", "number", "bits/weight"]},
+        "task": {"$ref": "#/$defs/text"}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "metric"}}}, "then": {"required": ["task"]}},
+        {"if": {"properties": {"kind": {"const": "bits"}}}, "then": {"properties": {"unit": {"const": "bits/weight"}}}}
+      ]
+    },
+    "row": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "label", "kind", "values"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "label": {"$ref": "#/$defs/text"},
+        "kind": {"enum": ["baseline", "variant", "comparison"]},
+        "variant": {"$ref": "#/$defs/id"},
+        "baseline": {"$ref": "#/$defs/id"},
+        "values": {"type": "object", "minProperties": 1, "additionalProperties": {"type": ["number", "null"]}},
+        "input_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "evidence": {"$ref": "#/$defs/text"}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "variant"}}}, "then": {"required": ["variant"], "not": {"required": ["baseline"]}}},
+        {"if": {"properties": {"kind": {"const": "baseline"}}}, "then": {"required": ["baseline"], "not": {"required": ["variant"]}}},
+        {"if": {"properties": {"kind": {"const": "comparison"}}}, "then": {"not": {"anyOf": [{"required": ["variant"]}, {"required": ["baseline"]}, {"required": ["input_fingerprint"]}]}}}
+      ]
+    },
+    "table": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "title", "notes", "columns", "rows"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"}, "title": {"$ref": "#/$defs/text"},
+        "notes": {"$ref": "#/$defs/notes"}, "comments": {"$ref": "#/$defs/comments"},
+        "hardware": {"oneOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]},
+        "columns": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/column"}},
+        "rows": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/row"}}
+      }
+    }
+  }
+}

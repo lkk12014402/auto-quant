@@ -16,7 +16,6 @@ handed) so it is unit-tested without a real run.
 from __future__ import annotations
 
 import json
-import os
 import platform
 import sys
 from dataclasses import asdict, dataclass, field
@@ -57,20 +56,45 @@ def _accelerator(run_cfg: RunConfig) -> dict[str, Any]:
         gpus = [g for g in ssh.gpus.split(",") if g.strip()]
         return {"family": ssh.accelerator, "num_devices": len(gpus) or 1,
                 "executor": run_cfg.executor.type, "remote": True}
-    num_devices = run_cfg.executor.num_gpus
-    if num_devices is None and "CUDA_VISIBLE_DEVICES" in os.environ:
-        visible = [
-            device.strip()
-            for device in os.environ["CUDA_VISIBLE_DEVICES"].split(",")
-            if device.strip() and device.strip() not in {"-1", "NoDevFiles"}
-        ]
-        num_devices = len(visible)
-    if num_devices:
-        family = "xpu" if run_cfg.eval.backend == "vllm_xpu" else "cuda"
-        return {"family": family, "num_devices": num_devices,
-                "executor": run_cfg.executor.type, "remote": False}
-    return {"family": "cpu/local", "num_devices": 1,
-            "executor": run_cfg.executor.type, "remote": False}
+    # Local executor: probe the accelerators actually visible to this process
+    # (honours CUDA_VISIBLE_DEVICES) so the frozen env records the real
+    # hardware instead of unconditionally claiming cpu/local.
+    family, num_devices, device_name = _local_accelerator()
+    acc: dict[str, Any] = {"family": family, "num_devices": num_devices,
+                           "executor": run_cfg.executor.type, "remote": False}
+    if device_name:
+        acc["device_name"] = device_name
+    return acc
+
+
+def _local_accelerator() -> tuple[str, int, str]:
+    """Best-effort probe of locally visible accelerators.
+
+    Returns a ``(family, num_devices, device_name)`` tuple. ``family`` is a
+    normalised token (``cuda``/``xpu``/``cpu/local``) so downstream consumers
+    stay stable, while ``device_name`` carries the human-readable detail.
+    """
+    try:
+        import torch
+    except Exception:  # pragma: no cover - torch always present in practice
+        return "cpu/local", 1, ""
+    try:
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+            try:
+                name = torch.cuda.get_device_name(0)
+            except Exception:  # pragma: no cover - driver edge cases
+                name = ""
+            return "cuda", torch.cuda.device_count(), name
+        xpu = getattr(torch, "xpu", None)
+        if xpu is not None and xpu.is_available() and xpu.device_count() > 0:
+            try:
+                name = torch.xpu.get_device_name(0)
+            except Exception:  # pragma: no cover
+                name = ""
+            return "xpu", xpu.device_count(), name
+    except Exception:  # pragma: no cover - any probe failure => cpu fallback
+        pass
+    return "cpu/local", 1, ""
 
 
 def _reproduce_command(config_path: str | None) -> str:
@@ -117,6 +141,7 @@ class RunManifest:
     created_at: str
     run_id: str
     model: dict[str, Any]
+    provider: dict[str, Any] | None
     quant: dict[str, Any] | None
     eval: dict[str, Any]
     environment: dict[str, Any]
@@ -124,6 +149,10 @@ class RunManifest:
     gate: dict[str, Any] | None = None
     commands: dict[str, Any] = field(default_factory=dict)
     reproduce: dict[str, Any] = field(default_factory=dict)
+    # RFC 0002 §5: present only for an ``aqa reproduce`` run (manifest + variant
+    # + mode + tolerances); the layout uses it to require reproduction_report.json.
+    reproduction: dict[str, Any] | None = None
+    # Owner actions recorded during the run (``aqa log-action`` / owner_actions.jsonl).
     owner_actions: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -207,12 +236,22 @@ def build_manifest(
     gate = {"verdict": gate_verdict} if gate_verdict is not None else None
 
     commands = _commands_block(result, out_dir)
+    upload = run_cfg.provider.upload
+    provider_block = {
+        "type": run_cfg.provider.type,
+        "upload": None if upload is None else {
+            "repo": upload.repo,
+            "repo_name": upload.repo_name,
+            "private": upload.private,
+        },
+    }
 
     return RunManifest(
         schema_version=SCHEMA_VERSION,
         created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         run_id=run_id,
         model={"id": run_cfg.model, "provider": run_cfg.provider.type},
+        provider=provider_block,
         quant=quant,
         eval=eval_block,
         environment=environment,
@@ -220,7 +259,9 @@ def build_manifest(
         gate=gate,
         commands=commands,
         reproduce={"command": _reproduce_command(config_path), "config": config_path},
-        owner_actions=load_owner_actions(out_dir) if out_dir is not None else None,
+        reproduction=(run_cfg.reproduce.model_dump()
+                      if run_cfg.reproduce is not None else None),
+        owner_actions=(load_owner_actions(out_dir) if out_dir is not None else None),
     )
 
 

@@ -15,6 +15,7 @@ from ..config import EvalConfig
 from ..logging_util import get_logger
 from ..registry import BACKENDS, HARNESSES
 from .registry import BenchmarkRecipe, BenchmarkRegistry, EvalResult
+from .thinking import apply_mode_to_cfg, resolve_thinking_modes
 
 _log = get_logger("eval.runner")
 
@@ -55,6 +56,32 @@ def _resolve_recipe(bench_name: str, cfg: EvalConfig, registry: BenchmarkRegistr
     return recipe
 
 
+def _warn_generative_thinking_risk(model: str, cfg: EvalConfig, mode: str) -> None:
+    """Fail-loud guard: a thinking-capable model evaluated with thinking ON while
+    a strict-match generative task (e.g. gsm8k) is in the set silently tanks that
+    score on ``<think>`` traces.  Warn so the risk is visible in the console /
+    pipeline log up front, instead of being discovered as a mysterious ~0 later.
+    """
+    if mode != "on":
+        return
+    gen_in_set = sorted(set(cfg.generative_tasks) & set(cfg.benchmarks))
+    if not gen_in_set:
+        return
+    try:
+        from .thinking import detect_thinking_capable
+        if not detect_thinking_capable(model):
+            return
+    except Exception:  # noqa: BLE001 - detection must never crash a run
+        return
+    _log.warning(
+        "thinking RISK: %s is thinking-capable but evaluated with thinking ON while "
+        "generative tasks %s are in the eval set -- strict-match will be distorted by "
+        "<think> traces. Set eval.thinking: off (and thinking_off_model_args."
+        "reasoning_parser) for a standard-benchmark口径.",
+        model, gen_in_set,
+    )
+
+
 def run_evaluation(
     model: str,
     cfg: EvalConfig,
@@ -65,6 +92,19 @@ def run_evaluation(
 ) -> EvalResult:
     """Evaluate ``model`` on ``cfg.benchmarks`` and return aggregated results."""
     registry = registry or BenchmarkRegistry()
+    # Resolve the reasoning mode and fold its model_args into cfg before any
+    # harness is built. ``off`` injects ``enable_thinking=False`` so generative
+    # tasks score on a bare answer; dual-mode (both/auto-capable) is measured one
+    # mode per run_evaluation call, so warn and take the first (``on``).
+    modes = resolve_thinking_modes(cfg, model)
+    if len(modes) > 1:
+        _log.warning(
+            "eval.thinking=%s selects dual-mode (%s); run_evaluation measures one "
+            "mode, evaluating '%s' only -- set eval.thinking: on|off to silence",
+            cfg.thinking, "+".join(modes), modes[0],
+        )
+    cfg = apply_mode_to_cfg(cfg, modes[0])
+    _warn_generative_thinking_risk(model, cfg, modes[0])
     backend = BACKENDS.create(cfg.backend)
     result = EvalResult(model=model, backend=cfg.backend)
     harness_cache: dict[str, object] = {}

@@ -125,3 +125,27 @@ def test_build_model_card_contents():
     assert "AutoRound" in card  # method link resolved
     assert "| piqa | 0.7800 |" in card
     assert "hellaswag" in card
+
+
+def test_upload_rejects_unsigned_run_model_card(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "t")
+    _patch_api(monkeypatch, _FakeApi())
+    md = _model_dir(tmp_path)
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    (run_root / "model_card.md").write_text("# card\n")
+    with pytest.raises(AqaError, match="末行须为"):
+        HfModelSink(repo="MyOrg").upload(md, _meta(run_root=run_root))
+
+
+def test_upload_uses_run_model_card_verbatim(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "t")
+    api = _FakeApi()
+    _patch_api(monkeypatch, api)
+    md = _model_dir(tmp_path)
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    card = "---\nbase_model:\n- org/Base\n---\n\n## Model Details\n\nSigned-off-by: Jane Smith <jane.smith@intel.com>\n"
+    (run_root / "model_card.md").write_text(card)
+    HfModelSink(repo="MyOrg").upload(md, _meta(run_root=run_root))
+    assert (md / "README.md").read_text() == card

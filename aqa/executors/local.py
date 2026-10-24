@@ -27,13 +27,17 @@ class LocalExecutor:
     def run(self, run_cfg, *, dry_run: bool = False, resume: bool = False) -> RunResult:
         out_dir = Path(run_cfg.output.dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+        if resume:
+            # Refuse loudly rather than silently starting fresh (the old no-op).
+            from ..session import load_session_manifest
+            load_session_manifest(out_dir / "session")  # raises AqaError if absent
         meta_path = out_dir / _META
         meta_path.write_text(json.dumps({"model": run_cfg.model, "state": "running"}))
         if dry_run:
             _log.info("[dry-run] would run pipeline for %s in %s", run_cfg.model, out_dir)
             return RunResult(output_dir=out_dir, state=ProcessState.DONE)
         try:
-            state = run_pipeline(run_cfg, out_dir)
+            state = run_pipeline(run_cfg, out_dir, resume=resume)
         except Exception:
             meta_path.write_text(
                 json.dumps({"model": run_cfg.model, "state": ProcessState.FAILED.value})

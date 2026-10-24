@@ -16,8 +16,10 @@ gemma-4-31B-MXFP8-FP8KV）是填出来的样子。
    **实测值**并注明测量方式/日期；拿不准的标 `TODO(owner)`，不许留空。
    **例外：`model_card.md`** 面向下载权重的用户，按其文件头的生成规则与禁写清单
    填写：章节固定、不写测量方式/审计证据（这些留在 `analysis.md` / `report.md`），
-   不允许出现 `TODO` 或「本次无」；末行必须是 `Signed-off-by: Name <email>`，身份每次
-   向用户询问确认（占位身份或复用实例卡的身份都会被 `aqa artifacts check` 拒绝）。
+   不允许出现 `TODO` 或「本次无」。量化 run 只要产出了评估精度就会自动写卡；
+   `base_repo_id`/signoff 未提供时留模板占位符（draft），发布时末行必须是用户确认的
+   `Signed-off-by: Name <email>`（占位身份或复用实例卡的身份会让发布上传被拒绝；
+   `aqa artifacts check` 对非发布 draft 记 warning，对发布 run 记 error）。
 3. 产物归属：任务收尾时 7 个产物拷进 run 的 `output.dir` 顶层，随 sink 回传
    （文本自动脱敏，权重结构性排除）：
 
@@ -28,7 +30,7 @@ gemma-4-31B-MXFP8-FP8KV）是填出来的样子。
 | `requirements.txt` | `requirements.txt` | 第②步冻结，之后每次换依赖重冻结 |
 | `run.yaml` | `run.yaml`（实际运行文件可另名，此为初始模板） | 第③步 |
 | `journal.md` | `journal.md` | 全程随手记 |
-| `model_card.md` | `model_card.md` | 第④步（仅发布权重时必填） |
+| `model_card.md` | `model_card.md` | 第④步（量化 run 有 eval 即写；发布时需真实 signoff） |
 | `report.md` | `report.md` | 第⑤步（回溯） |
 
 4. 收尾校验：`aqa artifacts check <run_dir>` 做确定性检查（文件在不在、必备

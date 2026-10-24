@@ -11,3 +11,11 @@ env.sh
 
 # Owner scratch artifacts (kept local by decision)
 owner_tasks/setup_logs/
+
+# Machine-pinned recipes (auto-pin namespace). Curated recipes under
+# recipes/quant/*.json ARE tracked; recipes/quant/auto/ is per-machine KB the
+# pipeline writes on GO runs — promote to curated by hand, don't commit raw.
+/recipes/quant/auto/
+
+# Reproduce run outputs (aqa reproduce's default ./reproduce/ directory)
+/reproduce/
