@@ -1,0 +1,71 @@
+# Qwen3.8-27B — MXFP4 (AWQ preprocessor + optimized RTN), full 4-task lm_eval.
+#
+# Mirrors the operator reference command:
+#   auto-round /home/hshen/Qwen3.8-27B --iters 0 --algorithm awq --enable_opt_rtn \
+#     --scheme MXFP4 --ignore_layers "visual,lm_head,embed_tokens" \
+#     --format llm_compressor --device auto --output_dir ./qwen3.8-27B-MXFP4-rtn-awq
+#
+# Local model path replaces the reference machine's path. Run with the
+# Qwen3.8-capable venv (auto-round 0.16.1 / transformers 5.20.2 / vLLM 0.32.1):
+#   CUDA_VISIBLE_DEVICES=0 PYTHONPATH=<repo> \
+#     /home/kaokaolv/test-swe/venv_qwen38fn/bin/python -m aqa.cli run <this file>
+# Analysis / precision table: <output.dir>/analysis.md
+
+model: /home/kaokaolv/models/Qwen3.8-27B
+
+quant:
+  scheme: MXFP4                  # --scheme MXFP4
+  method: autoround              # model-load path: AWQ needs calibration activations
+  algorithm: awq                 # --algorithm awq (preprocessor; iters=0 -> RTN terminal)
+  opt_rtn: true                  # --enable_opt_rtn
+  iters: 0                       # --iters 0
+  nsamples: 128                  # explicit default: AWQ calibration samples
+  export_format: llm_compressor  # --format llm_compressor
+  # Reference ignore list, kept verbatim. `visual` covers model.visual.*;
+  # lm_head / embed_tokens match the top-level and text-tower tensors.
+  # in_proj_a/b (out=48, fused to N=96) are quantized: vLLM 0.32 MXFP4 kernel
+  # pads N to 128 and has no N>=128 assertion (unlike the MXFP8 kernel).
+  ignore_layers: "visual,lm_head,embed_tokens"
+
+eval:
+  backend: vllm
+  harness: lm_eval
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]   # full splits, no limit
+  batch_size: "64"
+  baseline: false
+  thinking: "off"
+  lm_eval:
+    model_args:
+      max_model_len: 8192
+      max_num_batched_tokens: 32768
+      max_num_seqs: 128
+      # GPU 0-3 became fully free at 05:16 (co-tenant exited). Use TP=1 to avoid
+      # this host's broken NVLS multicast path (TP=4 died with "NCCL error:
+      # unhandled cuda error ... Failed to bind NVLink SHARP (NVLS) Multicast
+      # memory ... CUDA error 401"); 0.5 * 183 GB ~= 91 GB budget for a 19 GB model.
+      gpu_memory_utilization: 0.5
+      enable_thinking: false
+      reasoning_parser: qwen3
+      language_model_only: true
+      enforce_eager: true
+      # No auto_map in config.json; the native transformers/vLLM qwen3_5 path is
+      # verified, so keep remote code off (overrides the backend's default true).
+      trust_remote_code: false
+    group: true                  # piqa+hellaswag+mmlu in one call; gsm8k separate
+    seed: 42
+
+executor:
+  type: local
+  num_gpus: 1
+
+output:
+  # Literal fresh directory (output.unique_dir is not wired in this checkout).
+  dir: /home/kaokaolv/my_commit/aqa-runs/Qwen3.8-27B-MXFP4-AWQ-RTN-20261024
+  unique_dir: false
+  report_model: Qwen/Qwen3.8-27B
+  sinks:
+    - type: local_fs
+
+agent:
+  optimize: false
+  fix_loop: false

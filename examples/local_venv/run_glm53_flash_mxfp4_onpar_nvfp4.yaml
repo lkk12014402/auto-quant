@@ -1,0 +1,64 @@
+# GLM-5.3-Flash → module-for-module on-par with nvidia/GLM-5.3-Flash-NVFP4
+#
+# NVIDIA 这个模型只有 NVFP4 权重（dense MLP + routed experts），其余全部 BF16；
+# FP8 只用于 KV cache（kv_cache_quant_algo: FP8），不是权重。
+# 因此映射是：NVFP4 → MXFP4，其余保持 BF16，KV 在推理时用 fp8。
+#
+#   layers.0-2.mlp.{gate,up,down}_proj        → MXFP4 W4A4 (group 32, E8M0)   [9 层]
+#   layers.3-44.mlp.experts.*.{gate,up,down}  → MXFP4 W4A4                   [42×288×3]
+#   self_attn / mlp.gate / mlp.shared_experts / layers.45 / visual / embed / lm_head → BF16
+#
+# 注意 auto-round 对 glm5_next 有 predefined ignore（indexer, layers.0.mlp, self_attn,
+# weights_proj），其中 layers.0.mlp 会把层 0 的 dense MLP 静默漏掉；这里用 layer_config
+# 全名精确覆盖（should_ignore 对精确 key 优先返回 False）把它救回来。
+model: zai-org/GLM-5.3-Flash-BF16
+
+quant:
+  scheme: MXFP4
+  method: model_free
+  export_format: llm_compressor
+  # vLLM GLM namespace differs from the HF checkpoint: post-export repair rewrites
+  # the config targets to language_model.model.* + RoutedExperts and backs up the
+  # raw auto-round config. This is a pipeline step, not a manual JSON edit.
+  export_repair: glm5_vllm
+  ignore_layers: "lm_head,embed_tokens,visual,indexer,weights_proj,self_attn,mlp.shared_experts,layers.45,eh_proj,enorm,hnorm,shared_head,norm,A_log,dt_bias,conv1d"
+  layer_config:
+    model.language_model.layers.0.mlp.gate_proj:
+      bits: 4
+      data_type: mx_fp
+    model.language_model.layers.0.mlp.up_proj:
+      bits: 4
+      data_type: mx_fp
+    model.language_model.layers.0.mlp.down_proj:
+      bits: 4
+      data_type: mx_fp
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: false
+  limit: 8                 # smoke；全量在 eval_*_full.yaml
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      kv_cache_dtype: fp8
+      block_size: 256
+      max_num_seqs: 256
+      enforce_eager: true
+      enable_prefix_caching: false
+    seed: 42
+    group: true
+
+agent:
+  optimize: false
+  fix_loop: false
+
+executor:
+  type: local
+  num_gpus: 2
+
+output:
+  dir: ./results/glm53_flash_mxfp4_onpar_nvfp4
+  sinks:
+    - type: local_fs

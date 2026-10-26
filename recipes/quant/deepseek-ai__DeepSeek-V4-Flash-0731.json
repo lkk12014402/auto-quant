@@ -1,0 +1,23 @@
+{
+  "model": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "architecture": "deepseek_v4",
+  "validated_on": "2026-10-25",
+  "environment": {
+    "quant": "intel/auto-round @ 80b5f87 (0.17.0) editable, model_free (CPU/streaming), compressed-tensors 0.17.0",
+    "inference": "vllm nightly wheel commit 46d2b23ac (.venv-vllm-main) + patches/evaluate/vllm_dsv4_ct_mxfp8_bmm_wo_a.patch",
+    "host_env": "NCCL_NVLS_ENABLE=0 required on this host (NVSwitch/Fabric Manager: ncclCommInitRank fails with NVLS multicast CUDA 401)",
+    "notes": "官方 checkpoint 无 chat template；按 encoding/encoding_dsv4.py 生成 chat_template.jinja（chat 模式）供 gsm8k 口径使用；两侧同口径注入"
+  },
+  "schemes": {
+    "MXFP4-Mixed": {
+      "nvfp4_parity_model_free": {
+        "command": "auto-round --model_name <model> --model_free --scheme MXFP8 --ignore_layers compressor,indexer.weights_proj,markov_head,confidence_head,ffn.gate,head --layer_config '{\"ffn.experts\":{\"bits\":4,\"data_type\":\"mx_fp\"}}' --format llm_compressor --device_map auto --output_dir <out>",
+        "expected_allocation": "MXFP4 W4A4 35 328 层（routed experts: main 33 024 + mtp 2 304；weight_packed U8 + per-32 U8 E8M0 scale）+ MXFP8 W8A8 390 层（attn 230 / shared_experts 138 / indexer.wq_b 21 / mtp.main_proj 1）+ BF16 196 项 ignore；产物 167.08 GB / 48 shards",
+        "cross_check": "35 718 个量化层 = NVIDIA NVFP4(33 024) + 原生 FP8(390) + 原生 MXFP4 MTP experts(2 304)，逐项一致；ignore 196 与前作 intel-ai 相同；audit_export.py PASS",
+        "yaml": "examples/local_venv/run_dsv4_flash_0731_mxfp4_mxfp8.yaml",
+        "result": "lm_eval full 4 tasks: gsm8k 0.9439, mmlu 0.8643, piqa 0.8210, hellaswag 0.6784, mean 0.8269; same-host official-checkpoint baseline: 0.9356/0.8631/0.8264/0.6802, mean 0.8263 → Δ +0.06 pp (on par)",
+        "caveats": "model_free 对同 scheme 源张量 bit-exact passthrough（专家 MXFP4 权重不变；FP8 128x128 block scale 展开为 per-32 E8M0），不引入重新量化误差；vLLM 的 CT MXFP8 wo_a 需要 bmm patch"
+      }
+    }
+  }
+}

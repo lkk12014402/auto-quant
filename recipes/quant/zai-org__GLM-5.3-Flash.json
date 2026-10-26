@@ -54,6 +54,17 @@
         "expected_allocation": "W8A8 313.189B/37290 层 + BF16 8.070B/572 层；产物 ≈339.3 GB",
         "verdict": "不推荐：比官方 block-FP8 源(306 GB) 还大 —— MX 的 1/32 E8M0 scale 开销(3.1%) 高于 128x128 block scale(0.6%)"
       }
+    },
+    "MXFP4-NVFP4-Parity": {
+      "nvfp4_parity_model_free": {
+        "target": "module-for-module on-par with nvidia/GLM-5.3-Flash-NVFP4 (NVFP4 -> MXFP4; this checkpoint has no FP8 weights, FP8 is KV-cache only)",
+        "command": "auto-round --model_name zai-org/GLM-5.3-Flash-BF16 --model_free --scheme MXFP4 --ignore_layers \"lm_head,embed_tokens,visual,indexer,weights_proj,self_attn,mlp.shared_experts,layers.45,eh_proj,enorm,hnorm,shared_head,norm,A_log,dt_bias,conv1d\" --layer_config '{\"model.language_model.layers.0.mlp.gate_proj\":{\"bits\":4,\"data_type\":\"mx_fp\"},\"model.language_model.layers.0.mlp.up_proj\":{\"bits\":4,\"data_type\":\"mx_fp\"},\"model.language_model.layers.0.mlp.down_proj\":{\"bits\":4,\"data_type\":\"mx_fp\"}}' --format llm_compressor --output_dir <out>",
+        "expected_allocation": "MXFP4 36 297 层（dense MLP 9 + routed experts 42x288x3）+ BF16 其余（含 MTP layer 45、shared_experts、全部 attention、router、vision）；194.89 GB / 120 shards；源 BF16 642.65 GB",
+        "cross_check": "与 NVIDIA NVFP4 集合（weight_scale_2 反查 36 297）missing 0 / extra 0；audit_glm_export.py PASS",
+        "predefined_ignore_pitfall": "auto-round 对 glm5_next 硬编码 indexer,layers.0.mlp,self_attn,weights_proj；layers.0.mlp 会漏掉层 0 dense MLP，用 layer_config 全名覆盖",
+        "vllm_config_requirement": "vLLM 的 GLM 命名空间与 HF 不同（model.language_model. -> language_model.model.、model.visual. -> visual.、lm_head -> language_model.lm_head.），且模型没有 packed_modules_mapping。导出的 quantization_config 必须用 vLLM 命名空间并把 targets 显式写成 layers.{0,1,2}.mlp.{gate_up_proj,down_proj} + \"RoutedExperts\"（ignore 里放 language_model.model.layers.45.mlp.experts），否则 vLLM 会把 BF16 模块当 MXFP4 加载而 KeyError",
+        "result": "full 4-task eval: piqa 0.8275, hellaswag 0.6825, mmlu 0.8588, gsm8k 0.9750, mean 0.8360 (run quantized_eval_20261025-202903_975b35); baseline full pending (642.65 GB BF16 needs >=5 B200)"
+      }
     }
   },
   "ignore_layers_rationale": "保守版：MoE 保护（shared_experts 每 token 都过必保）+ 结构件（hc_/indexer/MTP/norm/conv1d/KDA 小投影）+ self_attn 全保。子串陷阱：mlp.gate 会误伤 mlp.gate_proj → 保守版显式列 dense 三项，激进版用尾点锚定 mlp.gate.；b_proj 会误伤稀疏层 q_b_proj → 锚定 self_attn.b_proj",

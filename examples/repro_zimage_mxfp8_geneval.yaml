@@ -1,0 +1,37 @@
+# Reproduce INCModel3/Z-Image-Turbo-MXFP8-RTN-AutoRound — GenEval (separate process)
+# Card: GenEval 0.760. Geneval is run in its own process because a second Omni
+# load in the same process produced black images on this stack (repo precedent:
+# examples/run_zimage_turbo_mxfp8_geneval_only.yaml).
+# Run with the vllm-omni 0.29 venv:
+#   HF_HOME=/home/kaokaolv/hf_home_aqa PYTHONPATH=<repo> \
+#     CUDA_VISIBLE_DEVICES=0 /home/kaokaolv/.venv-omini-latest/bin/python -m aqa.cli run <this>
+
+model: /home/kaokaolv/models/Z-Image-Turbo-MXFP8-RTN-AutoRound
+
+eval:
+  benchmarks: [geneval]
+  backend: vllm_omni
+  harness: diffusion
+  baseline: false
+  diffusion:
+    num_inference_steps: 8
+    guidance_scale: 0.0
+    height: 1024
+    width: 1024
+    seed: 42
+
+agent:
+  fix_loop: false
+  optimize: false
+
+executor:
+  type: local
+  num_gpus: 1
+
+output:
+  dir: /home/kaokaolv/my_commit/aqa-runs/Z-Image-Turbo-MXFP8-RTN-20261024-geneval
+  unique_dir: false
+  report_model: Tongyi-MAI/Z-Image-Turbo
+  artifact_name: Z-Image-Turbo-MXFP8-RTN-AutoRound
+  sinks:
+    - type: local_fs

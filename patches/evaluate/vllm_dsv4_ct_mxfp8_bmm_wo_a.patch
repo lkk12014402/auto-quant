@@ -1,0 +1,44 @@
+--- a/vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_w8a8_mxfp8.py
++++ b/vllm/model_executor/layers/quantization/compressed_tensors/schemes/compressed_tensors_w8a8_mxfp8.py
+@@ -81,6 +81,12 @@
+         layer.register_parameter("weight_scale", weight_scale)
+ 
+     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
++        # DeepSeek-V4 `wo_a` is a batched per-group GEMM (`is_bmm`); rebuild the
++        # kernel with the layer's batch size so the MXFP8 BMM path is selected.
++        if getattr(layer, "is_bmm", False):
++            self.kernel = init_mxfp8_linear_kernel(
++                bmm_batch_size=getattr(layer, "bmm_batch_size", None)
++            )
+         self.kernel.process_weights_after_loading(layer)
+ 
+     def apply_weights(
+--- a/vllm/models/deepseek_v4/nvidia/ops/o_proj.py
++++ b/vllm/models/deepseek_v4/nvidia/ops/o_proj.py
+@@ -46,7 +46,16 @@
+     Shared by the FlashMLA and FlashInfer CUDA backends. The attention
+     layer selects the recipe at initialization.
+     """
+-    use_fp8 = wo_a.weight.dtype == torch.float8_e4m3fn
++    # compressed-tensors MXFP8 wo_a: per-group GEMM through the layer's MXFP8
++    # BMM kernel (the native fp8_einsum path only accepts 128x128 block scales).
++    # CT stores uint8 per-32 scales as `weight_scale`; the native DeepSeek FP8
++    # checkpoint keeps float32 128x128 block scales as `weight_scale_inv`.
++    is_ct_mxfp8_bmm = (
++        getattr(wo_a, "is_bmm", False)
++        and hasattr(wo_a, "weight_scale")
++        and not hasattr(wo_a, "weight_scale_inv")
++    )
++    use_fp8 = (not is_ct_mxfp8_bmm) and wo_a.weight.dtype == torch.float8_e4m3fn
+     o_proj_input, o_scale = fused_inv_rope_fp8_quant(
+         o,
+         positions,
+@@ -59,6 +68,8 @@
+         tma_aligned_scales=tma_aligned_scales,
+         quantize=use_fp8,
+     )
++    if is_ct_mxfp8_bmm:
++        return wo_b(wo_a(o_proj_input).flatten(1))
+     z = torch.empty(
+         (o.shape[0], n_groups, o_lora_rank),
+         device=o.device,

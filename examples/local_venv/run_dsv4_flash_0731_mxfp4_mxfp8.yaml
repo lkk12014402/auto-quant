@@ -1,0 +1,57 @@
+# DeepSeek-V4-Flash-0731 → module-for-module on-par with nvidia/DeepSeek-V4-Flash-0731-NVFP4
+#
+# NVIDIA 的 NVFP4 模型只把 routed experts 量化成 NVFP4，其余保持源 checkpoint 的原生
+# FP8（128x128 block）；MTP 原样保留（attention/main_proj FP8、experts MXFP4）。
+# 本 recipe 做 scheme 映射：NVFP4 → MXFP4、FP8 → MXFP8，量化模块集合保持一致。
+#
+#   experts (main 33 024 + mtp 2 304)  → MXFP4 W4A4 (group 32, E8M0)
+#   attn / shared_experts / indexer.wq_b / mtp linears (390) → MXFP8 W8A8
+#   compressor / indexer.weights_proj / router / markov+confidence heads / embed+head → BF16
+#
+# 说明：
+# - model_free：源 checkpoint 已是 MXFP4+FP8 混合，无需校准；auto-round >=0.17 的
+#   deepseek_v4 源张量归一化路径（preprocess_model_type_source_tensors）逐 shard 处理。
+# - 本机 /mnt/weka 只读，模型与产物都在 /home/kaokaolv 下。
+model: deepseek-ai/DeepSeek-V4-Flash-0731
+
+quant:
+  scheme: MXFP8
+  method: model_free
+  export_format: llm_compressor
+  # 注：该模型头部叫 head 而非 lm_head；router 叫 ffn.gate；MTP markov/confidence
+  # head 必须显式排除（与 NVIDIA 的不量化集合对齐）。
+  ignore_layers: "compressor,indexer.weights_proj,markov_head,confidence_head,ffn.gate,head"
+  layer_config:
+    ffn.experts:            # 子串匹配：layers.*.ffn.experts 与 mtp.*.ffn.experts 同时命中
+      bits: 4
+      data_type: mx_fp
+
+eval:
+  benchmarks: [piqa, hellaswag, mmlu, gsm8k]
+  backend: vllm
+  batch_size: auto
+  baseline: false          # 正式 baseline 单独跑（避免量化失败时重复加载两次大模型）
+  limit: 8                 # smoke：先验证整条链路；全量在 eval_*_full.yaml
+  harness: lm_eval
+  lm_eval:
+    model_args:
+      kv_cache_dtype: fp8  # DSv4 fp8_ds_mla 布局只接受 fp8 KV
+      block_size: 256
+      max_num_seqs: 256
+      enforce_eager: true
+      enable_prefix_caching: false
+    seed: 42
+    group: true
+
+agent:
+  optimize: false
+  fix_loop: false
+
+executor:
+  type: local
+  num_gpus: 2              # TP=2（必须整除 64 个 attention head）
+
+output:
+  dir: ./results/dsv4_flash_0731_mxfp4_mxfp8
+  sinks:
+    - type: local_fs
