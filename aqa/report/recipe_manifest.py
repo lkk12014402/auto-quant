@@ -47,6 +47,7 @@ import yaml
 from ..logging_util import get_logger
 from ..session._io import now_iso
 from .names import canonical_artifact_name, _lowest_bit_scheme
+from .owner_actions import load_owner_actions
 from .quant_details import (
     _scheme_weight_bits,
     _slug,
@@ -450,7 +451,9 @@ def _eval_block(commands: list[str], *, model_paths: list[str], variable: str,
 
 
 def _result_table(family: str, variant_id: str, result: "EvalResult",
-                  baseline: "EvalResult | None") -> dict[str, Any] | None:
+                  baseline: "EvalResult | None",
+                  smoke_limit: int | None = None,
+                  baseline_label: str = "BF16") -> dict[str, Any] | None:
     """One accuracy table: metric columns + reported average/ratio/bits."""
     benches = result.benchmarks
     if not benches:
@@ -478,8 +481,8 @@ def _result_table(family: str, variant_id: str, result: "EvalResult",
                  for n in benches if n in baseline.benchmarks}
         bvals["average"] = round(baseline.mean_score(), 6)
         bvals["ratio"] = None
-        rows.append({"id": f"bf16-{family}", "label": "BF16", "kind": "baseline",
-                     "baseline": "bf16", "values": bvals})
+        rows.append({"id": f"bf16-{family}", "label": baseline_label,
+                     "kind": "baseline", "baseline": "bf16", "values": bvals})
     vmean = result.mean_score()
     vvals = {col_ids[n]: round(b.score, 6) for n, b in benches.items()}
     vvals["average"] = round(vmean, 6)
@@ -487,10 +490,14 @@ def _result_table(family: str, variant_id: str, result: "EvalResult",
                       if base_mean else None)
     rows.append({"id": f"{variant_id}-result", "label": variant_id.upper(),
                  "kind": "variant", "variant": variant_id, "values": vvals})
+    notes = ("Reported numbers from this aqa run; rows carry no input "
+             "fingerprint. Bits exclude scale bits.")
+    if smoke_limit:
+        notes += (f" Smoke evaluation: --limit {smoke_limit} per task; "
+                  "these are not full-set results.")
     return {
         "id": f"{family}-accuracy", "title": "Accuracy",
-        "notes": ("Reported numbers from this aqa run; rows carry no input "
-                  "fingerprint. Bits exclude scale bits."),
+        "notes": notes,
         "columns": columns, "rows": rows,
     }
 
@@ -529,6 +536,9 @@ def build_recipe_manifest(
 
     env_lock = _read_json(out_dir / "env_lock.json")
     quant_plan = _read_json(out_dir / "quant_plan.json")
+    post_export = _read_json(out_dir / ".post_export.json")
+    repair_kind = (post_export.get("kind")
+                   or getattr(quant, "export_repair", None))
 
     # Model identity: a local checkpoint path is not a publishable model.source,
     # but it is the only identity we have; record the gap in `issues`.
@@ -559,6 +569,8 @@ def build_recipe_manifest(
         declared_ignore=quant.ignore_layers, quant_lm_head=quant.quant_lm_head,
         layer_config=quant.layer_config,
         kv_scheme=kv_scheme, attn_scheme=attn_scheme)
+    source_quantized = bool((model_cfg or {}).get("quantization_config"))
+    baseline_label = "Official checkpoint" if source_quantized else "BF16"
 
     operations, op_order, op_labels = _operations(
         scheme, details, kv_scheme, attn_scheme)
@@ -572,6 +584,10 @@ def build_recipe_manifest(
     if command:
         quant_script = _rewrite_quant_command(
             command, model=run_cfg.model, output_name=output_name)
+        if repair_kind:
+            quant_script = (quant_script.rstrip() + "\n"
+                            f"python -m aqa.quantize.export_repair "
+                            f"\"${{OUTPUT_DIR}}\" --kind {shlex.quote(str(repair_kind))}")
         quant_vars = {
             "MODEL": {"kind": "input_model", "from": "model.source",
                       "description": "Source model ID or local copy"},
@@ -605,8 +621,26 @@ def build_recipe_manifest(
     if not _is_repo_id(source):
         issues.append("model.source is a local path; replace it with the "
                       "Hugging Face repo id before upstreaming.")
+    if run_cfg.eval.limit:
+        issues.append(
+            f"Evaluation was smoke-limited to {run_cfg.eval.limit} samples/task; "
+            "result_tables are smoke, not full-set results.")
     if result.benchmarks:
         issues.append("Results are reported numbers (no input fingerprint recorded).")
+    if post_export:
+        issues.append(
+            "Post-export repair applied: "
+            f"{post_export.get('kind', repair_kind)} rewrote the quantization "
+            "config for the runtime namespace; the raw auto-round config is "
+            f"backed up at {post_export.get('backup', 'the export backup')}.")
+    try:
+        actions = load_owner_actions(out_dir) or []
+    except Exception:  # noqa: BLE001 - malformed owner log must not break recipe
+        actions = []
+    for action in actions:
+        if action.get("kind") in {"patch", "command", "note"} and action.get("text"):
+            issues.append(
+                f"Owner {action['kind']} during the run: {action['text']}")
     if gate_verdict and gate_verdict != "GO":
         issues.append(f"Gate verdict was {gate_verdict}: " + "; ".join(gate_reasons or []))
 
@@ -646,8 +680,10 @@ def build_recipe_manifest(
                 "description": "Original model"}})
         if be is not None:
             manifest["baselines"] = [
-                {"id": "bf16", "label": "BF16", "evaluation": be}]
-    table = _result_table(family, variant_id, result, baseline)
+                {"id": "bf16", "label": baseline_label, "evaluation": be}]
+    table = _result_table(family, variant_id, result, baseline,
+                          smoke_limit=run_cfg.eval.limit,
+                          baseline_label=baseline_label)
     manifest["result_tables"] = [table] if table else []
 
     # aqa extensions (strippable; see to_inc_strict).

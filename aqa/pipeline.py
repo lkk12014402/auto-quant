@@ -333,17 +333,38 @@ def _run_quantize(run_cfg: RunConfig, quant_dir: Path, out_dir: Path,
         elif optimized:
             run_quant_command(optimized, quant_dir)
         else:
-            run_quantization(run_cfg.model, quant_cfg, quant_dir, num_gpus=num_gpus)
+            run_quantization(run_cfg.model, quant_cfg, quant_dir,
+                             num_gpus=num_gpus)
+
+    def _post_export() -> None:
+        kind = getattr(quant_cfg, "export_repair", None)
+        if not kind:
+            return
+        from .quantize import repair_export, resolve_export_dir
+        from .report.manifest import record_post_export
+
+        info = repair_export(resolve_export_dir(quant_dir), kind)
+        record_post_export(out_dir, info)
+
+    def _hooks() -> None:
+        from .hooks import resolve_hooks, run_hook_chain
+
+        run_hook_chain("after_quantize", resolve_hooks(run_cfg), run_cfg,
+                       quant_cfg=quant_cfg, output_dir=quant_dir)
 
     def _phase() -> PhaseResult:
         try:
             _run()
+            _post_export()
+            _hooks()
             return PhaseResult(ok=True)
         except AqaError as exc:
             return PhaseResult(ok=False, log_text=_tail(log_path) or str(exc))
 
     if not run_cfg.agent.fix_loop:
         _run()
+        _post_export()
+        _hooks()
         return
 
     fr = run_fix_loop(
@@ -385,6 +406,14 @@ def _run_evaluate(run_cfg: RunConfig, model: str, eval_dir: Path,
             return PhaseResult(ok=False, log_text="evaluation produced no benchmark results")
         if all(b.score == 0 for b in res.benchmarks.values()):
             return PhaseResult(ok=False, log_text="all benchmark scores are 0 (acc=0 => fail)")
+        from .hooks import resolve_hooks, run_hook_chain
+        hooks = resolve_hooks(run_cfg)
+        try:
+            for benchmark in res.benchmarks.values():
+                run_hook_chain("after_benchmark", hooks, run_cfg, recipe=None,
+                               result_or_exception=benchmark, out_dir=eval_dir)
+        except AqaError as exc:
+            return PhaseResult(ok=False, log_text=str(exc))
         return PhaseResult(ok=True)
 
     if not run_cfg.agent.fix_loop:
@@ -583,14 +612,40 @@ def _recipe_kb_pin(run_cfg: RunConfig, out_dir: Path, result: EvalResult,
     the strict :meth:`RecipeKB.pin` (validated schemes + trust + session row);
     anything else flows through :meth:`RecipeKB.record_outcome`, which appends a
     structured failure + session row WITHOUT ever writing validated schemes.
+
+    The KB root defaults to the code checkout (``recipes/quant/auto``).  When
+    that checkout is read-only (common on shared NFS), fall back to
+    ``<run>/recipe_kb/auto`` and record the outcome path in ``recipe_kb.json``
+    instead of silently dropping knowledge.
     """
     kb_cfg = run_cfg.agent.recipe_kb
     if not (run_cfg.provider.type == "quantize" and kb_cfg.pin and run_cfg.quant):
         return
-    try:
-        import json as _json
+    import json as _json
 
-        from .agent.recipe_kb import OUTCOME_FAILED, OUTCOME_NO_GO, RecipeKB
+    from .session._io import atomic_write_json, now_iso
+
+    def _record(**payload) -> None:
+        path = out_dir / "recipe_kb.json"
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+            if not isinstance(data, dict):
+                data = {}
+            data["record"] = {"at": now_iso(), **payload}
+            atomic_write_json(path, data)
+        except Exception as exc:  # noqa: BLE001 - provenance must not abort CLOSE
+            _log.warning("recipe_kb: could not record outcome state: %s", exc)
+
+    if gate_verdict is None:
+        # No gate was configured: the run has measurements but no GO/NO-GO
+        # verdict. Recording it as FAILED poisons the KB with a false negative.
+        _log.info("recipe_kb: no gate configured; skipping outcome record-back")
+        _record(status="skipped", reason="no gate configured")
+        return
+    try:
+        from .agent.recipe_kb import (
+            OUTCOME_FAILED, OUTCOME_INCONCLUSIVE, OUTCOME_NO_GO, RecipeKB,
+        )
         from .report.phase_artifacts import _read_model_config
 
         cfg = _read_model_config(run_cfg.model)
@@ -605,12 +660,14 @@ def _recipe_kb_pin(run_cfg: RunConfig, out_dir: Path, result: EvalResult,
         if (gate_verdict or "").upper() == "GO":
             cmd_path = out_dir / ".quant_command.json"
             if not cmd_path.is_file():
+                _record(status="skipped", reason="quant command not recorded")
                 return
             command = _json.loads(cmd_path.read_text()).get("command")
             if not command:
+                _record(status="skipped", reason="quant command empty")
                 return
             eval_parity = _eval_parity_from_cfg(run_cfg.eval)
-            path = kb.pin(
+            kwargs = dict(
                 model=run_cfg.model, scheme=scheme, command=command,
                 model_type=model_type, architecture=architecture,
                 ignore_layers=run_cfg.quant.ignore_layers,
@@ -619,19 +676,51 @@ def _recipe_kb_pin(run_cfg: RunConfig, out_dir: Path, result: EvalResult,
                 eval_parity=eval_parity, lessons=[f"eval parity: {eval_parity['note']}"],
                 gate_verdict=gate_verdict, source_run=run_id,
                 stack_fingerprint=fp, mean_before=mean_before, mean_after=mean_after)
-            if path:
-                _log.info("recipe_kb: pinned validated recipe -> %s", path)
+
+            def _invoke(store: RecipeKB) -> str | None:
+                return store.pin(**kwargs)
         else:
-            outcome = OUTCOME_NO_GO if gate_verdict else OUTCOME_FAILED
-            path = kb.record_outcome(
+            verdict = gate_verdict.upper()
+            outcome = (OUTCOME_NO_GO if verdict == "NO-GO"
+                       else OUTCOME_INCONCLUSIVE if verdict == "INCONCLUSIVE"
+                       else OUTCOME_FAILED)
+            kwargs = dict(
                 model=run_cfg.model, scheme=scheme, outcome=outcome,
                 model_type=model_type, architecture=architecture,
                 result={"mean_score": mean_after},
                 mean_before=mean_before, mean_after=mean_after,
                 reasons=gate_reasons, source_run=run_id, stack_fingerprint=fp)
-            if path:
-                _log.info("recipe_kb: recorded %s negative knowledge -> %s", outcome, path)
+
+            def _invoke(store: RecipeKB) -> str | None:
+                return store.record_outcome(**kwargs)
+
+        try:
+            path = _invoke(kb)
+        except OSError as exc:
+            fallback = RecipeKB(
+                curated_root=out_dir / "recipe_kb",
+                auto_root=out_dir / "recipe_kb" / "auto")
+            try:
+                path = _invoke(fallback)
+            except Exception as fallback_exc:  # noqa: BLE001
+                _record(status="failed", error=str(fallback_exc),
+                        primary_error=str(exc))
+                _log.warning("recipe_kb record failed (primary=%s; fallback=%s)",
+                             exc, fallback_exc)
+                return
+            _record(status="fallback", path=path, primary_error=str(exc))
+            _log.warning("recipe_kb: code checkout not writable (%s); wrote "
+                         "fallback KB -> %s", exc, path)
+            return
+        if path:
+            _record(status="ok", path=path)
+            if (gate_verdict or "").upper() == "GO":
+                _log.info("recipe_kb: pinned validated recipe -> %s", path)
+            else:
+                _log.info("recipe_kb: recorded %s negative knowledge -> %s",
+                          gate_verdict, path)
     except Exception as exc:  # noqa: BLE001 - record-back is best-effort provenance
+        _record(status="failed", error=str(exc))
         _log.warning("recipe_kb record failed: %s", exc)
 
 
@@ -949,6 +1038,12 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path, *, resume: bool = False) -> 
 
     plan = build_phase_plan(run_cfg)
     session = open_session(out_dir, run_cfg, run_id, plan, resume=resume)
+    if resume:
+        # Resume must be byte-stable: state/manifest/events keep the original
+        # run_id, so every artifact written after this point must reuse it too.
+        # Generating a fresh id here produced three ids in one run directory
+        # (state vs env_lock vs report) and broke provenance checks.
+        run_id = session.state.run_id
     is_quantize = run_cfg.provider.type == "quantize"
 
     # Per-phase execution留痕: tee the run logger to logs/pipeline.log (always on,

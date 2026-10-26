@@ -274,7 +274,10 @@ def _parse_eval_script(script: str, manifest: dict[str, Any],
     seed = _opt(tokens, "--seed")
     batch_size = _opt(tokens, "--batch_size") or "auto"
     off = str(model_args.get("enable_thinking", "")).lower() in ("false", "0", "no")
-    thinking = "off" if off else "on"
+    # No explicit flag in the recipe: let the eval layer auto-detect the model's
+    # thinking switch. Forcing "on" made reproduce plans claim a mode the
+    # original run never used.
+    thinking = "off" if off else "auto"
     off_args = {"enable_thinking": False}
     if model_args.get("reasoning_parser"):
         off_args["reasoning_parser"] = model_args["reasoning_parser"]

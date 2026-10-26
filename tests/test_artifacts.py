@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -199,3 +200,47 @@ def test_upload_detected_with_recipe_sidecar(tmp_path: Path) -> None:
         "environments: {}\noperations: {}\nvariants: []\nresult_tables: []\n")
     report = check_artifacts(tmp_path)
     assert any("model_card.md 缺失" in m for m in _errors(report))
+
+
+def test_report_placeholders_are_error(tmp_path: Path) -> None:
+    _fill_run_dir(tmp_path, report=_REPORT_GO + "\n<!-- RESULTS_TABLE -->\n")
+    report = check_artifacts(tmp_path)
+    assert not report.ok
+    assert any("模板占位符" in m for m in _errors(report))
+
+
+def test_run_id_mismatch_is_warn(tmp_path: Path) -> None:
+    _fill_run_dir(tmp_path)
+    (tmp_path / "env_lock.json").write_text('{"run_id": "run-a"}')
+    (tmp_path / "run_manifest.json").write_text('{"run_id": "run-b"}')
+    report = check_artifacts(tmp_path)
+    assert report.ok
+    assert any("run_id" in m for m in _warns(report))
+
+
+def test_recipe_kb_failed_is_error(tmp_path: Path) -> None:
+    _fill_run_dir(tmp_path)
+    (tmp_path / "recipe_kb.json").write_text(json.dumps({
+        "record": {"status": "failed", "error": "Read-only file system"}}))
+    report = check_artifacts(tmp_path)
+    assert not report.ok
+    assert any("Auto KB" in m for m in _errors(report))
+
+
+def test_card_fixed_section_drift_is_warn(tmp_path: Path) -> None:
+    _fill_run_dir(tmp_path)
+    (tmp_path / "model_card.md").write_text(
+        "# card\n\n## Ethical Considerations and Limitations\n\n"
+        "Custom text.\n\nSigned-off-by: Jane Smith <jane.smith@intel.com>\n")
+    report = check_artifacts(tmp_path)
+    assert report.ok
+    assert any("Ethical" in m for m in _warns(report))
+
+
+def test_smoke_eval_card_is_warn(tmp_path: Path) -> None:
+    _fill_run_dir(tmp_path, run_yaml="model: org/X\neval: {limit: 8}\n")
+    (tmp_path / "model_card.md").write_text(
+        "# card\n\nSigned-off-by: Jane Smith <jane.smith@intel.com>\n")
+    report = check_artifacts(tmp_path)
+    assert report.ok
+    assert any("smoke" in m for m in _warns(report))

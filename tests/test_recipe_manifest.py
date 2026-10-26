@@ -314,6 +314,57 @@ def test_local_model_path_is_flagged_not_leaked(tmp_path):
     _assert_schema(core)
 
 
+def test_smoke_limit_is_an_issue_and_table_note(tmp_path):
+    out = tmp_path / "run"
+    out.mkdir()
+    _seed_artifacts(out)
+    qdir = out / "quantized"
+    _seed_quant_dir(qdir)
+    cfg = _quant_cfg()
+    cfg.eval.limit = 8
+    m = build_recipe_manifest(
+        run_cfg=cfg, result=_result(), run_id="r1", out_dir=out,
+        quant_dir=qdir, gate_verdict="GO", gate_reasons=[])
+    assert any("smoke-limited" in i for i in m["variants"][0]["issues"])
+    assert "Smoke evaluation" in m["result_tables"][0]["notes"]
+    _assert_schema(to_inc_strict(m))
+
+
+def test_owner_patch_is_recorded_in_issues(tmp_path):
+    out = tmp_path / "run"
+    out.mkdir()
+    _seed_artifacts(out)
+    qdir = out / "quantized"
+    _seed_quant_dir(qdir)
+    (out / "owner_actions.jsonl").write_text(json.dumps({
+        "timestamp": "2026-01-01T00:00:00+00:00", "kind": "patch",
+        "text": "vLLM wo_a patch applied"}) + "\n")
+    m = build_recipe_manifest(
+        run_cfg=_quant_cfg(), result=_result(), run_id="r1", out_dir=out,
+        quant_dir=qdir, gate_verdict="GO", gate_reasons=[])
+    assert any("vLLM wo_a patch applied" in i for i in m["variants"][0]["issues"])
+
+
+def test_post_export_repair_is_in_quant_script_and_issues(tmp_path):
+    out = tmp_path / "run"
+    out.mkdir()
+    _seed_artifacts(out)
+    qdir = out / "quantized"
+    _seed_quant_dir(qdir)
+    (out / ".post_export.json").write_text(json.dumps({
+        "kind": "glm5_vllm", "targets": 36297,
+        "backup": "/tmp/raw-config.json",
+        "command": "python -m aqa.quantize.export_repair /tmp/quantized --kind glm5_vllm"}))
+    m = build_recipe_manifest(
+        run_cfg=_quant_cfg(), result=_result(), run_id="r1", out_dir=out,
+        quant_dir=qdir, gate_verdict="GO", gate_reasons=[])
+    script = m["variants"][0]["quantization"]["script"]
+    assert "python -m aqa.quantize.export_repair" in script
+    assert "--kind glm5_vllm" in script
+    assert any("Post-export repair" in i for i in m["variants"][0]["issues"])
+    _assert_schema(to_inc_strict(m))
+
+
 def test_strict_sidecar_requires_model_id(tmp_path):
     assert write_strict_recipe(tmp_path, {"model": {}}) is None
 

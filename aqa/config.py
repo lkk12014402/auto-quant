@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .logging_util import ConfigError
 
@@ -74,6 +74,11 @@ class QuantConfig(BaseModel):
     # agent-optimize. A normal run leaves this None; reproduce sets it from a
     # reviewed recipe variant.
     command_override: str | None = None
+    # Deterministic post-export config repair for runtimes whose module namespace
+    # differs from the checkpoint (currently ``glm5_vllm``). The pipeline backs up
+    # the raw auto-round config and rewrites it before eval; the recipe records
+    # the same command so reproduction is not a manual JSON edit.
+    export_repair: Literal["glm5_vllm"] | None = None
     extra_args: list[str] = Field(default_factory=list)
 
     _ALG_TOKENS = {
@@ -261,6 +266,18 @@ class LmEvalOptions(BaseModel):
     fewshot_as_multiturn: bool | None = None
     seed: int = 42
     group: bool = True  # merge compatible tasks into one lm_eval invocation
+
+    @field_validator("model_args")
+    @classmethod
+    def _reject_nested_model_args(cls, value: dict[str, Any]) -> dict[str, Any]:
+        nested = [k for k, v in value.items() if isinstance(v, (dict, list, tuple))]
+        if nested:
+            raise ConfigError(
+                "eval.lm_eval.model_args cannot contain nested dict/list values "
+                f"({', '.join(sorted(nested))}); lm_eval 0.4.13 splits --model_args "
+                "on commas and cannot parse them. Use flat key=value or the "
+                "dedicated metadata/gen_kwargs blocks.")
+        return value
 
 
 class DiffusionOptions(BaseModel):
@@ -556,6 +573,9 @@ class RunConfig(BaseModel):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     executor: ExecutorConfig = Field(default_factory=ExecutorConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
+    # Phase-hook chain: None => built-in defaults (quant/eval sanity), [] => all
+    # off, explicit list => exactly those. See aqa/hooks/.
+    hooks: list[str] | None = None
     # RFC 0002 §5: reproduce mode. None for normal runs; when set, the pipeline
     # appends a read-only VERIFY phase and writes reproduction_report.json.
     reproduce: ReproduceConfig | None = None
@@ -580,6 +600,19 @@ class RunConfig(BaseModel):
         if self.provider.type == "quantize" and self.provider.quant is None:
             self.provider.quant = QuantConfig()
         return self
+
+    @field_validator("hooks")
+    @classmethod
+    def _validate_hooks(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        from .registry import HOOKS
+
+        unknown = [name for name in value if name not in HOOKS.names()]
+        if unknown:
+            raise ConfigError(
+                f"unknown hook(s) {unknown}; available: {', '.join(HOOKS.names())}")
+        return value
 
 
 # ── Loading / composition ────────────────────────────────────────────────────

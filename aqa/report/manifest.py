@@ -131,6 +131,28 @@ def _load_quant_command(out_dir: Path) -> dict[str, Any] | None:
 
 
 _QUANT_COMMAND_FILE = ".quant_command.json"
+_POST_EXPORT_FILE = ".post_export.json"
+
+
+def record_post_export(out_dir: Path, payload: dict[str, Any]) -> None:
+    """Persist a deterministic post-export repair record for the manifest/recipe."""
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / _POST_EXPORT_FILE).write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except OSError:  # pragma: no cover - best-effort provenance
+        pass
+
+
+def _load_post_export(out_dir: Path) -> dict[str, Any] | None:
+    path = out_dir / _POST_EXPORT_FILE
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 @dataclass
@@ -292,6 +314,10 @@ def _commands_block(result: EvalResult, out_dir: Path | None) -> dict[str, Any]:
         if quant_cmd and quant_cmd.get("command"):
             block["quantize"] = quant_cmd["command"]
             block["quantize_source"] = quant_cmd.get("source", "builder")
+        post = _load_post_export(Path(out_dir))
+        if post and post.get("command"):
+            block["post_export"] = post["command"]
+            block["post_export_repair"] = post
     if result.commands:
         block["evaluate"] = list(result.commands)
     if result.healed:

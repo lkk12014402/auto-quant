@@ -149,3 +149,16 @@ def test_pipeline_resume_skips_quantize(tmp_path, monkeypatch):
     assert st2.status_of(Phase.QUANT) == Status.SKIPPED.value
     evs = read_events(tmp_path / "session")
     assert any(e["type"] == "phase_skip" and e.get("phase") == "QUANT" for e in evs)
+
+    # third (resume) run: SKIPPED must still count as done. Regression: skip()
+    # demoted DONE -> SKIPPED while should_skip() only accepted DONE, so a second
+    # resume silently re-ran quantization.
+    assert P.run_pipeline(cfg, tmp_path, resume=True) == P.ProcessState.DONE
+    assert quant_calls == ["quantized"]
+
+    # Resume must not mint a new run_id: state/manifest/env_lock/manifest all
+    # have to agree, otherwise the run directory carries several identities.
+    manifest = json.loads((tmp_path / "run_manifest.json").read_text())
+    assert manifest["run_id"] == st.run_id
+    assert json.loads((tmp_path / "env_lock.json").read_text())["run_id"] == st.run_id
+    assert json.loads((tmp_path / "quant_plan.json").read_text())["run_id"] == st.run_id

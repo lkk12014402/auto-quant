@@ -153,6 +153,19 @@ def test_commands_block_reads_recorded_quant_command(tmp_path):
     assert cmds["quantize_source"] == "agent_optimized"
 
 
+def test_commands_block_captures_post_export_repair(tmp_path):
+    from aqa.report.manifest import record_post_export
+
+    record_post_export(tmp_path, {
+        "kind": "glm5_vllm", "targets": 36297,
+        "command": "python -m aqa.quantize.export_repair out --kind glm5_vllm"})
+    m = build_manifest(_cfg(), _result({"piqa": 0.8}), run_id="r", out_dir=tmp_path)
+    cmds = m.to_dict()["commands"]
+    assert cmds["post_export"] == (
+        "python -m aqa.quantize.export_repair out --kind glm5_vllm")
+    assert cmds["post_export_repair"]["kind"] == "glm5_vllm"
+
+
 def test_commands_block_empty_without_provenance():
     m = build_manifest(_cfg(), _result({"piqa": 0.8}), run_id="r")
     assert m.to_dict()["commands"] == {}

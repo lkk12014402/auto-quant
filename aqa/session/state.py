@@ -127,7 +127,10 @@ class SessionState:
         return self.phases.get(phase.value, Status.PENDING.value)
 
     def is_done(self, phase: Phase) -> bool:
-        return self.status_of(phase) == Status.DONE.value
+        # SKIPPED means "product already present from an earlier DONE phase"
+        # (set by Session.skip on resume); treating it as not-done makes the next
+        # --resume re-run the phase. Both statuses mean the phase is complete.
+        return self.status_of(phase) in (Status.DONE.value, Status.SKIPPED.value)
 
     def _set(self, phase: Phase, status: Status) -> None:
         self.phases[phase.value] = status.value

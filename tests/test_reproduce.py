@@ -164,6 +164,17 @@ def test_build_full_config_substitutes_variables(tmp_path: Path):
     assert cfg.agent.fix_loop is False
 
 
+def test_reproduce_without_thinking_flag_uses_auto(tmp_path: Path):
+    manifest = _manifest(tmp_path)
+    variant = manifest["variants"][0]
+    variant["evaluation"]["script"] = variant["evaluation"]["script"].replace(
+        ",enable_thinking=False", "")
+    cfg = build_reproduction_config(
+        manifest, variant, manifest_path=tmp_path / "recipe.yaml",
+        out_dir=tmp_path / "out")
+    assert cfg.eval.thinking == "auto"
+
+
 def test_build_eval_only_config_uses_checkpoint(tmp_path: Path):
     manifest = _manifest(tmp_path)
     vid, variant = resolve_variant(manifest)
@@ -313,10 +324,16 @@ def test_pipeline_verify_phase_writes_report(tmp_path: Path, monkeypatch):
     path = _write_manifest(tmp_path, manifest)
 
     def fake_quant(script: str, quant_dir: Path):
+        import numpy as np
+        from safetensors.numpy import save_file
+
         quant_dir.mkdir(parents=True, exist_ok=True)
         cfg = dict(_ARCH)
         cfg["quantization_config"] = {"quant_method": "auto-round", "bits": 4}
         (quant_dir / "config.json").write_text(json.dumps(cfg))
+        save_file({"model.layers.0.mlp.q_proj.weight_packed":
+                   np.zeros((2, 2), dtype=np.uint8)},
+                  str(quant_dir / "model.safetensors"))
         return quant_dir
 
     def fake_eval(run_cfg, model, eval_dir, out_dir, num_gpus, knowledge,

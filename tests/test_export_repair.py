@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from safetensors.numpy import save_file
 
-from aqa.quantize import repair_diffusion_export
+from aqa.quantize import repair_diffusion_export, repair_glm5_vllm
 
 
 def _write_st(dirpath: Path, keys: list[str]) -> None:
@@ -200,3 +200,41 @@ def test_repair_fused_name_gaps_noop(tmp_path):
     # 无 config / 无 extra_config 也安全
     (out / "config.json").write_text(json.dumps({"a": 1}))
     assert repair_fused_name_gaps(out) == []
+
+
+def test_glm5_vllm_rewrites_targets_to_runtime_namespace(tmp_path):
+    out = tmp_path / "quantized"
+    out.mkdir()
+    (out / "config.json").write_text(json.dumps({
+        "model_type": "glm5_next",
+        "quantization_config": {
+            "quant_method": "compressed-tensors",
+            "format": "mixed-precision",
+            "ignore": ["model.language_model.layers.45.mlp.experts"],
+            "config_groups": {
+                "group_0": {
+                    "targets": ["Linear"],
+                    "weights": {"num_bits": 4, "type": "float",
+                                "group_size": 32, "strategy": "group"},
+                }
+            },
+        },
+    }))
+    (out / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {
+        "model.language_model.layers.0.mlp.gate_up_proj.weight_packed": "x",
+        "model.language_model.layers.3.mlp.experts.0.gate_proj.weight_packed": "x",
+        "model.language_model.layers.45.mlp.experts.0.gate_proj.weight": "y",
+    }}))
+
+    info = repair_glm5_vllm(out)
+
+    qc = json.loads((out / "config.json").read_text())["quantization_config"]
+    assert qc["format"] == "mxfp4-pack-quantized"
+    assert qc["ignore"] == []
+    targets = qc["config_groups"]["group_0"]["targets"]
+    assert "language_model.model.layers.0.mlp.gate_up_proj" in targets
+    assert "language_model.model.layers.3.mlp.experts.0.gate_proj" in targets
+    assert all("layers.45" not in target for target in targets)
+    assert info["kind"] == "glm5_vllm" and info["targets"] == 2
+    assert (out / ".pre_export_repair_config.json").is_file()
+    assert json.loads((out / "quantization_config.json").read_text())["ignore"] == []

@@ -230,6 +230,23 @@ def _family(recipe: dict[str, Any]) -> str | None:
     return None
 
 
+def _pick_scheme(schemes: list[str], requested: str | None) -> str | None:
+    """Resolve a requested scheme to a recipe key, allowing a family suffix.
+
+    Curated GLM recipes key the on-par plan as ``MXFP4-NVFP4-Parity`` while the
+    run asks for ``MXFP4``; exact match first, then a one-way prefix match.
+    """
+    if not schemes:
+        return None
+    if requested and requested in schemes:
+        return requested
+    if requested:
+        for key in schemes:
+            if key.startswith(requested + "-") or requested.startswith(key + "-"):
+                return key
+    return None
+
+
 def _find_command(subtree: Any) -> str | None:
     """First ``command`` string anywhere under a scheme subtree (recursive)."""
     if isinstance(subtree, dict):
@@ -414,7 +431,8 @@ class RecipeKB:
         best: tuple[int, int, _Entry, str | None] | None = None  # (level, source_rank, entry, scheme)
 
         for entry in self._iter_entries():
-            has_scheme = scheme is not None and scheme in entry.schemes
+            matched_scheme = _pick_scheme(entry.schemes, scheme)
+            has_scheme = matched_scheme is not None
             level = 0
             if entry.slug == slug:
                 level = LEVEL_MODEL_SCHEME if has_scheme else LEVEL_MODEL_ANY
@@ -423,7 +441,8 @@ class RecipeKB:
             if level == 0:
                 continue
             source_rank = 1 if entry.source == "curated" else 0
-            pick_scheme = scheme if has_scheme else (entry.schemes[0] if entry.schemes else None)
+            pick_scheme = matched_scheme if has_scheme else (
+                entry.schemes[0] if entry.schemes else None)
             cand = (level, source_rank, entry, pick_scheme)
             if best is None or (level, source_rank) > (best[0], best[1]):
                 best = cand

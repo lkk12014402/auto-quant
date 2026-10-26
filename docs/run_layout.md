@@ -48,7 +48,7 @@
 - `†` = `when: session`（`analysis.json` / `env_lock.json` 每个 session run 都有）
 - `‡` = `when: session_quantize`（`quant_plan.json` 仅量化 run）
 - `§` = `when: session_done`（`eval_report.json` run 正常收尾才有）
-- `¶` = `when: optional`（`recipe_kb.json` 仅 `recipe_kb.enabled` 的量化 run 写：ANALYZE 读 KB 审计 query+命中，缺失不判 INCOMPLETE。命中带 `authority`/`confidence`/`stale`(+`stale_tools`)/`sessions` 可信度与时效信号；`current_stack` 与配方 pin 时的 `stack_fingerprint` 比对判定 stale。仅 `agent.optimize` 时命中才注入 agent-optimize 作起点。CLOSE 始终回写：GO→`recipes/quant/auto/<slug>.json` 验证配方(schemes+trust+session 行)；非 GO→同一行追加 negative knowledge(failures+session 行，不写 schemes))
+- `¶` = `when: optional`（`recipe_kb.json` 仅 `recipe_kb.enabled` 的量化 run 写：ANALYZE 读 KB 审计 query+命中，缺失不判 INCOMPLETE。命中带 `authority`/`confidence`/`stale`(+`stale_tools`)/`sessions` 可信度与时效信号；`current_stack` 与配方 pin 时的 `stack_fingerprint` 比对判定 stale。仅 `agent.optimize` 时命中才注入 agent-optimize 作起点。CLOSE 回写：GO→`recipes/quant/auto/<slug>.json` 验证配方(schemes+trust+session 行)；非 GO→同一行追加 negative knowledge(failures+session 行，不写 schemes)；未配 gate（verdict=null）→只在 `recipe_kb.json.record` 记 skipped，不写 KB；代码库只读时自动回退到 `<run>/recipe_kb/auto/` 并在 `record.status=fallback` 留痕)
 
 `aqa inspect` 现在按 Phase 汇总（每个阶段 present/MISSING 计数），一眼看出
 run 卡在哪个阶段、缺哪个产物。

@@ -44,6 +44,7 @@
 | `opt_rtn` | None | true→`--enable_opt_rtn`，false→`--disable_opt_rtn` |
 | `static_kv_fp8` / `static_attention_fp8` | false | FP8 KV cache / FP8 attention。`static_kv_fp8` 可配 `model_free`，但仍会加载模型做 KV-scale 校准；`static_attention_fp8` 需要 `method: autoround` |
 | `device_map` | None | 默认多卡 auto；可显式 `"0,1"` 等 |
+| `export_repair` | None | 导出后确定性 config 修复；当前支持 `glm5_vllm`（HF 名字 → vLLM `language_model.model.*` + `RoutedExperts`，备份原 config） |
 | `extra_args` | [] | 原样透传 CLI 的逃生口 |
 | `recipe_sweep` / `recipe_sweep_candidates` | false / None | 多候选对比（`aqa sweep`），见 AGENTS.md §3.2 |
 
@@ -61,7 +62,7 @@
 | `gen_max_toks` | 2048 | 生成预算 |
 | `thinking` | `auto` | thinking 双模式：`auto`（检出即双测）/ `both` / `on` / `off` |
 | `thinking_off_model_args` | `{enable_thinking: false}` | "关"模式的传参（特殊模型覆盖） |
-| `lm_eval.model_args` | {} | backend 额外参数（`reasoning_parser`/`max_num_seqs`/`kv_cache_dtype` 等） |
+| `lm_eval.model_args` | {} | backend 额外参数（`reasoning_parser`/`max_num_seqs`/`kv_cache_dtype` 等）；**只能是扁平 key=value**，嵌套 dict/list 会被 `aqa validate` 拒绝（lm_eval 0.4.13 的 `--model_args` 按逗号切分，无法解析） |
 | `lm_eval.gen_kwargs` / `apply_chat_template` / `fewshot_as_multiturn` / `seed` / `group` | — | 生成参数 / 模板覆盖 / 种子(42) / 合并调用(true) |
 | `diffusion.*` | — | diffusion harness 参数（步数/guidance/分辨率/scorer 等） |
 | `evalscope` | {} | evalscope harness 透传：`repeats` / `eval_batch_size` / `generation_config` / `dataset_args` / `server_args` / `port` / `startup_timeout` |

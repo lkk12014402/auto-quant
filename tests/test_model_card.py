@@ -19,6 +19,8 @@ from aqa.config import (
 from aqa.logging_util import AqaError
 from aqa.report.model_card import (
     CARD_FILE,
+    _method_phrase,
+    _module_families,
     render_model_card,
     signoff_problem,
     write_model_card,
@@ -193,3 +195,64 @@ def test_write_card_atomically(tmp_path: Path):
     assert path.is_file()
     assert not (out / "model_card.md.tmp").exists()
     assert signoff_problem(path.read_text()) is None
+
+
+def test_module_families_skip_scale_only_groups():
+    details = {"module_groups": [
+        {"id": "experts", "label": "MoE expert projections (MXFP4)",
+         "scheme": "MXFP4", "modules": ["w1", "w2", "w3"]},
+        {"id": "expert-scales", "label": "MoE expert projections (BF16)",
+         "scheme": "BF16", "modules": ["w1.scale", "w2.scale", "w3.scale"]},
+        {"id": "norms", "label": "LayerNorms", "scheme": "BF16",
+         "modules": ["norm"]},
+    ]}
+    quantized, kept = _module_families(details)
+    assert quantized == ["MoE expert projections (MXFP4)"]
+    assert kept == ["LayerNorms"]
+
+
+def test_module_families_disambiguate_mtp_and_bias_labels():
+    details = {"module_groups": [
+        {"id": "moe-experts-bf16", "label": "MoE expert projections (BF16)",
+         "scheme": "BF16", "modules": ["experts.down_proj"],
+         "matched_by": "ignore:layers.45"},
+        {"id": "mlp-bf16", "label": "MLP projections (BF16)",
+         "scheme": "BF16", "modules": ["gate.e_score_correction_bias"]},
+    ]}
+    _, kept = _module_families(details)
+    assert kept == ["MTP expert projections (BF16)", "Router bias"]
+
+
+def test_model_free_on_quantized_source_is_repack_not_rtn():
+    from aqa.config import QuantConfig
+
+    assert _method_phrase(
+        QuantConfig(method="model_free"), source_quantized=True
+    ) == " by re-packing the source checkpoint"
+    assert _method_phrase(
+        QuantConfig(method="model_free"), source_quantized=False
+    ) == " using RTN"
+
+
+def test_smoke_eval_is_marked_in_caveats(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    cfg.eval.limit = 8
+    out = _seed_run(tmp_path, cfg)
+    card = render_model_card(
+        cfg, out_dir=out, repo_name="Base-MXFP8-CT-RTN-AutoRound",
+        quant_dir=out / "quantized", signoff="Jane Smith <jane.smith@intel.com>")
+    assert "Smoke evaluation" in card
+    assert "--limit 8" in card
+
+
+def test_owner_action_caveat_is_rendered(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    out = _seed_run(tmp_path, cfg)
+    (out / "owner_actions.jsonl").write_text(json.dumps({
+        "timestamp": "2026-01-01T00:00:00+00:00", "kind": "command",
+        "text": "vLLM GLM namespace config rewrite applied"}) + "\n")
+    card = render_model_card(
+        cfg, out_dir=out, repo_name="Base-MXFP8-CT-RTN-AutoRound",
+        quant_dir=out / "quantized", signoff="Jane Smith <jane.smith@intel.com>")
+    assert "Owner action" in card
+    assert "GLM namespace config rewrite" in card

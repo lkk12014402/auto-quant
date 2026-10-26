@@ -405,6 +405,23 @@ def test_pin_helper_noop_when_pin_disabled(tmp_path: Path) -> None:
     assert not (curated / "auto").exists()
 
 
+def test_pin_helper_skips_record_without_gate(tmp_path: Path) -> None:
+    from aqa.report.manifest import record_quant_command
+    from aqa.pipeline import _recipe_kb_pin
+
+    curated = tmp_path / "quant"
+    curated.mkdir()
+    out = tmp_path / "run"
+    out.mkdir()
+    record_quant_command(out, "cmd", source="builder")
+    run_cfg = _quant_run_cfg(str(_model_dir(tmp_path)), curated, optimize=True, pin=True)
+
+    # No gate configured -> no GO/NO-GO verdict. Do not poison the KB with FAILED.
+    _recipe_kb_pin(run_cfg, out, _eval_result("org/M", {"mmlu": 0.7}), None, "run-1")
+
+    assert not (curated / "auto").exists()
+
+
 def test_pin_helper_records_negative_knowledge_on_non_go(tmp_path: Path) -> None:
     from aqa.report.manifest import record_quant_command
     from aqa.pipeline import _recipe_kb_pin
@@ -428,6 +445,35 @@ def test_pin_helper_records_negative_knowledge_on_non_go(tmp_path: Path) -> None
     assert "confidence" not in data
     assert any("NO-GO" in f for f in data["failures"])
     assert data["sessions"][-1]["outcome"] == "NO-GO"
+
+
+def test_pin_helper_falls_back_to_run_dir_when_code_root_readonly(
+        tmp_path: Path, monkeypatch) -> None:
+    from aqa.report.manifest import record_quant_command
+    from aqa.pipeline import _recipe_kb_pin
+
+    curated = tmp_path / "quant"
+    curated.mkdir()
+    out = tmp_path / "run"
+    out.mkdir()
+    record_quant_command(out, "auto-round VALIDATED", source="builder")
+    run_cfg = _quant_run_cfg(str(_model_dir(tmp_path)), curated, optimize=True, pin=True)
+
+    original_pin = RecipeKB.pin
+
+    def _pin(self, **kwargs):
+        if str(self.auto_root).startswith(str(curated)):
+            raise OSError(30, "Read-only file system")
+        return original_pin(self, **kwargs)
+
+    monkeypatch.setattr(RecipeKB, "pin", _pin)
+    _recipe_kb_pin(run_cfg, out, _eval_result("org/M", {"mmlu": 0.7}), "GO", "run-1")
+
+    fallback = out / "recipe_kb" / "auto" / "m.json"
+    assert fallback.is_file()
+    record = json.loads((out / "recipe_kb.json").read_text())["record"]
+    assert record["status"] == "fallback"
+    assert record["path"] == str(fallback)
 
 
 def _eval_result(model: str, scores: dict[str, float]):
@@ -572,3 +618,18 @@ def test_pin_and_lookup_roundtrip_eval_parity(tmp_path: Path) -> None:
     assert hit is not None
     assert hit.eval_parity == {"thinking": "off",
                                "thinking_off_model_args": {"reasoning_parser": "qwen3"}}
+
+
+def test_lookup_scheme_family_suffix_matches_curated_plan(tmp_path: Path) -> None:
+    curated = tmp_path / "quant"
+    auto = curated / "auto"
+    _write(curated, "zai-org__GLM-5.3-Flash", {
+        "model": "zai-org/GLM-5.3-Flash",
+        "schemes": {"MXFP4-NVFP4-Parity": {"command": "auto-round parity"}},
+    })
+    hit = RecipeKB(curated_root=curated, auto_root=auto).lookup(
+        "zai-org/GLM-5.3-Flash", scheme="MXFP4")
+    assert hit is not None
+    assert hit.match_level == 4
+    assert hit.scheme == "MXFP4-NVFP4-Parity"
+    assert hit.command == "auto-round parity"

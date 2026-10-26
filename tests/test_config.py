@@ -48,3 +48,20 @@ def test_base_inheritance_and_examples():
 def test_invalid_model_rejected():
     with pytest.raises(ConfigError):
         parse_run_config({"model": "notarepo"})
+
+
+def test_nested_lm_eval_model_args_rejected():
+    with pytest.raises(ConfigError, match="nested dict/list"):
+        parse_run_config({
+            "model": "org/m",
+            "eval": {"lm_eval": {"model_args": {
+                "kernel_config": {"enable_flashinfer_autotune": False}}}},
+        })
+
+
+def test_export_repair_field_parses():
+    cfg = parse_run_config({
+        "model": "org/m",
+        "quant": {"scheme": "MXFP4", "export_repair": "glm5_vllm"},
+    })
+    assert cfg.quant is not None and cfg.quant.export_repair == "glm5_vllm"

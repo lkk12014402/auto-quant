@@ -306,6 +306,7 @@ def write_eval_report(out_dir: Path, run_cfg: "RunConfig", run_id: str,
             "created_at": now_iso(),
             "model": run_cfg.model,
             "backend": run_cfg.eval.backend,
+            "limit": run_cfg.eval.limit,
             "quant": {"mean_score": result.mean_score(),
                       "results": result.to_dict().get("results", {})},
             "source": None if baseline is None else {

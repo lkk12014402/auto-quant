@@ -87,12 +87,18 @@ def resolve_export_dir(quant_dir: Path) -> Path:
 
 
 def run_quantization(
-    model: str, cfg: QuantConfig, output_dir: Path, *, num_gpus: int = 1
+    model: str, cfg: QuantConfig, output_dir: Path, *, num_gpus: int = 1,
+    hooks: tuple = (),
 ) -> Path:
     """Run auto-round quantization and return the output model directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
     cmd = build_autoround_command(model, cfg, output_dir, num_gpus=num_gpus)
-    return _run_autoround(cmd, output_dir)
+    out = _run_autoround(cmd, output_dir)
+    if hooks:
+        from ..hooks import run_hook_chain
+        run_hook_chain("after_quantize", hooks, None, quant_cfg=cfg,
+                       output_dir=out)
+    return out
 
 
 def run_quant_command(cmd: str | list[str], output_dir: Path) -> Path:
@@ -148,3 +154,27 @@ def _run_autoround(cmd: list[str], output_dir: Path,
     if rc != 0:
         raise AqaError(f"quantization failed (rc={rc}); see {log_path}")
     return output_dir
+
+
+from .export_repair import (  # noqa: E402
+    repair_diffusion_export,
+    repair_export,
+    repair_fused_name_gaps,
+    repair_glm5_vllm,
+    restore_config_structure,
+)
+
+__all__ = [
+    "build_autoround_command",
+    "ensure_device_map",
+    "repair_diffusion_export",
+    "repair_export",
+    "repair_fused_name_gaps",
+    "repair_glm5_vllm",
+    "resolve_device_map",
+    "resolve_export_dir",
+    "restore_config_structure",
+    "run_quant_command",
+    "run_quant_script",
+    "run_quantization",
+]

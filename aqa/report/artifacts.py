@@ -44,6 +44,12 @@ _SPECS: tuple[ArtifactSpec, ...] = (
 _YAML_SUFFIXES = {".yaml", ".yml"}
 _VERDICTS = ("GO", "NO-GO", "INCONCLUSIVE")
 _VERDICT_RE = re.compile(r"\b(?:NO-GO|INCONCLUSIVE|GO)\b")
+_PLACEHOLDER_RE = re.compile(r"<!--\s*[A-Z0-9_①-⑳][A-Z0-9_①-⑳ /\-]*\s*-->")
+_RUN_ID_FILES = (
+    "session/state.json", "session/manifest.json", "env_lock.json",
+    "quant_plan.json", "analysis.json", "recipe_kb.json",
+    "eval_report.json", "run_manifest.json",
+)
 
 
 @dataclass
@@ -119,6 +125,50 @@ def _gate_verdict(run_dir: Path) -> str | None:
     return str(verdict).upper() if verdict else None
 
 
+def _load_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _run_id_map(run_dir: Path) -> dict[str, str]:
+    ids: dict[str, str] = {}
+    for rel in _RUN_ID_FILES:
+        data = _load_json(run_dir / rel)
+        rid = data.get("run_id")
+        if isinstance(rid, str) and rid:
+            ids[rel] = rid
+    recipe = run_dir / "recipe.yaml"
+    if recipe.is_file():
+        try:
+            data = yaml.safe_load(recipe.read_text(encoding="utf-8"))
+            rid = ((data or {}).get("provenance") or {}).get("run_id")
+            if isinstance(rid, str) and rid:
+                ids["recipe.yaml:provenance"] = rid
+        except (OSError, yaml.YAMLError):
+            pass
+    return ids
+
+
+def _eval_limit(yamls: list[Path]) -> int | None:
+    for path in yamls:
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        eval_cfg = data.get("eval")
+        if not isinstance(eval_cfg, dict):
+            continue
+        limit = eval_cfg.get("limit")
+        if isinstance(limit, int) and limit > 0:
+            return limit
+    return None
+
+
 def _routing_table_rows(text: str) -> list[list[str]] | None:
     """Data rows of the 经验沉淀路由表 section, as cell lists; None if absent."""
     m = re.search(r"^#+ [^\n]*经验沉淀路由表[^\n]*\n(.*?)(?=^#|\Z)", text,
@@ -174,6 +224,11 @@ def check_artifacts(run_dir: str | Path) -> ArtifactsReport:
     report_md = run_dir / "report.md"
     if report_md.exists():
         text = report_md.read_text(errors="replace")
+        placeholders = _PLACEHOLDER_RE.findall(text)
+        if placeholders:
+            report.findings.append(Finding(
+                "error",
+                "report.md 仍有模板占位符未填：" + ", ".join(placeholders[:4])))
         verdict = _gate_verdict(run_dir)
         tokens = set(_VERDICT_RE.findall(text))
         if verdict and verdict not in tokens:
@@ -190,6 +245,58 @@ def check_artifacts(run_dir: str | Path) -> ArtifactsReport:
             elif empty:
                 report.findings.append(Finding(
                     "warn", f"经验沉淀路由表有 {empty} 行未填状态"))
+
+    ids = _run_id_map(run_dir)
+    if len(set(ids.values())) > 1:
+        detail = ", ".join(f"{name}={rid}" for name, rid in ids.items())
+        report.findings.append(Finding(
+            "warn", "run_id 在产物间不一致（resume 旧 bug；新 run 已复用 state.run_id）："
+                    + detail))
+
+    limit = _eval_limit(yamls)
+    if limit and (run_dir / "model_card.md").is_file():
+        report.findings.append(Finding(
+            "warn", f"run.yaml eval.limit={limit}（run 自己的 eval 是 smoke）；"
+                    "若 card/recipe 取自独立全量 run，请核对来源后再发布"))
+    recipe_yaml = run_dir / "recipe.yaml"
+    if limit and recipe_yaml.is_file():
+        try:
+            recipe_text = recipe_yaml.read_text(errors="replace")
+        except OSError:
+            recipe_text = ""
+        if "--limit" in recipe_text and "Smoke evaluation" not in recipe_text:
+            report.findings.append(Finding(
+                "warn", f"recipe.yaml 的评估仍带 --limit（run.yaml eval.limit={limit}），"
+                        "但 result_tables 未标记 smoke"))
+
+    kb = _load_json(run_dir / "recipe_kb.json")
+    record = kb.get("record") if isinstance(kb.get("record"), dict) else None
+    if kb and record is None:
+        report.findings.append(Finding(
+            "warn", "recipe_kb.json 没有 CLOSE 回写结果（旧的静默失败；"
+                    "新 run 会记录 record.status）"))
+    elif record:
+        status = str(record.get("status") or "?")
+        if status == "failed":
+            report.findings.append(Finding(
+                "error", "Auto KB 回写失败：" + str(record.get("error") or "unknown")))
+        elif status == "fallback":
+            report.findings.append(Finding(
+                "warn", "Auto KB 写入 run 目录 fallback（代码库只读）；"
+                        "需把 " + str(record.get("path") or "recipe_kb/auto") + " 拷回代码库"))
+        elif status == "skipped":
+            report.findings.append(Finding(
+                "warn", "Auto KB 回写被跳过：" + str(record.get("reason") or "")))
+
+    card = run_dir / "model_card.md"
+    if card.exists():
+        card_text = card.read_text(errors="replace")
+        if "The model can produce factually incorrect output" not in card_text:
+            report.findings.append(Finding(
+                "warn", "model_card.md 的 Ethical Considerations 段落偏离模板固定文本"))
+        if "The license on this model does not constitute legal advice" not in card_text:
+            report.findings.append(Finding(
+                "warn", "model_card.md 的 Disclaimer 段落偏离模板固定文本"))
 
     return report
 

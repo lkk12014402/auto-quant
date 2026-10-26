@@ -61,6 +61,10 @@ _BUILTINS: dict[str, dict[str, str]] = {
         "fuzzy_match": "aqa.eval.scoring:fuzzy_match",
         "answer_line": "aqa.eval.scoring:answer_line",
     },
+    "aqa.hooks": {
+        "quant_sanity": "aqa.hooks.sanity:QuantSanityHook",
+        "eval_sanity": "aqa.hooks.sanity:EvalSanityHook",
+    },
 }
 
 
@@ -120,6 +124,7 @@ SANDBOXES = Registry("aqa.sandboxes")
 RECIPE_STORES = Registry("aqa.recipe_stores")
 SCORERS = Registry("aqa.scorers")
 PROVIDERS = Registry("aqa.providers")
+HOOKS = Registry("aqa.hooks")
 
 _ALL = {
     "providers": PROVIDERS,
@@ -130,6 +135,7 @@ _ALL = {
     "sandboxes": SANDBOXES,
     "recipe_stores": RECIPE_STORES,
     "scorers": SCORERS,
+    "hooks": HOOKS,
 }
 
 
