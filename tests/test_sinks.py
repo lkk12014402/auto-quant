@@ -185,6 +185,9 @@ def test_full_run_ships_shared_knowledge(tmp_path, monkeypatch):
     (kn / "patches" / "quantize" / "abc" / "meta.json").write_text('{"exc_type": "RuntimeError"}')
     (kn / "stats").mkdir()
     (kn / "stats" / "events.jsonl").write_text('{"outcome": "replay_hit"}\n')
+    (kn / "references").mkdir()
+    (kn / "references" / "auto_round_recipe.md").write_text("# ref\n")
+    (kn / ".sync_state.json").write_text('{"schema_version": 1}\n')
     (kn / "patch_snapshot.bin").write_bytes(b"\x00" * 8)  # excluded (not text artifact)
 
     meta = _full_meta(run)
@@ -194,6 +197,8 @@ def test_full_run_ships_shared_knowledge(tmp_path, monkeypatch):
     assert any(k == "knowledge/lessons/quantize.jsonl" for k in staged)
     assert any(k.endswith("knowledge/patches/quantize/abc/auto_round.patch") for k in staged)
     assert any(k == "knowledge/stats/events.jsonl" for k in staged)
+    assert any(k == "knowledge/references/auto_round_recipe.md" for k in staged)
+    assert not any(".sync_state.json" in k for k in staged)
     assert not any("patch_snapshot.bin" in k for k in staged)  # binary excluded
 
 

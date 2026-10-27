@@ -266,7 +266,8 @@ def _model_dir(tmp_path: Path, name: str = "M") -> Path:
     return d
 
 
-def _quant_run_cfg(model: str, curated: Path, *, optimize: bool, pin: bool = False):
+def _quant_run_cfg(model: str, curated: Path, *, optimize: bool, pin: bool = False,
+                   auto_sync: str = "off"):
     from aqa.config import (AgentConfig, ProviderConfig, QuantConfig,
                             RecipeKBConfig, RunConfig)
     return RunConfig(
@@ -274,7 +275,7 @@ def _quant_run_cfg(model: str, curated: Path, *, optimize: bool, pin: bool = Fal
         provider=ProviderConfig(type="quantize", quant=QuantConfig(
             scheme="MXFP8", method="autoround", ignore_layers="lm_head")),
         agent=AgentConfig(optimize=optimize, recipe_kb=RecipeKBConfig(
-            root=str(curated), pin=pin)))
+            root=str(curated), pin=pin, auto_sync=auto_sync)))
 
 
 def test_lookup_helper_injects_recipe_and_writes_audit(tmp_path: Path) -> None:
@@ -633,3 +634,28 @@ def test_lookup_scheme_family_suffix_matches_curated_plan(tmp_path: Path) -> Non
     assert hit.match_level == 4
     assert hit.scheme == "MXFP4-NVFP4-Parity"
     assert hit.command == "auto-round parity"
+
+
+def test_pin_helper_records_auto_sync_branch(tmp_path: Path, monkeypatch) -> None:
+    from aqa.report.manifest import record_quant_command
+    from aqa.pipeline import _recipe_kb_pin
+
+    curated = tmp_path / "quant"
+    curated.mkdir()
+    out = tmp_path / "run"
+    out.mkdir()
+    record_quant_command(out, "auto-round VALIDATED", source="builder")
+    run_cfg = _quant_run_cfg(str(_model_dir(tmp_path)), curated, optimize=True,
+                             pin=True, auto_sync="branch")
+    calls: list[dict] = []
+
+    def _sync(**kwargs):
+        calls.append(kwargs)
+        return {"status": "branch", "branch": "aqa/kb-run-1"}
+
+    monkeypatch.setattr("aqa.agent.recipe_git.sync_auto_recipe", _sync)
+    _recipe_kb_pin(run_cfg, out, _eval_result("org/M", {"mmlu": 0.7}), "GO", "run-1")
+    record = json.loads((out / "recipe_kb.json").read_text())["record"]
+    assert record["status"] == "ok"
+    assert record["auto_sync"]["status"] == "branch"
+    assert calls and calls[0]["mode"] == "branch"

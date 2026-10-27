@@ -521,6 +521,56 @@ def _load_accuracy(path: str) -> dict[str, float]:
     return {k: v.get("score") for k, v in data.get("results", {}).items()}
 
 
+@main.group()
+def knowledge() -> None:
+    """Inspect or retry local-first knowledge synchronization."""
+
+
+@knowledge.command("status")
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False))
+def knowledge_status(run_dir: str) -> None:
+    """Print a run's knowledge_sync.json (or missing)."""
+    path = Path(run_dir) / "knowledge_sync.json"
+    if not path.is_file():
+        click.echo(json.dumps({"status": "missing", "path": str(path)}))
+        return
+    click.echo(path.read_text(encoding="utf-8"))
+
+
+@knowledge.command("sync")
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--pull-only", is_flag=True, help="Only pull remote lessons/patches/references.")
+@click.option("--push-only", is_flag=True, help="Only push local pending files.")
+def knowledge_sync(run_dir: str, pull_only: bool, push_only: bool) -> None:
+    """Retry this run's knowledge pull/push and refresh knowledge_sync.json."""
+    run = Path(run_dir)
+    config = run / "run.yaml"
+    if not config.is_file():
+        raise click.ClickException(f"run.yaml not found in {run}")
+    cfg = load_run_config(config)
+    from .agent.knowledge import KnowledgeStore
+    from .agent.knowledge_sync import KnowledgeSync
+    from .session._io import atomic_write_json
+
+    store = KnowledgeStore.from_config(cfg.agent.knowledge)
+    if store is None:
+        raise click.ClickException("agent.knowledge is disabled in run.yaml")
+    # Explicit sync must override a background/off run mode.
+    sync = KnowledgeSync(store, mode="auto")
+    if not push_only:
+        sync.pull()
+    if not pull_only:
+        sync.push()
+    status = sync.status()
+    atomic_write_json(run / "knowledge_sync.json", status)
+    manifest_path = run / "run_manifest.json"
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["knowledge"] = status
+        atomic_write_json(manifest_path, manifest)
+    click.echo(json.dumps(status, ensure_ascii=False, indent=2))
+
+
 def _backend_names() -> list[str]:
     from .registry import BACKENDS
 

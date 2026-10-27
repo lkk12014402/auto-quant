@@ -105,7 +105,7 @@ def test_pipeline_resume_skips_quantize(tmp_path, monkeypatch):
 
     monkeypatch.setattr(P, "_dispatch_sinks", lambda *a, **k: None)
     monkeypatch.setattr(P, "_make_knowledge", lambda rc: None)
-    monkeypatch.setattr(P, "_finalize_knowledge", lambda k: None)
+    monkeypatch.setattr(P, "_finalize_knowledge", lambda k, **kw: None)
     monkeypatch.setattr(P, "_maybe_upload_model", lambda *a, **k: None)
 
     def _result(scores):

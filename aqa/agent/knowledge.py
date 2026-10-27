@@ -32,6 +32,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ..logging_util import get_logger
 from ..report.sinks import resolve_hf_token
@@ -126,6 +127,7 @@ class KnowledgeStore:
     push: bool = True
     lessons: LessonStore = field(init=False)
     trajectories: TrajectoryStore = field(init=False)
+    sync: Any = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self.local_dir = Path(self.local_dir).expanduser()
@@ -248,11 +250,27 @@ class KnowledgeStore:
             if not p.is_file():
                 continue
             rel = p.relative_to(src)
+            if any(part.startswith(".") or part == "__pycache__" for part in rel.parts):
+                continue
             target = dst / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             if (rel.parts and rel.parts[0] in ("lessons", "trajectories")
                     and target.exists()):
                 self._merge_lessons(target, p)
+            elif rel.parts and rel.parts[0] == "patches" and target.exists():
+                # Content-addressed patches: never overwrite a local/remote fix
+                # with the same signature but different bytes.
+                try:
+                    same = target.read_bytes() == p.read_bytes()
+                except OSError:
+                    same = False
+                if not same:
+                    target = target.with_name(
+                        target.stem + ".remote" + target.suffix)
+                if not target.exists():
+                    shutil.copy2(p, target)
+                else:
+                    continue
             else:
                 shutil.copy2(p, target)
             count += 1
@@ -275,10 +293,16 @@ class KnowledgeStore:
             "\n".join(json.dumps(v, ensure_ascii=False) for v in by_sig.values()) + "\n"
         )
 
-    def push_up(self) -> bool:
-        """Upload the local knowledge dir back to the HF dataset (best-effort)."""
+    def push_up(self, allow_patterns: list[str] | None = None) -> bool:
+        """Upload the local knowledge dir back to the HF dataset (best-effort).
+
+        ``allow_patterns`` limits the upload to changed files (relative to
+        ``local_dir``); ``None`` uploads the whole tree.
+        """
         if not self.repo or not self.push:
             return False
+        if allow_patterns is not None and not allow_patterns:
+            return True
         token = resolve_hf_token(None, self.token_env)
         if not token:
             _log.info("knowledge: no write token; not pushing to %s", self.repo)
@@ -289,10 +313,15 @@ class KnowledgeStore:
             return False
         try:
             api = HfApi(token=token, endpoint=self.endpoint)
+            kwargs: dict[str, Any] = {}
+            if allow_patterns is not None:
+                kwargs["allow_patterns"] = list(allow_patterns)
             api.upload_folder(
                 repo_id=self.repo, repo_type="dataset", folder_path=str(self.local_dir),
                 path_in_repo=self.path_in_repo, token=token,
+                ignore_patterns=[".sync_state.json"],
                 commit_message="aqa: update shared fix-knowledge",
+                **kwargs,
             )
         except Exception as exc:  # noqa: BLE001 - never fail a run on a knowledge push
             _log.warning("knowledge: push_up to %s failed: %s", self.repo, exc)

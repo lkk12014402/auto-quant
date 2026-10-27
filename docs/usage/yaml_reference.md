@@ -88,10 +88,13 @@ thinking 双模式时 gate 按同模式配对判定，取最差 verdict。
 | `agent_timeout` | 1200 | 单次尝试墙钟（秒） |
 | `context` | None | 附加上下文（内联文本或 `@文件`） |
 | `patch.capture` / `patch.review` / `patch.track_vllm` | true / false / true | 工作区补丁快照 / 只读评审 / vllm 跟踪 |
-| `knowledge.enabled` | true | 共享修复知识库 |
+| `knowledge.enabled` | true | 共享修复知识库；与 `fix_loop` 解耦：关闭 fix-loop 也会 sync/push |
 | `knowledge.repo` / `path_in_repo` / `token_env` | None / `knowledge` / None | HF dataset 后端（不配 repo 则纯本地 `~/.cache/aqa/knowledge`） |
 | `knowledge.replay` / `push` | true / true | 先回放已录补丁 / 修复成功后回传 |
+| `knowledge.sync` | `auto` | `auto`/`pull`/`push`/`off`/`background`；本地 outbox + sha256，远端失败留 pending；`background` 只拉不推，CLOSE 不阻塞 |
+| `knowledge.sediment_sessions` | true | CLOSE/failure 把 fix/optimize/owner session 转 ATIF 并推 `trajectories/` |
 | `knowledge.use_references` | true | optimize 是否读增量 references 层（false 锁回打包层） |
+| `recipe_kb.auto_sync` | `off` | auto recipe 的 git 发布：`off`/`branch`/`pr`（branch/pr 用 detached worktree，不碰当前分支） |
 
 ## executor（执行环境，详见 environments.md）
 

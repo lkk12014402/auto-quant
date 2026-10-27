@@ -352,6 +352,8 @@ class KnowledgeConfig(BaseModel):
     local_dir: str | None = None     # local cache; default ~/.cache/aqa/knowledge
     replay: bool = True              # try recorded patches before invoking the agent
     push: bool = True                # upload new lessons/patches back to the repo
+    sync: Literal["auto", "pull", "push", "off", "background"] = "auto"
+    sediment_sessions: bool = True   # ATIF-ize fix/optimize/owner sessions at CLOSE
     # Optimize prompt knowledge: prefer a synced references/auto_round_recipe.md
     # over the packaged copy. False pins the run to the packaged version (useful
     # for reproducible experiments that must not drift with shared knowledge).
@@ -379,6 +381,10 @@ class RecipeKBConfig(BaseModel):
     pin: bool = True            # write: CLOSE pins the validated recipe back (gate GO only)
     root: str | None = None     # curated recipe dir; default repo ``recipes/quant``
     auto_subdir: str = "auto"   # auto-pinned recipes live under ``<root>/<auto_subdir>``
+    auto_sync: Literal["off", "branch", "pr"] = "off"
+    # off: write the auto file only (user commits); branch: commit to a local
+    # aqa/kb-<run_id> branch in a detached worktree; pr: push that branch and
+    # open a PR with gh.  Never commits to the current branch / main.
 
 
 class PolicyGateConfig(BaseModel):

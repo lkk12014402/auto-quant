@@ -244,3 +244,21 @@ def test_smoke_eval_card_is_warn(tmp_path: Path) -> None:
     report = check_artifacts(tmp_path)
     assert report.ok
     assert any("smoke" in m for m in _warns(report))
+
+
+def test_knowledge_sync_failed_is_error(tmp_path: Path) -> None:
+    _fill_run_dir(tmp_path)
+    (tmp_path / "knowledge_sync.json").write_text(json.dumps({
+        "status": "failed", "errors": ["auth denied"]}))
+    report = check_artifacts(tmp_path)
+    assert not report.ok
+    assert any("knowledge_sync" in m for m in _errors(report))
+
+
+def test_knowledge_sync_local_only_is_warn(tmp_path: Path) -> None:
+    _fill_run_dir(tmp_path)
+    (tmp_path / "knowledge_sync.json").write_text(json.dumps({
+        "status": "local_only", "errors": []}))
+    report = check_artifacts(tmp_path)
+    assert report.ok
+    assert any("knowledge 仅本地" in m for m in _warns(report))

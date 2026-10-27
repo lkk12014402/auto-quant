@@ -1,4 +1,4 @@
-
+from pathlib import Path
 
 def test_references_push_and_manifest(tmp_path, monkeypatch):
     from aqa.agent.knowledge import KnowledgeStore
@@ -78,3 +78,21 @@ def test_knowledge_layout_yaml_loads():
     assert data["layout"] and "manifest_schema" in data
     refs = [e for e in data["layout"] if e["path"] == "references/"]
     assert refs and refs[0]["producer"] == "owner"
+
+
+def test_merge_tree_never_overwrites_patch_bytes(tmp_path):
+    from aqa.agent.knowledge import KnowledgeStore
+
+    store = KnowledgeStore(local_dir=tmp_path / "local", repo=None)
+    remote = tmp_path / "remote"
+    local_patch = Path(store.local_dir) / "patches" / "quantize" / "abc" / "auto.patch"
+    remote_patch = remote / "patches" / "quantize" / "abc" / "auto.patch"
+    local_patch.parent.mkdir(parents=True)
+    remote_patch.parent.mkdir(parents=True)
+    local_patch.write_text("LOCAL FIX\n")
+    remote_patch.write_text("REMOTE FIX\n")
+
+    store._merge_tree(remote, Path(store.local_dir))
+
+    assert local_patch.read_text() == "LOCAL FIX\n"
+    assert (local_patch.with_name("auto.remote.patch")).read_text() == "REMOTE FIX\n"

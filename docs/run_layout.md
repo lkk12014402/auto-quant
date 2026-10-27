@@ -11,6 +11,7 @@
 ├── aqa_run.json              # 运行状态机（running/done/failed）                        [PLAN]
 ├── analysis.json             # 模型身份 + 计划量化范围（config.json 骨架，不下权重）     [ANALYZE] †
 ├── recipe_kb.json            # Recipe KB 热启动审计：query(含 current_stack) + 命中(含 trust/staleness)/null [ANALYZE] ¶
+├── knowledge_sync.json       # KnowledgeSync 本地 outbox 审计：status/repo/pulled/pushed/pending/errors [CLOSE] ¶
 ├── env_lock.json             # 冻结的软硬件栈（python/platform/包版本/accelerator）      [ENV] †
 ├── quant_plan.json           # 量化方案机读版：scheme/method/algorithm/iters + 冻结命令  [QUANT] †‡
 ├── .quant_command.json       # 实际执行的 auto-round 命令及来源（builder|agent-optimize）[QUANT]

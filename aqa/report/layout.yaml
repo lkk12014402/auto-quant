@@ -38,7 +38,21 @@ layout:
     phase: ANALYZE
     when: optional
     sink: true
-    desc: Recipe KB 热启动审计（query + 命中的历史验证配方 / 未命中为 null）。仅在 agent.optimize+recipe_kb.enabled 的量化 run 写出；命中即注入 agent-optimize 作为起点，优化不改复现。
+    desc: Recipe KB 热启动审计（query + 命中的历史验证配方 / 未命中为 null）。量化 run 在 recipe_kb.enabled 时写出；命中只注入 agent-optimize 作起点，不改变冻结命令。
+
+  - path: knowledge_sync.json
+    kind: file
+    phase: CLOSE
+    when: optional
+    sink: true
+    desc: '本地优先 knowledge 同步审计：status(local_only|pulled|pushed|pending|up_to_date|failed)、repo/path、pulled/pushed/session 数、pending 文件与错误。远端失败不阻断 run，下次重试。'
+
+  - path: knowledge/
+    kind: dir
+    phase: CLOSE
+    when: optional
+    sink: true
+    desc: 'run-scoped knowledge 快照：仅本 run 新增/修改的 lessons/patches/references/stats（无 agent.knowledge.repo 时供结果 sink 上传；不包含共享 cache 的历史文件）'
 
   # ── ENV ─────────────────────────────────────────────────────────────────
   - path: env_lock.json

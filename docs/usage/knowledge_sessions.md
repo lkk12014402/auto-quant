@@ -60,7 +60,7 @@ session 既是审计材料也是训练数据：convert → ATIF 轨迹；export 
 数据集行；publish → HF dataset 分层目录；distill → 知识。**全链路自动脱敏**
 （适配器收口处执行，规则集 `aqa/report/scrub.py`）。
 
-### 2.3 run 收尾自动沉淀（`agent.sediment_sessions`，默认开）
+### 2.3 run 收尾自动沉淀（`agent.knowledge.sediment_sessions`，默认开）
 
 run 结束（**成功和失败都执行**——失败的 session 最有教学价值）时，
 pipeline 自动把本 run 的 session 转成 ATIF 并回传：
@@ -77,9 +77,18 @@ pipeline 自动把本 run 的 session 转成 ATIF 并回传：
 ## 3. 同步与共享
 
 ```
-本地 ~/.cache/aqa/knowledge  <--sync_down(每次 run 开始)--  HF dataset knowledge/
-                          --push_up(run 结束/推送命令)-->
+本地 ~/.cache/aqa/knowledge  <-- KnowledgeSync.pull (run 开始, sha256 合并) --  HF dataset knowledge/
+                          -- KnowledgeSync.push (CLOSE/failure, 只传变化文件) -->
 ```
 
-不配 repo 就是纯本机共享（同机所有 run 共用 `default_local_dir()`，
-`AQA_KNOWLEDGE_DIR` 可改）。上传前统一脱敏。
+- `KnowledgeSync` 把本地当权威副本，远端失败只把文件留在 `.sync_state.json` 的 pending 里，下次 run 或显式 sync 重试；不会阻断 run。
+- `knowledge_sync.json` 每个 run 落盘：`status=local_only|pulled|pushed|pending|up_to_date|failed`、pulled/pushed/session 数、pending 文件与 errors；`run_manifest.knowledge` 同步记录。
+- 不配 repo 就是纯本机共享（同机所有 run 共用 `default_local_dir()`，
+  `AQA_KNOWLEDGE_DIR` 可改）；`agent.knowledge.sync: off|pull|push|auto|background` 控制方向；`background` 在 run 内只拉不推，push 留给 `aqa knowledge sync` 或下一次 auto run，避免 CLOSE 被网络拖住。
+- Recipe KB 是**另一条 git 平面**：`recipes/quant/auto` 的 auto 配方由 `RecipeKB.pin` 写；`agent.recipe_kb.auto_sync: off|branch|pr` 可选地把它 commit 到 detached worktree 的 `aqa/kb-<run_id>` 分支（pr 再 push + `gh pr create`），默认 off。
+- 上传前统一脱敏；`HfDatasetSink._stage_knowledge` 只收 `.jsonl/.patch/.json/.md`，跳过 `.sync_state.json`。
+
+> 本 checkout 已注册 `aqa knowledge status <run_dir>` 和
+> `aqa knowledge sync <run_dir> [--pull-only|--push-only]`；`aqa traces`、
+> `aqa knowledge show/diff/push-references` 仍未接线。
+> `KnowledgeStore.push_references()`、`session_sediment.sediment_sessions()` 是已实现的 API/内部函数。

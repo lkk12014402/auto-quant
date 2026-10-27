@@ -262,7 +262,7 @@ def test_baseline_goes_through_agent_fix_wrapper(tmp_path, monkeypatch):
 
     monkeypatch.setattr(P, "_dispatch_sinks", lambda *a, **k: None)
     monkeypatch.setattr(P, "_make_knowledge", lambda rc: None)
-    monkeypatch.setattr(P, "_finalize_knowledge", lambda k: None)
+    monkeypatch.setattr(P, "_finalize_knowledge", lambda k, **kw: None)
     monkeypatch.setattr(P, "_maybe_upload_model", lambda *a, **k: None)
 
     class _Resolved:
@@ -301,7 +301,7 @@ def test_pipeline_records_self_heal_in_manifest(tmp_path, monkeypatch):
 
     monkeypatch.setattr(P, "_dispatch_sinks", lambda *a, **k: None)
     monkeypatch.setattr(P, "_make_knowledge", lambda rc: None)
-    monkeypatch.setattr(P, "_finalize_knowledge", lambda k: None)
+    monkeypatch.setattr(P, "_finalize_knowledge", lambda k, **kw: None)
     monkeypatch.setattr(P, "_maybe_upload_model", lambda *a, **k: None)
 
     class _Resolved:

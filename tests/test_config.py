@@ -65,3 +65,15 @@ def test_export_repair_field_parses():
         "quant": {"scheme": "MXFP4", "export_repair": "glm5_vllm"},
     })
     assert cfg.quant is not None and cfg.quant.export_repair == "glm5_vllm"
+
+
+def test_knowledge_sync_fields_parse():
+    cfg = parse_run_config({
+        "model": "org/m",
+        "agent": {"knowledge": {"sync": "background", "sediment_sessions": False,
+                                "repo": "org/knowledge"},
+                  "recipe_kb": {"auto_sync": "branch"}},
+    })
+    assert cfg.agent.knowledge.sync == "background"
+    assert cfg.agent.knowledge.sediment_sessions is False
+    assert cfg.agent.recipe_kb.auto_sync == "branch"

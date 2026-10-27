@@ -287,6 +287,24 @@ def check_artifacts(run_dir: str | Path) -> ArtifactsReport:
         elif status == "skipped":
             report.findings.append(Finding(
                 "warn", "Auto KB 回写被跳过：" + str(record.get("reason") or "")))
+        auto = record.get("auto_sync")
+        if isinstance(auto, dict) and auto.get("status") == "failed":
+            report.findings.append(Finding(
+                "warn", "Recipe auto_sync 失败：" + str(auto.get("error") or "")))
+
+    ks = _load_json(run_dir / "knowledge_sync.json")
+    if ks:
+        status = str(ks.get("status") or "?")
+        if status == "failed":
+            report.findings.append(Finding(
+                "error", "knowledge_sync 失败：" + "; ".join(
+                    str(e) for e in (ks.get("errors") or [])[:3])))
+        elif status == "pending":
+            report.findings.append(Finding(
+                "warn", "knowledge_sync 有 pending 文件，下次 run/显式 sync 重试"))
+        elif status == "local_only":
+            report.findings.append(Finding(
+                "warn", "knowledge 仅本地（未配 repo/token）；未跨机器同步"))
 
     card = run_dir / "model_card.md"
     if card.exists():

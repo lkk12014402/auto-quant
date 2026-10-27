@@ -103,7 +103,7 @@ def test_pipeline_writes_manifest_on_success(tmp_path, monkeypatch):
 
     monkeypatch.setattr(P, "_dispatch_sinks", lambda *a, **k: None)
     monkeypatch.setattr(P, "_make_knowledge", lambda rc: None)
-    monkeypatch.setattr(P, "_finalize_knowledge", lambda k: None)
+    monkeypatch.setattr(P, "_finalize_knowledge", lambda k, **kw: None)
 
     class _Resolved:
         model = "org/m"
@@ -252,3 +252,12 @@ def test_manifest_no_self_heal_when_empty():
     result = _result({"piqa": 0.8})
     m = build_manifest(cfg, result, run_id="rid-noheal", self_heal=None)
     assert "self_heal" not in m.to_dict()["results"]
+
+
+def test_manifest_reads_knowledge_sync(tmp_path):
+    (tmp_path / "knowledge_sync.json").write_text(json.dumps({
+        "status": "pushed", "repo": "org/knowledge", "pushed": 3,
+        "pending": [], "sessions": 1}))
+    m = build_manifest(_cfg(), _result({"piqa": 0.8}), run_id="r", out_dir=tmp_path)
+    assert m.knowledge["status"] == "pushed"
+    assert m.knowledge["pushed"] == 3

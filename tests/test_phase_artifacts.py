@@ -230,7 +230,7 @@ def test_pipeline_writes_all_phase_artifacts_and_inspect_ok(tmp_path, monkeypatc
 
     monkeypatch.setattr(P, "_dispatch_sinks", lambda *a, **k: None)
     monkeypatch.setattr(P, "_make_knowledge", lambda rc: None)
-    monkeypatch.setattr(P, "_finalize_knowledge", lambda k: None)
+    monkeypatch.setattr(P, "_finalize_knowledge", lambda k, **kw: None)
     monkeypatch.setattr(P, "_maybe_upload_model", lambda *a, **k: None)
 
     class _Resolved:

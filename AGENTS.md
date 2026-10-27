@@ -16,7 +16,8 @@
 > （复现已发布 recipe 并做输入/结构/数值三面校验，产物 `reproduction_report.json`；
 > 也可从 Python 调用 `aqa.reproduce.reproduce_manifest`，见 §文档地图）、
 > `log-action <run_dir> --kind ... --text ...`（owner 动作写入 `owner_actions.jsonl` 并并入 manifest）、
-> `capture-patch <run_dir> --repo <git仓>`（把工作区 tracked diff 存入 `patches/owner/`）。
+> `capture-patch <run_dir> --repo <git仓>`（把工作区 tracked diff 存入 `patches/owner/`）、
+> `knowledge {status|sync} <run_dir>`（本地优先 knowledge outbox：查看/重试 pull/push；`sync` 支持 `--pull-only`/`--push-only`）。
 > **下文引用但当前尚未接入 CLI、勿直接执行**的命令
 > （按 [RFC 0001](docs/rfc/0001-reproducible-session-state-machine.md) 分期补齐）：
 > `sweep`（候选生成逻辑已在 `aqa/quantize/candidates.py`，CLI 未接）、
@@ -432,7 +433,7 @@ sk-、AKIA、Bearer 等（所以 layout.yaml 里每个本地条目会原样出�
 ├── results/<org>/<artifact>/results_<run_id>.json   # 附加①聚合记录：
 │       # {status, model, scheme, method, run_id, results{bench: score}, num_files}
 ├── status/<org>/<request_filename>.json        # 附加②状态回写（榜单消费）
-└── knowledge/                                   # 附加③共享修复知识（配了 knowledge repo 才有）
+└── knowledge/                                   # 可选：未配 agent.knowledge.repo 时结果 sink 附带修复知识；配了 repo 时由 KnowledgeSync 推 knowledge/（避免重复）
 ```
 
 - `org` = 模型 id 的 org 段；`run_id` = 时间戳+短哈希（`_make_run_id`）

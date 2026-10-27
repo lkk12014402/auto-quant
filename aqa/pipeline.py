@@ -282,16 +282,32 @@ def _make_patch_capture(run_cfg: RunConfig, out_dir: Path):
 
 
 def _make_knowledge(run_cfg: RunConfig):
-    """Build the shared knowledge store (synced down once), or None if disabled."""
-    if not run_cfg.agent.fix_loop:
+    """Build the shared knowledge store (synced down once), or None if disabled.
+
+    Sync is independent of the fix-loop: an optimize-only run still needs the
+    synced ``references/`` tree, and a CLOSE should still push lessons/patches.
+    The fix-loop merely decides whether replay/recording is used.
+    """
+    if not run_cfg.agent.knowledge.enabled:
+        return None
+    # Pretrained eval-only runs do not produce fix knowledge; quantize and
+    # fix/optimize runs do (even when fix_loop is off, for references/sessions).
+    if not (run_cfg.agent.fix_loop or run_cfg.agent.optimize
+            or run_cfg.provider.type == "quantize"):
         return None
     from .agent.knowledge import KnowledgeStore
+    from .agent.knowledge_sync import KnowledgeSync
+
     kn = KnowledgeStore.from_config(run_cfg.agent.knowledge)
     if kn is not None:
+        kn.sync = KnowledgeSync(kn, mode=run_cfg.agent.knowledge.sync)
         try:
-            kn.sync_down()
+            kn.sync.pull()
         except Exception as exc:  # noqa: BLE001 - knowledge sync is best-effort
             _log.warning("knowledge: sync_down failed: %s", exc)
+        # Anything already in the shared cache belongs to earlier runs; only
+        # changes after this point are eligible for this run's sink snapshot.
+        kn.sync.mark_baseline()
     return kn
 
 
@@ -713,7 +729,18 @@ def _recipe_kb_pin(run_cfg: RunConfig, out_dir: Path, result: EvalResult,
                          "fallback KB -> %s", exc, path)
             return
         if path:
-            _record(status="ok", path=path)
+            auto_info = None
+            if (gate_verdict or "").upper() == "GO" and kb_cfg.auto_sync != "off":
+                try:
+                    from .agent.recipe_git import sync_auto_recipe
+                    auto_info = sync_auto_recipe(
+                        recipe_path=path, curated_root=kb.curated_root,
+                        run_id=run_id, mode=kb_cfg.auto_sync)
+                except Exception as auto_exc:  # noqa: BLE001 - never block CLOSE
+                    auto_info = {"status": "failed", "error": str(auto_exc)}
+                _log.info("recipe_kb: auto_sync=%s -> %s",
+                          kb_cfg.auto_sync, auto_info)
+            _record(status="ok", path=path, auto_sync=auto_info)
             if (gate_verdict or "").upper() == "GO":
                 _log.info("recipe_kb: pinned validated recipe -> %s", path)
             else:
@@ -1175,6 +1202,10 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path, *, resume: bool = False) -> 
         # P3 record-back: pin on GO, else record negative knowledge (always records).
         _recipe_kb_pin(run_cfg, out_dir, result, gate_verdict, run_id,
                        baseline=baseline, gate_reasons=gate_reasons)
+        # Knowledge/session sediment must be on disk before the manifest and
+        # sink, otherwise knowledge_sync.json is missing from the run artifacts.
+        knowledge_snapshot = _finalize_knowledge(
+            knowledge, run_cfg=run_cfg, out_dir=out_dir, run_id=run_id)
         manifest = build_manifest(
             run_cfg, result, run_id=run_id, baseline=baseline,
             gate_verdict=gate_verdict, out_dir=out_dir, self_heal=heal.block())
@@ -1197,7 +1228,10 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path, *, resume: bool = False) -> 
             run_id=run_id,
             status=_derive_status(results, gate_verdict),
             extra={"results": results},
-            knowledge_dir=knowledge.local_dir if knowledge else None,
+            # If an explicit knowledge repo is configured, KnowledgeSync owns
+            # that copy; the results sink only carries the local knowledge tree
+            # when it is the sole destination (avoids duplicate uploads).
+            knowledge_dir=knowledge_snapshot,
         ))
         session.done(Phase.CLOSE)
 
@@ -1223,13 +1257,13 @@ def run_pipeline(run_cfg: RunConfig, out_dir: Path, *, resume: bool = False) -> 
         _maybe_upload_model(run_cfg, resolved, result, out_dir, baseline=baseline)
         if Phase.PUBLISH in plan:
             session.done(Phase.PUBLISH)
-        _finalize_knowledge(knowledge)
         return ProcessState.DONE
     except AqaError as exc:
         _fail_current_phase(session, exc)
+        _finalize_knowledge(knowledge, run_cfg=run_cfg, out_dir=out_dir,
+                            run_id=run_id)
         _writeback_on_failure(run_cfg, out_dir, eval_dir, resolved, exc, knowledge,
                               run_id=run_id, heal=heal, failed_phase=session.state.phase)
-        _finalize_knowledge(knowledge)
         raise
     finally:
         detach_run_log(run_log)
@@ -1268,19 +1302,70 @@ def _failure_status(failed_phase: str | None, reason: str) -> str:
     return "Quant Failed" if reason.startswith("quantize failed") else "Eval Failed"
 
 
-def _finalize_knowledge(knowledge) -> None:
-    """Log the replay hit-rate and push new lessons/patches/stats to the repo."""
+def _finalize_knowledge(knowledge, *, run_cfg: RunConfig | None = None,
+                        out_dir: Path | None = None, run_id: str = "") -> Path | None:
+    """Push knowledge + sessions, write ``knowledge_sync.json`` and a run snapshot.
+
+    Local files are authoritative; a failed pull/push leaves the outbox pending
+    and never fails the run.  When no explicit ``agent.knowledge.repo`` exists,
+    only files changed since run start are copied into ``<run>/knowledge/`` so
+    the results sink never uploads the shared host cache.
+    """
     if knowledge is None:
-        return
+        return None
+    snapshot: Path | None = None
     try:
-        s = knowledge.stats()
-        _log.info("knowledge: replay stats -> replay_hit=%d reference_used=%d agent=%d "
-                  "unresolved=%d hit_rate=%.2f",
-                  s["replay_hit"], s["reference_used"], s["agent_fixed"],
-                  s["unresolved"], s["hit_rate"])
-        knowledge.push_up()
+        sync = getattr(knowledge, "sync", None)
+        if sync is None:
+            from .agent.knowledge_sync import KnowledgeSync
+            mode = run_cfg.agent.knowledge.sync if run_cfg is not None else "auto"
+            sync = KnowledgeSync(knowledge, mode=mode)
+            knowledge.sync = sync
+        changed = []
+        if hasattr(sync, "changed_since_baseline"):
+            changed = sync.changed_since_baseline()
+        if (changed and run_cfg is not None and out_dir is not None
+                and not run_cfg.agent.knowledge.repo):
+            import shutil
+            snapshot = Path(out_dir) / "knowledge"
+            for rel in changed:
+                src = Path(knowledge.local_dir) / rel
+                if not src.is_file():
+                    continue
+                dst = snapshot / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            if snapshot.is_dir():
+                sync.report.run_snapshot = str(snapshot)
+                sync.report.snapshot_files = len(changed)
+            else:
+                snapshot = None
+        try:
+            s = knowledge.stats()
+            _log.info("knowledge: replay stats -> replay_hit=%d reference_used=%d agent=%d "
+                      "unresolved=%d hit_rate=%.2f",
+                      s["replay_hit"], s["reference_used"], s["agent_fixed"],
+                      s["unresolved"], s["hit_rate"])
+        except Exception as exc:  # noqa: BLE001 - stats are advisory
+            _log.warning("knowledge: stats failed: %s", exc)
+        sync.push()
+        if (run_cfg is not None and out_dir is not None
+                and run_cfg.agent.knowledge.sediment_sessions):
+            try:
+                from .agent.session_sediment import sediment_sessions
+                staged = sediment_sessions(out_dir, run_id or "norun")
+                if staged:
+                    sync.push_sessions(staged[0].parent)
+            except Exception as exc:  # noqa: BLE001 - sediment is best-effort
+                sync.report.errors.append(f"sediment: {exc}")
+                _log.warning("knowledge: session sediment failed: %s", exc)
+        if out_dir is not None:
+            from .session._io import atomic_write_json
+            atomic_write_json(out_dir / "knowledge_sync.json", sync.status())
+        return snapshot
     except Exception as exc:  # noqa: BLE001 - finalization is best-effort
         _log.warning("knowledge: finalize failed: %s", exc)
+        return snapshot
 
 
 def _writeback_on_failure(run_cfg: RunConfig, out_dir: Path, eval_dir: Path,
@@ -1319,7 +1404,8 @@ def _writeback_on_failure(run_cfg: RunConfig, out_dir: Path, eval_dir: Path,
             run_id=run_id,
             status=status,
             extra={"results": {}, "error": reason},
-            knowledge_dir=knowledge.local_dir if knowledge else None,
+            knowledge_dir=((out_dir / "knowledge")
+                           if (out_dir / "knowledge").is_dir() else None),
         ))
     except Exception as sink_exc:  # noqa: BLE001 - failure write-back is best-effort
         _log.warning("failure write-back sink error: %s", sink_exc)

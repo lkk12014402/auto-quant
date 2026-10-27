@@ -155,6 +155,17 @@ def _load_post_export(out_dir: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _load_knowledge_sync(out_dir: Path) -> dict[str, Any] | None:
+    path = Path(out_dir) / "knowledge_sync.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 @dataclass
 class RunManifest:
     """Everything needed to reproduce (and audit) one eval run's numbers."""
@@ -176,6 +187,8 @@ class RunManifest:
     reproduction: dict[str, Any] | None = None
     # Owner actions recorded during the run (``aqa log-action`` / owner_actions.jsonl).
     owner_actions: list[dict[str, Any]] | None = None
+    # Local-first knowledge sync result (``knowledge_sync.json``), when enabled.
+    knowledge: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -284,6 +297,7 @@ def build_manifest(
         reproduction=(run_cfg.reproduce.model_dump()
                       if run_cfg.reproduce is not None else None),
         owner_actions=(load_owner_actions(out_dir) if out_dir is not None else None),
+        knowledge=(_load_knowledge_sync(out_dir) if out_dir is not None else None),
     )
 
 

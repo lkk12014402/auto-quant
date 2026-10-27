@@ -217,9 +217,12 @@ class HfDatasetSink:
             staging = Path(tmp)
             result_root = staging / self.path_in_repo / org / artifact
             staged_run = result_root / f"run_{run_id}"
+            excluded = {artifact, "knowledge"}
+            if meta.artifact_name:
+                excluded.add(meta.artifact_name)
             copied = stage_run_artifacts(
                 Path(meta.run_root), staged_run, sanitize=self.sanitize,
-                extra_excluded_dirs={meta.artifact_name, artifact} if meta.artifact_name else None)
+                extra_excluded_dirs=excluded)
 
             aggregate = {
                 "status": meta.status or "Finished",
@@ -267,18 +270,21 @@ class HfDatasetSink:
 
     @staticmethod
     def _stage_knowledge(src: Path, dst: Path) -> None:
-        """Copy the knowledge tree (lessons/patches/stats) into the upload staging.
+        """Copy the knowledge tree (lessons/patches/references/stats) to staging.
 
-        Only lightweight text artifacts (``.jsonl``/``.patch``/``.json``) are shipped;
-        the snapshot cache and any binaries are excluded.
+        Only lightweight text artifacts are shipped; the snapshot cache, binaries
+        and the local sync state are excluded.
         """
         import shutil
 
-        keep = (".jsonl", ".patch", ".json")
+        keep = (".jsonl", ".patch", ".json", ".md")
         for p in src.rglob("*"):
             if not p.is_file() or p.suffix not in keep:
                 continue
             rel = p.relative_to(src)
+            if p.name == ".sync_state.json" or any(
+                    part.startswith(".") for part in rel.parts):
+                continue
             out = dst / rel
             out.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, out)
