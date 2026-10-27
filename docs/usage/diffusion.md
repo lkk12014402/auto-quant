@@ -55,6 +55,10 @@ Z-Image-Turbo（W4A16 RTN 几乎无损：CLIP 31.78→31.66 / CLIP-IQA 0.704→0
 ImageReward 0.993→0.970，GenEval 0.7579）、FLUX.2-dev / klein-4B / klein-9B、
 DeepSeek-OCR-2。示例 yaml 在 `examples/run_diffusion_*.yaml`。
 
+已发布 checkpoint 的逐项复现（MXFP8，含精确环境与步骤、ImageReward tokenizer
+缓存坑）见 `cookbooks/Z-Image-Turbo-MXFP8-RTN-AutoRound-reproduction.md`，
+可直接运行的配置是 `examples/repro_zimage_mxfp8_{drawbench,geneval}.yaml`。
+
 ## 已知坑（fix_playbook 已收录）
 
 - `--model_name` 必须本地目录；`--disable_model_free` 必加；
